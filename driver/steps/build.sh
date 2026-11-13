@@ -24,6 +24,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/feature-list.sh" || exit 1
 
 # driver_prove_red_green <repo> <test-file> <test-commit> <impl-commit> <command>
 #
@@ -77,14 +78,28 @@ _driver_proof_install() { # <repo> <tree>
   # Each proof tree gets its own install, cloned from the store for its lockfile: a
   # link to the ticket tree's would resolve its workspace packages to the ticket tree's
   # source, and the red half would run the change.
-  driver_own_install "$2" || { DRIVER_PREPARE_WHY="the proof tree $2 could not be given its own install"; return 1; }
+  driver_own_install "$2" || driver_own_install --fresh "$2" \
+    || { DRIVER_PREPARE_WHY="the proof tree $2 could not be given its own install, even installed fresh"; return 1; }
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
+  _driver_proof_prepare "$2"
+}
+# _driver_proof_prepare <tree> — worktree.prepare, and once more on a fresh install when it
+# fails: a stored install that is not its own lockfile's (no prisma bin, another prisma) is
+# the machine's, and parking on it blamed a change the tree did not even hold.
+_driver_proof_prepare() {
   # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
   # Left on stdout, driver_prepare_worktree's own narration was captured into $why and
   # printed as part of the proof's verdict — and on the refusal path the park note was
   # the same sentence twice, naming a temp tree that had already been deleted.
-  driver_prepare_worktree "$2" >&2 || return 1
-  return 0
+  driver_prepare_worktree "$1" >&2 && return 0
+  local first="$DRIVER_PREPARE_WHY"
+  driver_say "   proof: $1 could not be prepared on its install — installing it fresh, once (the driver's setup, not the change)" >&2
+  if driver_own_install --fresh "$1" && driver_prepare_worktree "$1" >&2; then
+    driver_say "   proof: $1 prepared on a fresh install" >&2
+    return 0
+  fi
+  DRIVER_PREPARE_WHY="it failed again on a fresh install — ${DRIVER_PREPARE_WHY:-$first}"
+  return 1
 }
 
 # PROOF TREES ARE REUSED ACROSS A RUN'S TASKS. Two fresh trees per proof, each with its
@@ -116,13 +131,14 @@ _driver_proof_tree() {
   fp=$(_driver_proof_fingerprint "$repo" "$sha")
   if [ -e "$tree/.git" ] && git -C "$tree" checkout -q --detach -f "$sha" 2>/dev/null && git -C "$tree" clean -fdq 2>/dev/null; then
     old=$(cat "$tree.fp" 2>/dev/null)
-    driver_refresh_install "$tree" || true
+    # A failed rebuild leaves no install: prepare it, so the fresh retry gets its turn.
+    driver_refresh_install "$tree" || old=""
     if [ -n "$fp" ] && [ "$fp" = "$old" ]; then
       driver_say "   proof: reused $tree at $(printf '%s' "$sha" | cut -c1-8) — the prepare fingerprint is unchanged, so worktree.prepare is skipped" >&2
       return 0
     fi
     rm -f "$tree.fp"
-    driver_prepare_worktree "$tree" >&2 || return 2
+    _driver_proof_prepare "$tree" || return 2
     printf '%s' "$fp" > "$tree.fp"
     return 0
   fi
@@ -213,6 +229,17 @@ _driver_proof_unreachable_why() { # <test-file> <out-file>
     "$1" "$(grep -oE -- "$DRIVER_PROOF_UNREACHABLE_RE" "$2" 2>/dev/null | head -1)" "$DRIVER_PROOF_E2E_HOW"
 }
 
+# driver_case_filter_of <test file> — how that file runs one of its cases, as the file says
+# it on a `# case-filter: <VAR>=… <command>` line in its first 40 lines. 1 when it says none.
+driver_case_filter_of() {
+  local l
+  [ -f "${1:-}" ] || return 1
+  l=$(sed -n '1,40s/^#[[:space:]]*case-filter:[[:space:]]*//p' "$1" 2>/dev/null | head -1)
+  case "${l%%=*}" in ''|*[!A-Za-z0-9_]*|[0-9]*) return 1 ;; esac
+  [ "${l%%=*}" != "$l" ] || return 1
+  printf '%s' "$l"
+}
+
 # driver_proof_cmd_check <tree> <command> [<test-file>] — 0 when the command can be
 # run verbatim from the tree's root; else prints why and returns 1.
 #
@@ -240,6 +267,13 @@ driver_proof_cmd_check() {
   fi
   if [ "$tfile" != "<file>" ] && driver_gates_local_only && [[ "$cmd" != *"$(basename "$tfile")"* ]]; then
     printf 'the command does not name %s, and under gates.localOnly a proof runs that one test file and nothing more — %s\n' "$tfile" "$eg"
+    return 1
+  fi
+  # A TEST FILE THAT TAKES A CASE FILTER IS PROVED BY THE CASE, never whole: the proof runs
+  # the command twice inside one time limit, and a whole suite of minutes ran out of it.
+  local cf
+  if [ "$tfile" != "<file>" ] && cf=$(driver_case_filter_of "$tree/$tfile") && [[ "$cmd" != *"${cf%%=*}="* ]]; then
+    printf 'the command runs all of %s, which takes a case filter, and a proof runs the case the change adds or changes, never the whole file (it runs twice, inside one time limit) — give it as: %s\n' "$tfile" "$cf"
     return 1
   fi
   # read -a, not `for w in $cmd`: a bare `*.test.ts` would glob against the cwd.
@@ -279,12 +313,46 @@ driver_proof_cmd_check() {
 # missing module, while the tree's install is behind its lockfile, is installed again
 # and taken once more. Still behind, it is 8 — a machine fault, back on the queue,
 # never "not proved".
+# _driver_proof_took <exit> <seconds> — one half of a proof, as a park note says it.
+_driver_proof_took() { if [ "$1" -eq 124 ]; then printf 'stopped at %ss' "$2"; else printf 'finished in %ss' "$2"; fi; }
+# _driver_proof_filter_hint <tree> <test file> <command> — when the file takes a case filter
+# the command did not use, say so: the next run can prove the one case.
+_driver_proof_filter_hint() {
+  local cf; cf=$(driver_case_filter_of "$1/$2") || return 0
+  [[ "$3" == *"${cf%%=*}="* ]] && return 0
+  printf ' %s takes a case filter: %s' "$2" "$cf"
+}
+# _driver_proof_gate — wait for the machine as self-check's gates do. 1 when it cannot.
+_driver_proof_gate() {
+  declare -F machine_gate_acquire >/dev/null 2>&1 || . "$KIT_ROOT/scripts/machine-gate.sh" 2>/dev/null || return 1
+  machine_gate_wait_load 0 >&2 && machine_gate_acquire 0 "proof #${DRIVER_TICKET:-?}" >&2
+}
 DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Failed to resolve import|Failed to load url"
 _driver_proof_machine() { # <proof fn> <repo> <args…>
   local fn="$1" repo="$2" out rc try=0 behind mod
   shift 2
+  local t0 slow=0 secs
   while :; do
+    t0=$(date +%s)
     rc=0; out=$("$fn" "$repo" "$@") || rc=$?
+    secs=$(( $(date +%s) - t0 ))
+    # OUT OF TIME ONCE IS THE MACHINE UNTIL IT IS SHOWN TWICE. Two harness builds parked on a
+    # suite that takes four minutes alone and ran past 30 beside five other builders. So the
+    # proof waits for the machine's gate (the load ceiling, then a slot of its own), is taken
+    # once more with twice the limit, and only then is it the command's.
+    if [ "$rc" -eq 4 ] && [ "$slow" -eq 0 ]; then
+      slow=1
+      driver_say "⏳ proof: out of time after ${secs}s (limit ${DRIVER_CMD_TIMEOUT}s a half, load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for the machine, then taken once more with twice the limit" >&2
+      if _driver_proof_gate; then
+        t0=$(date +%s)
+        rc=0; out=$(DRIVER_CMD_TIMEOUT=$(( DRIVER_CMD_TIMEOUT * 2 )) "$fn" "$repo" "$@") || rc=$?
+        secs=$(( $(date +%s) - t0 ))
+        machine_gate_release 2>/dev/null || true
+        [ "$rc" -ne 4 ] || out="$out It was taken twice, the second time alone in a machine gate slot with twice the limit (${secs}s)."
+      else
+        out="$out The machine's gate could not be waited for, so it was not taken again."
+      fi
+    fi
     case "$rc" in 1|2|6) ;; *) break ;; esac
     grep -qE -- "$DRIVER_PROOF_MISSING_RE" <<<"$out" || break
     behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$repo" 2>/dev/null) || break
@@ -303,7 +371,28 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
 driver_prove_red_green() { _driver_proof_machine _driver_prove_red_green_once "$@"; }
 driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_once "$@"; }
 
+# A FIX COMMITTED AFTER THE CHANGE COUNTS. A rework keeps reporting its first pair, so a
+# green or typecheck failure at the change is proved once more at the latest branch commit
+# touching the test's or the change's files; the red half stays at the change's parent.
 _driver_prove_red_green_once() {
+  local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5" out rc=0 lsha ffile
+  local -a ffiles=()
+  out=$(_driver_prove_red_green_at "$@") || rc=$?
+  case "$rc" in 2|6) ;; *) printf '%s\n' "$out"; return "$rc" ;; esac
+  if git -C "$repo" merge-base --is-ancestor "$isha" HEAD 2>/dev/null; then
+    while IFS= read -r ffile; do [ -n "$ffile" ] && ffiles+=("$ffile"); done < <(
+      { git -C "$repo" diff-tree --root --no-commit-id --name-only -r "$tsha"
+        git -C "$repo" diff-tree --root --no-commit-id --name-only -r "$isha"; } 2>/dev/null | sort -u)
+    [ "${#ffiles[@]}" -eq 0 ] \
+      || lsha=$(git -C "$repo" log -1 --format=%H "$isha..HEAD" -- "${ffiles[@]}" 2>/dev/null)
+  fi
+  [ -n "${lsha:-}" ] || { printf '%s\n' "$out"; return "$rc"; }
+  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), the latest commit on the feature's files" >&2
+  _driver_prove_red_green_at "$repo" "$tfile" "$tsha" "$isha" "$cmd" "$lsha"
+}
+
+# _driver_prove_red_green_at <repo> <test-file> <test-commit> <change-commit> <command> [green-commit]
+_driver_prove_red_green_at() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
 
@@ -360,25 +449,30 @@ _driver_prove_red_green_once() {
   if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$base"; return 3; fi
   if [ "$prc" -ne 0 ]; then
     _driver_proof_done; _driver_proof_rmtmp
-    printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    # The base holds none of the change, so a tree of it that will not prepare is the driver's.
+    printf 'a driver fault, not the change: the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
-  # The version run in both halves: the change's own when the test commit came first
-  # (the change may edit the test it names), else the reported one.
+  local asha="${6:-$isha}"
+  # The version run in both halves: the green tree's own when the test commit came first
+  # (later commits may edit the test it names), else the reported one.
   local vsha="$tsha"
-  git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
+  git -C "$repo" merge-base --is-ancestor "$tsha" "$asha" 2>/dev/null \
+    && git -C "$repo" cat-file -e "$asha:$tfile" 2>/dev/null && vsha="$asha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/before" && driver_with_test_db --for "$tfile" "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
+  local secs_red; secs_red=$(( $(date +%s) - _pt0 ))
 
   prc=0
-  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$isha" || prc=$?
+  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$asha" || prc=$?
   else
-    git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || prc=1
+    git -C "$repo" worktree add -q --detach "$tmp/after" "$asha" 2>/dev/null || prc=1
     [ "$prc" -ne 0 ] || _driver_proof_install "$repo" "$tmp/after" || prc=2
   fi
-  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$isha"; return 3; fi
+  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$asha"; return 3; fi
   if [ "$prc" -ne 0 ]; then
     _driver_proof_done; _driver_proof_rmtmp
     printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
@@ -389,8 +483,10 @@ _driver_prove_red_green_once() {
   # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/after" && driver_with_test_db --for "$tfile" "$tmp/after.db" "$tmp/after" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
+  local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
   # test whose calls do not type-check passed this proof and then failed self-check's
   # typecheck on the same file. Only once the test is green — a red half is allowed to
@@ -418,7 +514,7 @@ _driver_prove_red_green_once() {
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
   _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/before.out" "$(printf '%s' "$base" | cut -c1-8)" \
-    "$rc_green" "$tmp/after.out" "$(printf '%s' "$isha" | cut -c1-8)"
+    "$rc_green" "$tmp/after.out" "$(printf '%s' "$asha" | cut -c1-8)"
   _driver_proof_rmtmp
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
@@ -434,8 +530,8 @@ _driver_prove_red_green_once() {
   # reported before the red/green reading so a watch-mode runner cannot be read as a
   # test that failed honestly.
   if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
-    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
-      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    printf '%s ran out of time: `%s` did not finish within %ss (without the change: %s; with it: %s) — a proof cut off proves nothing.%s\n' \
+      "$tfile" "$cmd" "$DRIVER_CMD_TIMEOUT" "$(_driver_proof_took "$rc_red" "$secs_red")" "$(_driver_proof_took "$rc_green" "$secs_green")" "$(_driver_proof_filter_hint "$repo" "$tfile" "$cmd")"
     return 4
   fi
   if [ "$rc_red" -eq 0 ]; then
@@ -447,7 +543,7 @@ _driver_prove_red_green_once() {
     return 2
   fi
   printf '%s: red (exit %s) at %s, then green at %s\n' \
-    "$tfile" "$rc_red" "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$isha" | cut -c1-8)"
+    "$tfile" "$rc_red" "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$asha" | cut -c1-8)"
   return 0
 }
 
@@ -511,11 +607,15 @@ _driver_prove_by_break_once() {
     printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
     return 3
   fi
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/red.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
   rc_red=$?
+  local secs_red; secs_red=$(( $(date +%s) - _pt0 ))
   cp "$tmp/original" "$tmp/tree/$bfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/green.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
   rc_green=$?
+  local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # The same compile check as the red/green proof, on the restored tree.
   local tc_rc=0 tc_out="" tc
   tc=$(driver_proof_typecheck_cmd)
@@ -549,8 +649,8 @@ _driver_prove_by_break_once() {
   fi
 
   if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
-    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
-      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    printf '%s ran out of time: `%s` did not finish within %ss (with the break: %s; with the code restored: %s) — a proof cut off proves nothing.%s\n' \
+      "$tfile" "$cmd" "$DRIVER_CMD_TIMEOUT" "$(_driver_proof_took "$rc_red" "$secs_red")" "$(_driver_proof_took "$rc_green" "$secs_green")" "$(_driver_proof_filter_hint "$repo" "$tfile" "$cmd")"
     return 4
   fi
   if [ "$rc_red" -eq 0 ]; then
@@ -566,11 +666,129 @@ _driver_prove_by_break_once() {
   return 0
 }
 
+# driver_prove_no_code <repo> <head-before-the-task> <run url or id>
+#
+# THE PROOF FOR A TASK THAT CHANGES NO CODE (re-run a failed CI job). No commit, so no
+# pair to run: the tree must be as the task found it, and the run it names is read
+# here, never taken from the answer.
+#
+# 0 no diff, and the run concluded success on the branch's head · 1 the task changed
+# the tree · 2 the run is missing, not green, or on another commit · 3 the claim
+# cannot be checked
+driver_prove_no_code() {
+  local repo="$1" before="$2" run="$3" head id="" slug="" j rc=0 st con sha
+  head=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null) || { printf 'the branch head could not be read\n'; return 3; }
+  [ -n "$before" ] || { printf 'the head before this task was not recorded, so no diff could be measured\n'; return 3; }
+  # Working tree against the head the task started from: committed or not, it is a diff.
+  if ! git -C "$repo" diff --quiet "$before" -- 2>/dev/null; then
+    printf 'the task is declared noCode and changed the tree since %s (%s) — a task with a diff proves it with testFirst or testOnly\n' \
+      "$(printf '%s' "$before" | cut -c1-8)" "$(git -C "$repo" diff --name-only "$before" -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 1
+  fi
+  case "$run" in
+    ''|*[!0-9]*)
+      slug=$(printf '%s' "$run" | sed -nE 's#^https://github\.com/([^/]+/[^/]+)/actions/runs/[0-9]+(/.*)?$#\1#p')
+      id=$(printf '%s' "$run" | sed -nE 's#^https://github\.com/[^/]+/[^/]+/actions/runs/([0-9]+)(/.*)?$#\1#p') ;;
+    *) id="$run" ;;
+  esac
+  [ -n "$id" ] || { printf "noCode.run '%s' is not a CI run URL or id\n" "$run"; return 3; }
+  if [ -n "$slug" ] && [ "$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')" ]; then
+    printf 'CI run %s is a run of %s, not of this repo (%s)\n' "$id" "$slug" "$REPO_SLUG"; return 2
+  fi
+  j=$(GH_CALL_TIMEOUT="${GH_CALL_TIMEOUT:-30}" gh_read "CI run $id" api "repos/$REPO_SLUG/actions/runs/$id" 2>/dev/null) || rc=$?
+  sha=$(jq -r '.head_sha // ""' <<<"$j" 2>/dev/null)
+  if [ "$rc" -ne 0 ] || [ -z "$sha" ]; then
+    printf 'CI run %s could not be read in %s — no such run there, or GitHub gave no answer\n' "$id" "$REPO_SLUG"; return 2
+  fi
+  st=$(jq -r '.status // "?"' <<<"$j"); con=$(jq -r '.conclusion // "none"' <<<"$j")
+  if [ "$st" != completed ] || [ "$con" != success ]; then
+    printf 'CI run %s is not green: status %s, conclusion %s\n' "$id" "$st" "$con"; return 2
+  fi
+  if [ "$sha" != "$head" ]; then
+    printf "CI run %s concluded success on %s, not on the branch's head %s\n" "$id" "$(printf '%s' "$sha" | cut -c1-8)" "$(printf '%s' "$head" | cut -c1-8)"
+    return 2
+  fi
+  printf 'no code changed since %s; CI run %s concluded success on the head %s\n' \
+    "$(printf '%s' "$before" | cut -c1-8)" "$id" "$(printf '%s' "$head" | cut -c1-8)"
+  return 0
+}
+
+# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit>
+#
+# THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
+# were proved where they landed, so there is no red to show: what is checked is that
+# the commit is that merge and nothing more.
+#
+# 0 a clean trunk merge, made by this task and its only commit · 1 not a merge of the
+# trunk, or its tree is not the clean merge result · 2 the merge predates the task, or
+# the task changed something besides it · 3 the claim cannot be checked
+driver_prove_trunk_merge() {
+  local repo="$1" before="$2" after="$3" m="$4" sha p1 p2 r ontrunk="" tree mrc=0 got s8
+  sha=$(git -C "$repo" rev-parse --verify -q "$m^{commit}" 2>/dev/null) || { printf "trunkMerge.commit '%s' is not a commit here\n" "$m"; return 3; }
+  s8=$(printf '%s' "$sha" | cut -c1-8)
+  [ -n "$before" ] && [ -n "$after" ] || { printf 'the head around this task was not recorded, so its commits could not be measured\n'; return 3; }
+  p1=$(git -C "$repo" rev-parse --verify -q "$sha^1" 2>/dev/null); p2=$(git -C "$repo" rev-parse --verify -q "$sha^2" 2>/dev/null)
+  if [ -z "$p2" ] || git -C "$repo" rev-parse --verify -q "$sha^3" >/dev/null 2>&1; then
+    printf '%s is not a merge of two commits — a change is proved with testFirst or testOnly\n' "$s8"; return 1
+  fi
+  for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
+    git -C "$repo" merge-base --is-ancestor "$p2" "$r" 2>/dev/null && { ontrunk=1; break; }
+  done
+  [ -n "$ontrunk" ] || { printf "%s merges %s, which is not on the trunk (%s)\n" "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "${INTEGRATION_BRANCH:-develop}"; return 1; }
+  # The merge git makes by itself, with no hand: a conflict or any other tree is an edit.
+  tree=$(git -C "$repo" merge-tree --write-tree "$p1" "$p2" 2>/dev/null) || mrc=$?
+  tree=$(printf '%s\n' "$tree" | head -1)
+  if [ "$mrc" -eq 1 ]; then
+    printf '%s merged the trunk with conflicts, so its resolution is a change by hand — prove it with testFirst or testOnly\n' "$s8"; return 1
+  fi
+  if [ "$mrc" -ne 0 ] || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
+    printf 'the clean merge of %s could not be computed here (git merge-tree exit %s)\n' "$s8" "$mrc"; return 3
+  fi
+  got=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}" 2>/dev/null)
+  if [ "$got" != "$tree" ]; then
+    printf '%s is a trunk merge that carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
+      "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 1
+  fi
+  # The task made it: a merge already on the branch when the task started proves nothing done.
+  if git -C "$repo" merge-base --is-ancestor "$sha" "$before" 2>/dev/null; then
+    printf '%s was on the branch before this task started (at %s) — a task is proved by the merge it makes, never one it finds\n' \
+      "$s8" "$(printf '%s' "$before" | cut -c1-8)"
+    return 2
+  fi
+  # And it is all the task did.
+  if [ "$after" != "$sha" ] || [ "$p1" != "$before" ]; then
+    printf 'the task committed more than the trunk merge %s (%s) — a change is proved with testFirst or testOnly\n' \
+      "$s8" "$(git -C "$repo" log --first-parent --no-merges --format=%h "$before..$after" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 2
+  fi
+  if ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
+    printf 'the task left uncommitted edits beside the trunk merge %s (%s)\n' "$s8" \
+      "$(git -C "$repo" diff --name-only HEAD -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 2
+  fi
+  printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+  return 0
+}
+
+# _driver_build_task_start <file> <plan-task> <repo> — the head this task first started
+# from, kept across its tries and a resume until it is proved. A retry measured from its
+# own start would not see what an earlier try of the same task committed.
+_driver_build_task_start() {
+  local f="$1" task="$2" repo="$3" h
+  h=$(jq -r --argjson task "$task" 'select(.task == $task) | .head // empty' "$f" 2>/dev/null)
+  if [ -n "$h" ] && git -C "$repo" merge-base --is-ancestor "$h" HEAD 2>/dev/null; then printf '%s' "$h"; return 0; fi
+  h=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null) || return 1
+  jq -n --argjson task "$task" --arg h "$h" '{task: $task, head: $h}' > "$f" 2>/dev/null
+  printf '%s' "$h"
+}
+
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0
   export DRIVER_TICKET="$t"
+  whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
 
@@ -639,13 +857,15 @@ driver_step_build() { # <ticket>
     rm -f "$proved"
 
     # The one task this call builds, as the brief's own placeholder.
-    driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
+    driver_fact_put "$t" "$slot" PLAN_TASK "$(_driver_build_task_fact "$t" "$task" "$whole")"
     # What the driver said about the last try at this task, so a retry is not blind.
     if [ -s "$(driver_state_dir "$t")/steps/$slot.refused" ]; then
       driver_fact_put "$t" "$slot" LAST_TRY "$(cat "$(driver_state_dir "$t")/steps/$slot.refused")"
     else
       driver_fact_put "$t" "$slot" LAST_TRY "$(_driver_fact_none "this is the first try at this task, or the last one was proved")"
     fi
+    # The head this task started from: what a noCode or trunkMerge answer is measured against.
+    before=$(_driver_build_task_start "$(driver_state_dir "$t")/steps/$slot.started" "$task" "$repo")
     rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # A question, a skipped Skill or a broken answer is not a rework loop: those
@@ -659,6 +879,8 @@ driver_step_build() { # <ticket>
     # Before the proof reads the branch: a task that left HEAD detached put its commits there.
     driver_heal_detached "$t" "$repo" "$(driver_state_get "$t" branch)" || true
     driver_git_actions "$t" "$repo" "$ans" "build $slot" || return "$DRIVER_E_REFUSED"
+    # The task's own last commit, before the driver's formatting adds one.
+    after=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
     # Formatted with the task, so a format check can never be the thing self-check
     # sends back. After the answer is read: the proof names its own two commits.
     driver_format_changed "$t" "$repo" "build $slot" || true
@@ -686,10 +908,45 @@ driver_step_build() { # <ticket>
       if jq -e --arg g "$got_task" --arg w "$want_task" \
            '[.tasks[]?.title] | index($g) != null and $g != $w' \
            "$(driver_state_dir "$t")/steps/plan.json" >/dev/null 2>&1; then
+        printf "this call was given '%s' and the answer builds '%s', which is another task in this plan\n" "$want_task" "$got_task" > "$(driver_state_dir "$t")/steps/$slot.refused"
         driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task', which is another task in this plan. A task nobody built is a task that ships unbuilt."
         bad=1; continue
       fi
       driver_say "   build: the answer calls this task '$got_task'; the plan calls it '$want_task'"
+    fi
+    # A TASK THAT CHANGES NO CODE has no commit to prove: no diff, and a green run on the head.
+    if jq -e '.noCode | type == "object"' "$ans" >/dev/null 2>&1; then
+      why=""; prc=0
+      why=$(driver_prove_no_code "$repo" "$before" "$(jq -r '.noCode.run // ""' "$ans")") || prc=$?
+      if [ "$prc" -eq 0 ]; then
+        tsha=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
+        _driver_build_mark_proved "$proved" "$task" "$ans" "nocode:$tsha" "${got_task:-$want_task}" false "$tsha"
+        nocode=$((nocode+1))
+        driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+      else
+        printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
+        driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+        bad=1
+      fi
+      continue
+    fi
+    # A TASK THAT ONLY MERGES THE TRUNK changes nothing of its own: the commit is checked, not a test.
+    if jq -e '.trunkMerge | type == "object"' "$ans" >/dev/null 2>&1; then
+      why=""; prc=0
+      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")") || prc=$?
+      if [ "$prc" -eq 0 ]; then
+        tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
+        _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
+        nmerge=$((nmerge+1))
+        driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+      else
+        printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
+        driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+        bad=1
+      fi
+      continue
     fi
     # A TASK WHOSE DELIVERABLE IS THE TEST is proved by a planted break, because the
     # code it covers is already there and nothing can be red before it. Dom's rule,
@@ -701,14 +958,15 @@ driver_step_build() { # <ticket>
       tsha=$(jq -r  '.testOnly.testCommit // ""' "$ans")
       bfile=$(jq -r '.testOnly.break.file // ""' "$ans")
       if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$bfile" ]; then
+        printf 'the answer is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)\n' > "$(driver_state_dir "$t")/steps/$slot.refused"
         driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)."
         bad=1; continue
       fi
-      pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile"
+      pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile$(_driver_build_item_key "$task" "$tfile" "$whole")"
       if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
         driver_say "   build '$got_task' is proved by the same test commit and break as '$same' — one change, so the two are one task: merged, and proved once."
         _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha"
-        merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+        merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"; continue
       fi
       seen_pairs="$seen_pairs $pair"
       seen_titles="$seen_titles$pair	${got_task:-$want_task}
@@ -721,6 +979,7 @@ driver_step_build() { # <ticket>
     tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
     isha=$(jq -r  '.testFirst.implCommit // ""' "$ans")
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
+      printf 'the answer names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)\n' > "$(driver_state_dir "$t")/steps/$slot.refused"
       driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)."
       bad=1; continue
     fi
@@ -730,14 +989,14 @@ driver_step_build() { # <ticket>
     # KEYED ON THE RESOLVED COMMIT, not on the string the model typed. The contract asks
     # for seven characters or more, so `a1b2c3d` and its full sha are two keys for one
     # commit — and that is a third door to the same hole.
-    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")"
+    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")$(_driver_build_item_key "$task" "$tfile" "$whole")"
     # TWO TASKS ONE CHANGE PROVES ARE ONE TASK. Refused, the model was asked five times
     # to split a change that was rightly one, and the ticket parked on a proof that held
     # (#13584). So the later task is merged into the earlier one, said, and not re-proved.
     if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
       driver_say "   build '$got_task' is proved by the same two commits as '$same' ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)) — one change, so the two are one task: merged, and proved once."
       _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha" "$isha"
-      merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+      merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"; continue
     fi
     seen_pairs="$seen_pairs $pair"
     seen_titles="$seen_titles$pair	${got_task:-$want_task}
@@ -746,7 +1005,7 @@ driver_step_build() { # <ticket>
     why=$(DRIVER_PROOF_KEEP="$proved.proof" driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     fi
     if [ "$prc" -eq 0 ]; then
-      rm -f "$(driver_state_dir "$t")/steps/$slot.refused"
+      rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"
       DRIVER_PROOF_LINE="$why" _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" false "$tsha" $isha
       rm -f "$proved.proof"
     else
@@ -773,6 +1032,7 @@ driver_step_build() { # <ticket>
       # the change, which is what this step's own header forbids. It returns its own
       # code so the orchestrator parks with the real reason immediately.
       driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+      driver_state_set "$t" park_note "$why"
       return "$DRIVER_E_TIMEOUT"
     else
       driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
@@ -780,7 +1040,13 @@ driver_step_build() { # <ticket>
     fi
   done
 
+  # A list kept here is this ticket's to pass, whatever the record says of build_whole: a
+  # rebuild from before it was set left proved items false and parked asking a person.
+  if [ -n "$whole" ] || _driver_build_own_list "$t"; then _driver_build_features "$t" || bad=1; fi
+
   if [ "$bad" -eq 0 ]; then
+    [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
+    [ "$nmerge" -eq 0 ] || driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
     elif [ "$merged" -gt 0 ]; then
@@ -790,8 +1056,75 @@ driver_step_build() { # <ticket>
     fi
     return "$DRIVER_OK"
   fi
-  _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
+  _driver_build_out_of_tries "$t" "$tries" "$ntasks" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_build_task_fact <ticket> <task> <whole> — the task as the brief reads it. A task of
+# a ticket building its whole list carries its item: the session sees no ticket and no list.
+_driver_build_task_fact() {
+  local list; list="$(driver_state_dir "$1")/features.json"
+  if [ -n "$3" ] && [ -s "$list" ] && jq -e --slurpfile l "$list" --argjson task "$2" -n \
+       '$l[0].items | any(.id == $task.item)' >/dev/null 2>&1; then
+    jq --slurpfile l "$list" '. + {feature: (.item as $i | $l[0].items[] | select(.id == $i) | {id, behaviour, steps, test, rule: "This item passes only when a task of it proves `test`: when this task'"'"'s tests name that file, it is your testFirst.test.file. Never edit its steps."})}' <<<"$2"
+  else
+    printf '%s' "$2" | jq .
+  fi
+}
+
+# _driver_build_item_key <task> <test-file> <whole> — what joins a list item's proof key. Two
+# tasks one change proves are merged as one, and proved once; that must not pass an item
+# whose own test never ran. So the same commits naming another test file are proved again.
+_driver_build_item_key() {
+  [ -n "$3" ] || return 0
+  case "$(jq -r '.item // ""' <<<"$1")" in F[0-9]*) printf ':%s' "$2" ;; esac
+}
+
+# _driver_build_own_list <ticket> — 0 when the ticket keeps a feature list whose items are
+# built here (no item filed as a part of its own).
+_driver_build_own_list() {
+  local list; list="$(driver_state_dir "$1")/features.json"
+  [ -s "$list" ] && jq -e '(.items | length) > 0 and all(.items[]; .part == null)' "$list" >/dev/null 2>&1
+}
+
+# _driver_build_features <ticket> — an item passes once every task of it is proved and one of
+# them proved the test file its steps run in. Re-derived on each pass, kept in the list, and
+# posted when the whole list first passes. 1 while any item fails: an item whose tasks are all
+# proved and whose test never ran sends its last task back, naming the file.
+_driver_build_features() {
+  local t="$1" d list id test i m last all hit pass fails=0 before total
+  d="$(driver_state_dir "$t")/steps"; list="$(driver_state_dir "$t")/features.json"
+  [ -s "$list" ] || return 0
+  before=$(jq -c '[.items[].passes]' "$list")
+  total=$(jq '.items | length' "$list")
+  for id in $(jq -r '.items[].id' "$list"); do
+    test=$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .test' "$list")
+    last=""; all=1; hit=""
+    for i in $(jq -r --arg id "$id" '.tasks | to_entries[] | select(.value.item == $id) | .key + 1' "$d/plan.json"); do
+      last="$i"; m="$d/build-task-$i.proved"
+      if [ ! -s "$m" ]; then all=""; continue; fi
+      jq -e --arg f "$test" '((.answer.testFirst.test.file // .answer.testOnly.test.file // "") | ltrimstr("./")) == ($f | ltrimstr("./"))' "$m" >/dev/null 2>&1 && hit=1
+    done
+    pass=false
+    if [ -n "$last" ] && [ -n "$all" ]; then
+      if [ -n "$hit" ]; then pass=true
+      else
+        printf '%s passes only when its steps pass in %s, and no task of it proved that file: prove it in testFirst.test.file\n' "$id" "$test" > "$d/build-task-$last.refused"
+        rm -f "$d/build-task-$last.proved"
+        driver_say "✋ build: $(cat "$d/build-task-$last.refused")"
+      fi
+    fi
+    [ "$pass" = true ] || fails=$((fails+1))
+    feature_list_set_pass "$list" "$id" "$pass" > "$list.tmp" && mv "$list.tmp" "$list"
+  done
+  if [ "$fails" -gt 0 ]; then
+    driver_say "   build: $((total - fails)) of $total feature list item(s) pass"
+    return 1
+  fi
+  driver_say "   build: all $total feature list item(s) pass"
+  [ "$before" = "$(jq -c '[.items[].passes]' "$list")" ] || \
+    swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$list")" >/dev/null 2>&1 || true
+  return 0
 }
 
 # _driver_build_in <n> <list> — 0 when <n> is one of the space-separated <list>.
@@ -858,8 +1191,23 @@ _driver_build_same_proof() {
 
 # True when this was the last try. Five, per the approved design's flowchart: a
 # loop with no ceiling is a run that never parks and never finishes.
+# The park note names each unproved task and its last refusal: the .refused files stay on
+# the building machine, which the PM host may not reach.
 _driver_build_out_of_tries() {
   [ "$2" -ge "$DRIVER_MAX_BUILD_TRIES" ] || return 1
-  driver_say "✋ build: $2 of $DRIVER_MAX_BUILD_TRIES tries used and the tests still do not prove the change. Parking."
+  local d i=0 title why reasons="" line
+  d="$(driver_state_dir "$1")/steps"
+  while [ "$i" -lt "${3:-0}" ]; do
+    i=$((i+1))
+    [ -s "$d/build-task-$i.refused" ] && [ ! -s "$d/build-task-$i.proved" ] || continue
+    title=$(jq -r --argjson i "$((i-1))" '.tasks[$i].title // empty' "$d/plan.json" 2>/dev/null)
+    why=$(tr '\n' ' ' < "$d/build-task-$i.refused" | sed 's/  */ /g; s/ $//')
+    [ "${#why}" -le 300 ] || why="$(printf '%s' "$why" | cut -c1-297)..."
+    reasons="$reasons; task $i (${title:-untitled}): $why"
+  done
+  line="$2 of $DRIVER_MAX_BUILD_TRIES tries used and the tests still do not prove the change"
+  [ -z "$reasons" ] || line="$line. Last refusal per unproved task${reasons#;}"
+  driver_say "✋ build: $line. Parking."
+  driver_state_set "$1" park_note "$line"
   return 0
 }

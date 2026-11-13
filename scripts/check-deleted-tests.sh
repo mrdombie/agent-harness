@@ -10,8 +10,8 @@
 #   catch, so the pull request has to account for it in words a reviewer can check.
 #
 # WHAT IT CHECKS
-#   The diff base..head — TWO dots, read from the two commits, never the working
-#   tree — for:
+#   The diff merge-base..head — what the branch itself changed, read from the two
+#   commits, never the working tree — for:
 #     1. a test file that is DELETED (or renamed to a path that is no longer a
 #        test file), and
 #     2. a test file that stays but LOSES `it(` / `test(` cases. A case turned off
@@ -19,7 +19,9 @@
 #        .only elsewhere in the file) counts as lost: it no longer runs, and a new
 #        case in the same file never stands in for it.
 #   A file git sees as RENAMED is not a deletion; its cases are compared across
-#   the rename, so a move that drops cases on the way is still caught.
+#   the rename, so a move that drops cases on the way is still caught. A rename the
+#   trunk made after the branch was cut reads backwards here (the new name is only
+#   on base): the branch owes nothing for it, only for cases it dropped itself.
 #
 #   It counts cases, not titles. A title that leaves is matched to one the diff
 #   adds — the same words in any test file, else any new case in the same file
@@ -29,11 +31,13 @@
 #   from a file with nothing like it in the file it went to, still fails. Measured on the origin project before this: 74 of 85 files
 #   it flagged kept or grew their case count.
 #
-#   Something only on BASE is not this pull request's deletion. A test the trunk
-#   added after the branch was cut is absent at head too, and two dots alone would
-#   call it deleted; anything absent at the merge-base is excluded. In CI, run on
-#   the pull request's merge commit (head = HEAD, base = HEAD^1) the two are the
-#   same commit and nothing is excluded.
+#   Something only on BASE is not this pull request's change. A test the trunk
+#   added or renamed after the branch was cut is absent at head too, and a diff
+#   from base would call it deleted, or pair it with a file the branch added and
+#   read it at a merge-base that never had it. So the diff runs from the
+#   merge-base, and a file the trunk has deleted since is not the branch's
+#   deletion either. In CI, run on the pull request's merge commit (head = HEAD,
+#   base = HEAD^1) base is the merge-base and the two diffs are the same.
 #
 #   Every file found must have ONE line in a `## Deleted tests` section of the
 #   pull request body:
@@ -89,6 +93,15 @@ H=$(g rev-parse --verify --quiet "$HEAD_REF^{commit}" 2>/dev/null) \
   || refuse "head '$HEAD_REF' does not resolve to a commit"
 # No merge-base fails safe: a test the trunk added since then reads as deleted, a red.
 MB=$(g merge-base "$B" "$H" 2>/dev/null || true)
+FROM="${MB:-$B}"
+# Absent is not unreadable: only a tree git could not read refuses.
+in_tree() { # <commit> <path>
+  local t w=base
+  [ "$1" = "$MB" ] && w="the merge-base"
+  t=$(g ls-tree --full-tree --name-only "$1" -- "$2" 2>/dev/null) \
+    || refuse "could not read the tree at $w $1"
+  [ -n "$t" ]
+}
 
 # ---- the patterns --------------------------------------------------------------
 CFG="${HARNESS_CFG_PATH:-$REPO/.claude/harness.json}"
@@ -153,9 +166,26 @@ cases_at() { # <commit> <path>
       $only ||= $on if substr($code, $p, 1) eq substr($src, $p, 1);
       for my $b (@blk) { next unless $b->[0] < $p && $p < $b->[1]; $off ||= $b->[2]; $on ||= $b->[3] }
       $t =~ s/\s+/ /g; push @case, [$off, $on, $t] }
+    # ESLint RuleTester makes its cases from valid/invalid arrays, so no it( is in the source.
+    if ($code =~ /\bRuleTester\b/) {
+      while ($src =~ /\.run\s*\(\s*(["\x27`])((?:\\.|(?!\1).)*?)\1/gs) {
+        my ($t, $p) = ($2, $-[0]); next if substr($code, $p, 1) ne substr($src, $p, 1); push @case, [0, 0, $t] } }
     for (@case) { my ($off, $on, $t) = @$_; print +($off || ($only && !$on) ? "off" : "run"), "\t$t\n" }'
 }
 runs() { grep -c '^run	'; }
+# 0 there, 1 absent, 2 git could not say. A listed path whose object will not open is not absent.
+has_path() { # <commit> <path>
+  local t
+  g cat-file -e "$1:$2" 2>/dev/null && return 0
+  t=$(g ls-tree --full-tree --name-only "$1" -- "$2" 2>/dev/null) || return 2
+  [ -z "$t" ] && return 1
+  return 2
+}
+# A path absent at a commit has no cases there; only a path git could not read fails.
+cases_if_there() { # <commit> <path>
+  has_path "$1" "$2"
+  case $? in 0) cases_at "$1" "$2" ;; 1) : ;; *) return 1 ;; esac
+}
 # Filler words carry no meaning, so they never count towards "like it" (Dice over word sets).
 WORDS='my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it its by with as at be not no from this that when);
   sub words { my %w = map { $_ => 1 } grep { length && !$stop{$_} } split /[^a-z0-9%]+/, lc shift; \%w }
@@ -178,12 +208,24 @@ WORDS='my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it i
 LOSTF=$(mktemp); GAINF=$(mktemp); OFFF=$(mktemp); DIFFF=$(mktemp)
 trap 'rm -f "$LOSTF" "$GAINF" "$OFFF" "$DIFFF"' EXIT
 CASES_BASE=0; CASES_HEAD=0
-diff_cases() { # <owner> <base-path|""> <head-path|"">  appends owner<TAB>title to LOSTF / GAINF / OFFF
-  local a b m
+# trunk_moved_to <path> — where the trunk renamed that merge-base path to since the cut, or nothing.
+trunk_moved_to() {
+  [ -n "$MB" ] || return 0
+  local out
+  out=$(g -c diff.renameLimit=100000 diff --name-status -M --diff-filter=R "$MB" "$B" 2>/dev/null) || return 1
+  awk -F'\t' -v p="$1" '$2 == p { print $3; exit }' <<<"$out"
+}
+diff_cases() { # <owner> <base-path|""> <head-path|""> [merge-base-path]  appends owner<TAB>title to LOSTF / GAINF / OFFF
+  local a b m mp="${4:-$2}"
   a=$(mktemp); b=$(mktemp); m=$(mktemp)
-  if [ -n "$2" ]; then cases_at "$B" "$2" > "$a" || refuse "could not read $2 at $B"; fi
+  # Gone from base: the trunk deleted it after the cut, so base holds none of its cases.
+  # Moved by the trunk is not deleted: its cases are read where the trunk put them.
+  local bp="$2"
+  if [ -n "$bp" ] && ! in_tree "$B" "$bp"; then bp=$(trunk_moved_to "$bp") || refuse "could not read the trunk's renames $MB..$B"; fi
+  if [ -n "$bp" ]; then cases_at "$B" "$bp" > "$a" || refuse "could not read $bp at $B"; fi
   if [ -n "$3" ]; then cases_at "$H" "$3" > "$b" || refuse "could not read $3 at $H"; fi
-  if [ -n "$2" ] && [ -n "$MB" ]; then cases_at "$MB" "$2" > "$m" || refuse "could not read $2 at $MB"
+  # The trunk may have added the path after the cut: absent at the merge-base is zero cases.
+  if [ -n "$mp" ] && [ -n "$MB" ]; then cases_if_there "$MB" "$mp" > "$m" || refuse "could not read $mp at $MB"
   else cp "$a" "$m"; fi
   CASES_BASE=$((CASES_BASE + $(runs < "$a"))); CASES_HEAD=$((CASES_HEAD + $(runs < "$b")))
   perl -e "$WORDS"'
@@ -215,21 +257,25 @@ diff_cases() { # <owner> <base-path|""> <head-path|"">  appends owner<TAB>title 
   rm -f "$a" "$b" "$m"
 }
 
+# Listed before any file is read from it: a base tree git cannot list is refused here.
+files_at_base=$(g ls-tree -r --name-only "$B" 2>/dev/null) \
+  || refuse "could not list the files at base $B for the control count"
+
 # LABEL: owner <TAB> what happened to the file, for the files that may owe a line.
 LABEL=""; seen_tests=0
 label() { LABEL="${LABEL}$1	$2
 "; }
 # Read to a file, not a process substitution: its exit status is never seen, and a
 # diff git could not make would read as a diff that touches nothing.
-g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=ADMRTC "$B" "$H" > "$DIFFF" 2>/dev/null \
-  || refuse "could not read the diff $B..$H"
+g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=ADMRTC "$FROM" "$H" > "$DIFFF" 2>/dev/null \
+  || refuse "could not read the diff $FROM..$H"
 while IFS= read -r -d '' st; do
   old=""; new=""
   case "$st" in
     R*|C*) IFS= read -r -d '' old && IFS= read -r -d '' new ;;
     A|D|M|T) IFS= read -r -d '' old; new="$old" ;;
   esac
-  [ -n "$old" ] && [ -n "$new" ] || refuse "could not parse the diff $B..$H at the record '$st'"
+  [ -n "$old" ] && [ -n "$new" ] || refuse "could not parse the diff $FROM..$H at the record '$st'"
   if ! is_test "$old"; then
     # A test file that is new at head, under any name, is where moved cases land.
     case "$st" in A|R*|C*) is_test "$new" && { seen_tests=$((seen_tests + 1)); diff_cases "$new" "" "$new"; } ;; esac
@@ -240,15 +286,26 @@ while IFS= read -r -d '' st; do
     A)  diff_cases "$new" "" "$new" ;;
     C*) is_test "$new" && diff_cases "$new" "" "$new" ;;   # a copy leaves the original where it was
     D)
-      # Only on base, never at the merge-base: the trunk added it after the cut.
-      if [ -n "$MB" ]; then
-        inmb=$(g ls-tree --full-tree --name-only "$MB" -- "$old" 2>/dev/null) \
-          || refuse "could not read the tree at the merge-base $MB"
-        [ -n "$inmb" ] || continue
-      fi
+      # Gone from base too: the trunk deleted it as well.
+      in_tree "$B" "$old" || continue
       label "$old" "deleted"; diff_cases "$old" "$old" "" ;;
     R*)
+      # Old path only on base, never at the merge-base: the trunk made the rename after
+      # the cut. The branch still answers for the cases it took out of the head path.
+      inmb=0; if [ -n "$MB" ]; then has_path "$MB" "$old"; inmb=$?; fi
+      [ "$inmb" -le 1 ] || refuse "could not read $old at the merge-base $MB"
+      if [ "$inmb" -eq 1 ]; then
+        is_test "$new" || continue
+        has_path "$MB" "$new"
+        case $? in
+          0) label "$new" ""; diff_cases "$new" "$old" "$new" "$new" ;;
+          1) diff_cases "$new" "" "$new" ;;
+          *) refuse "could not read $new at the merge-base $MB" ;;
+        esac
+        continue
+      fi
       if ! is_test "$new"; then
+        in_tree "$B" "$old" || continue
         label "$old" "renamed to $new, which is not a test file"; diff_cases "$old" "$old" ""
       else
         label "$old" "renamed to $new and"; diff_cases "$old" "$old" "$new"
@@ -326,8 +383,6 @@ EOF
 
 # Control: prove the probe can see test files at all before its silence means
 # anything. A zero from a strictness probe is clean, suppressed, or never ran.
-files_at_base=$(g ls-tree -r --name-only "$B" 2>/dev/null) \
-  || refuse "could not list the files at base $B for the control count"
 tests_at_base=0
 while IFS= read -r p; do is_test "$p" && tests_at_base=$((tests_at_base + 1)); done <<EOF
 $files_at_base

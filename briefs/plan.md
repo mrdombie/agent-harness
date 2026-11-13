@@ -2,7 +2,7 @@
 
 # Step 2 · Plan
 
-You are planning one ticket. You do not build it in this step.
+You are planning one ticket, not building it.
 
 ## Invoke the skill — do not work from this file
 
@@ -26,6 +26,7 @@ person anything; when you need to, return a question and the driver parks it.
 - This project: {{PROJECT_FACTS}}
 - Screen steps the renderer performs: {{SCREEN_STEPS}}
 - In scope, blocking at their grade: {{POLISH_LIST}} {{CRITIC_FINDINGS}}
+- Ticket items: {{TICKET_ITEMS}}
 
 ## The premise verdict is yours
 
@@ -36,8 +37,8 @@ against what the ticket claims is wrong:
 - **already-fixed** — the code no longer does what the ticket describes.
 - **changed-shape** — the area was rewritten and the ticket half applies.
 
-A path marked *moved* is not evidence of anything; read it at the new path. A
-path marked *absent* is a prompt to look, never a verdict on its own.
+A path marked *moved* is evidence of nothing: read it at the new path. One
+marked *absent* is a prompt to look, never a verdict.
 
 ## Plannable is not planned
 
@@ -45,9 +46,9 @@ The ticket reached you because a plan **could** be written from it — one goal,
 checkable outcomes, a way to verify, stated constraints, and on a bug a
 reproduction.
 
-Passing that gate says nothing about whether the decomposition exists. A ticket
-can name no files, no boundaries and no interfaces. Writing them is this step's
-job, and "the ticket is detailed" is not evidence they are there.
+Passing that gate does not mean the decomposition exists: a ticket can name no
+files, boundaries or interfaces. Writing them is this step's job; "the ticket is
+detailed" is no evidence they are there.
 
 No step of this build is skippable because a ticket looks small. Reasoning
 toward an exemption is the signal the step applies.
@@ -69,7 +70,7 @@ toward an exemption is the signal the step applies.
 Treat a ticket as touching a surface whenever it plausibly does: a wrongly-included
 ticket costs a sentence, and a missed one ships a screen with nothing behind it.
 
-Unsure whether it is plannable: return a question.
+Unsure it is plannable: return a question.
 
 ## A visible change names the screen that shows it
 
@@ -78,16 +79,21 @@ Set `screenChange`: `visible` if a user will see the change, else `none`. A
 `setup` steps in the vocabulary above, what a reviewer should see in `shows`),
 and a change touching a screen fills `screenChecklist`.
 
-## Split by behaviour, never by layer
+## One change, worked through by behaviour
 
 A ticket that changes what a person sees or does gets `features`: one behaviour
-per item (`F1`, `F2`…), each with test steps and the test file running them, a
+per item (`F1`, `F2`…), each with test steps and their test file, a
 fast component or logic test, never a browser check. All start failing; the list
-is fixed once written. Every task names its `item`, and two or more items become
-one part each, built side by side. A `foundation` goes first only with its
-reason; only items with `needsFoundation` wait. A mechanical change has no list:
-the recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its
-ticket's test file.
+is then fixed. Every task names its `item`, never a layer. The list builds
+as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
+`foundation` is shared groundwork, with its reason. An `expand-contract`
+foundation needs `cleanup` tasks that remove the old path. A mechanical change has no list: the
+recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its ticket's
+test file.
+
+`outside` is what the plan leaves out: a ticket item by id
+(`{"item": "A3", "why": "…"}`), anything else in words
+(`{"note": "the other folders", "why": "…"}`).
 
 ## Return
 
@@ -136,11 +142,16 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `screenChecklist[].phone` (required): string
 - `features`: list of object
 - `features[].id` (required): string
+- `features[].covers` (required): list of string
 - `features[].behaviour` (required): string
 - `features[].steps` (required): list of string
 - `features[].test` (required): string
 - `features[].passes` (required): false
 - `features[].needsFoundation`: boolean
+- `outside`: list of object
+- `outside[].item`: string
+- `outside[].note`: string
+- `outside[].why` (required): string
 - `foundation`: object
 - `foundation.reason` (required): one of "expand-contract", "refactor", "hidden-backend"
 - `foundation.why` (required): string
@@ -166,8 +177,8 @@ Every task carries the tests it writes **first**, and each test names the
 production change that would make it fail — the fix deleted, not a typo
 introduced.
 
-`schemaChange` is true when a task changes the database schema, and then
-`dataModelSpec` names the reviewed model it changes it to.
+A task changing the database schema sets `schemaChange` and names its
+reviewed model in `dataModelSpec`.
 
 `designSource` says where what you are building was settled. Use
 **approved-picture** whenever a person approved a design before this build — a
@@ -182,6 +193,6 @@ model; `pm`: repo, split, order, acceptance; unsure is `owner`)
 and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 A repo-settings change (ruleset, branch protection, required check, secrets) is
-never a task: put it in `pmAfterMerge` with its exact command, for the PM after merge.
+never a task: put it in `pmAfterMerge` with its exact command.
 
 `skills` lists every skill you invoked; the run log is checked against it.

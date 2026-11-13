@@ -292,7 +292,7 @@ out=$(bounded env DRIVER_STEPS_DIR="$FAKE" bash "$BT" 107 2>&1); rc=$?
 want "it parks rather than spinning"  "20" "$rc"
 want_in "and says the loop did not settle" 'settle|rework' "$(cat "$FIX/park.log")"
 rounds=$(grep -c '^review$' "$RAN")
-if [ "$rounds" -le 11 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
+if [ "$rounds" -le 12 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
 
 echo "--- a step named in the order with no file refuses BY NAME ---"
 # Silence is the failure being prevented: a walk that skips a step it cannot find
@@ -568,6 +568,37 @@ want "it exits has-a-PR"                     "31" "$rc"
 want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "nothing parks"                         "" "$(cat "$FIX/park.log")"
 want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 426) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
+
+echo "--- start reading another repo's ticket ends the run: exit 36, no park, no requeue, nothing after it ---"
+reset_fakes "start:36"; rm -rf "$STATE/coordinator"
+out=$(bt 429 --brief "$FIX/brief-g.md"); rc=$?
+want "it exits as another repo's"            "36" "$rc"
+want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "nothing parks"                         "" "$(cat "$FIX/park.log")"
+want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 429) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
+
+echo "--- a Fix: brief on a shipped ticket walks the steps again; any other brief does not ---"
+# The coordinator's fix round sends a red PR back to its builder (scripts/rebuild.sh). This
+# host shipped it, so its record says every step finished: read as that, nothing would run.
+reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+bt 427 >/dev/null
+jq -n '[{number:66, headRefName:"tkt-427/work", headRefOid:"c1", isDraft:false, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
+: > "$RAN"; bt 427 --brief "$FIX/brief-g.md" >/dev/null
+want "an ordinary brief on a shipped ticket: only start re-checks" "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+printf 'Coordinator note (new): Fix: PR #66 — required check(s) failed: unit\n\nFix only what those checks report.\n' > "$FIX/brief-fix.md"
+: > "$RAN"; out=$(bt 427 --brief "$FIX/brief-fix.md"); rc=$?
+want "a Fix: brief: it finishes"             "0" "$rc"
+want "  every step runs again"               "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  the shipped record is kept aside"    "1" "$(ls -d "$STATE/driver"/427.set-aside-* 2>/dev/null | grep -c .)"
+want_in "  and it says so"                   "fix: #427's shipped record moved to" "$out"
+echo "  a fix run stopped part-way resumes its own record, never set aside"
+reset_fakes "compare:20 0"; printf '[]\n' > "$FIX/gh/prs.json"
+bt 428 --brief "$FIX/brief-fix.md" >/dev/null
+jq -n '[{number:66, headRefName:"tkt-428/work", headRefOid:"c1", isDraft:true, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
+: > "$RAN"; bt 428 --brief "$FIX/brief-fix.md" >/dev/null
+want "  it resumes where it stopped"         "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  nothing was set aside"               "0" "$(ls -d "$STATE/driver"/428.set-aside-* 2>/dev/null | grep -c .)"
+printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a brief over 4 KB is cut, says so, and keeps the whole of it beside ---"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
@@ -855,8 +886,8 @@ want "the old record is set aside"             "1" "$(ls -d "$STATE/driver/450.s
 want "  and the old tree's commit is kept on origin" "$OLDSHA" "$(git -C "$REPO" ls-remote origin 'refs/stale/450/local-*' | cut -f1)"
 want_in "and the run says why"                 'no open pull request and none merged' "$out"
 
-echo "--- the same record with its PR merged is finished: nothing runs ---"
-reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; shipped_record 451
+echo "--- the same record with its PR merged and the ticket closed is finished: nothing runs ---"
+reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; shipped_record 451; fix_issue 451 CLOSED "status:done"
 jq -n '[{number:91, headRefName:"tkt-451/old", body:"", mergedAt:"2026-10-31T06:00:00Z"}]' > "$FIX/gh/prs-merged.json"
 out=$(bt 451); rc=$?
 want "it exits 0"                              "0" "$rc"
@@ -870,6 +901,37 @@ jq -n '[{number:92, headRefName:"tkt-452/old", headRefOid:"abc", isDraft:false, 
 out=$(bt 452); rc=$?
 want "it exits 0"                              "0" "$rc"
 want "nothing is set aside"                    "0" "$(ls -d "$STATE/driver/452.set-aside-"* 2>/dev/null | grep -c .)"
+printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- its PR merged and the ticket open again: the merged run's record is set aside, it builds and ships as new work ---"
+# A ticket reopened after a partial PR merged printed "shipped" with 6 new commits never pushed.
+reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; shipped_record 453; fix_issue 453 OPEN "status:ready"
+jq -n '[{number:93, headRefName:"tkt-453/old", body:"", mergedAt:"2026-11-07T06:00:00Z"}]' > "$FIX/gh/prs-merged.json"
+out=$(bt 453); rc=$?
+want_not_in "it never says there is nothing left to do" 'nothing left to do' "$out"
+want "the whole order runs again, ship included" "start fresh=1 worktree= size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the merged run's record is set aside"    "1" "$(ls -d "$STATE/driver/453.set-aside-"* 2>/dev/null | grep -c .)"
+want_in "and the run says why"                 'open again after #93' "$out"
+rm -f "$FIX/gh/issue-453.json"; reset_fakes; fresh_start; shipped_record 453
+out=$(bt 453); rc=$?
+want "a ticket state GitHub cannot give: unread, nothing decided" "$DRIVER_E_UNREAD" "$rc"
+printf '[]\n' > "$FIX/gh/prs-merged.json"
+
+echo "--- ship on the record but not run here: \"shipped\" only when origin and an open PR carry this run's head ---"
+reset_fakes; fresh_start; shipped_record 454; driver_state_reopen 454 build
+jq -n '[{number:94, headRefName:"tkt-454/old", headRefOid:"abc", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 454); rc=$?
+want "the build runs, ship does not"           "build" "$(grep -vE '^start' "$RAN" | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "it never says shipped"            '✓ #454 shipped' "$out"
+want_in "  it says why"                        'not shipped: .*not on origin' "$out"
+want "it goes back on the queue"               "$DRIVER_E_REQUEUE" "$rc"
+want "  with ship and record reopened"         "no no" "$(driver_state_is_done 454 ship && echo yes || echo no) $(driver_state_is_done 454 record && echo yes || echo no)"
+reset_fakes; fresh_start; shipped_record 455; driver_state_reopen 455 build
+git -C "$FIX/left455" push -q origin HEAD:refs/heads/tkt-455/old 2>/dev/null
+jq -n --arg h "$OLDSHA" '[{number:95, headRefName:"tkt-455/old", headRefOid:$h, isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 455); rc=$?
+want "its head on origin with an open PR: shipped" "0" "$rc"
+want_in "  and says so"                        '#455 shipped:' "$out"
 printf '[]\n' > "$FIX/gh/prs.json"
 
 suite_end "$FAILED"

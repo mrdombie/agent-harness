@@ -72,7 +72,7 @@ want_in "and names it" 'names `redLog`' "$out"
 
 echo "--- a requirement that holds only when built is said in the list ---"
 out=$(bash "$RF" build)
-want_in "a built answer requires changed and changelog" 'when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`' "$out"
+want_in "a built answer requires changed and changelog" 'when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`, `noCode`, `trunkMerge`' "$out"
 want_in "and anything else requires the question" '- otherwise: requires `question`' "$out"
 
 echo "--- --write regenerates what --check refused ---"

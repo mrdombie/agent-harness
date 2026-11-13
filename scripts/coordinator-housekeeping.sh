@@ -22,6 +22,7 @@ LOCK="$COORD_DIR/housekeeping.lock"
 coord_lock "$LOCK" housekeeping || { rm -f "$COORD_DIR/housekeeping.stamp"; say "housekeeping: $COORD_LOCK_WHY — not started again"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 export GH_CALLER=coordinator-housekeeping
+unset GH_ESSENTIAL   # housekeeping's reads wait for the reset; only the tick's go through
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
@@ -163,6 +164,18 @@ if [ -n "$WT_WHY" ]; then
   fi
   [ "$wt_rc" = 0 ] || say "worktree sweep exited $wt_rc"
 fi
+# Runs that ended over swarm.archiveDays ago leave logs/ and runs/ (state-archive.sh), once a
+# day. It only counts until swarm.archiveApply is true: the first move is the operator's call.
+STATE_ARCHIVE="${COORDINATOR_STATE_ARCHIVE:-$SELF_DIR/state-archive.sh}"
+SA_STAMP="$COORD_DIR/state-archive.stamp"
+if [ "$STATE_ARCHIVE" != off ] && [ -z "$(find "$SA_STAMP" -mmin -1440 2>/dev/null)" ]; then
+  touch "$SA_STAMP"
+  sa_args=""
+  [ "${COORDINATOR_STATE_ARCHIVE_APPLY:-$(swarm_opt swarm.archiveApply false)}" = true ] && ! coord_shadow && sa_args=--apply
+  sa_out=$(bash "$STATE_ARCHIVE" $sa_args 2>&1); sa_rc=$?
+  say "${sa_out:-state-archive said nothing}"
+  [ "$sa_rc" = 0 ] || say "state-archive exited $sa_rc"
+fi
 # A rebuild's set-aside bundles: the newest per open ticket, none once it closes. One GitHub
 # read, and only when a bundle exists; while GitHub waits, only the older copies go.
 PRUNE_BUNDLES="${COORDINATOR_PRUNE_BUNDLES:-$SELF_DIR/prune-set-aside-bundles.sh}"
@@ -170,6 +183,13 @@ _pb=""; [ -z "$GH_WAIT" ] || _pb=--offline
 if [ "$PRUNE_BUNDLES" = off ]; then :
 elif coord_shadow; then bash "$PRUNE_BUNDLES" --dry-run $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles (dry) exited $?"
 else bash "$PRUNE_BUNDLES" $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles exited $?"; fi
+
+# Why changes get thrown away: the failed logs rebuild queued, capped a pass, then the classes
+# past their limit told to the PM. No model call; nothing to read when nothing is new.
+FINDING_CLASS="${COORDINATOR_FINDING_CLASS:-$SELF_DIR/finding-class.sh}"
+if [ "$FINDING_CLASS" = off ] || coord_shadow; then :
+elif [ -n "$GH_WAIT" ]; then say "finding classes: $GH_WAIT — next pass"
+else bash "$FINDING_CLASS" pass >> "$COORD_LOG" 2>&1 || say "finding classes exited $?"; fi
 
 # ---- 7. disk -----------------------------------------------------------------
 CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"

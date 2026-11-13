@@ -119,6 +119,38 @@ out=$(driver_step_start 105 2>&1); rc=$?
 want "drafting refuses" "24" "$rc"
 want_in "naming the status it wanted" 'status:ready' "$out"
 
+echo "--- a ticket labelled for another repo is never claimed or cut in this one ---"
+# Three harness tickets were claimed into worktrees of the project's repo, where none of
+# their files exist: the plan and a build task were paid for before the model asked.
+trees_for() { ls -d "$FIX/trees"/*"$1"* 2>/dev/null | grep -c .; }
+calls_before=$(wc -l < "$CLAUDE_LOG" | tr -d ' ')
+fix_issue 9140 OPEN "status:ready,repo:other"
+out=$(driver_step_start 9140 2>&1); rc=$?
+want "it ends the run as another repo's"   "36" "$rc"
+want_in "naming the repo the label names"  'labelled for other, which this repo \(widgets\) does not build' "$out"
+want_in "and that no clone of it is here"  'this host has no clone of it' "$out"
+want "no claim was taken"                  "" "$(awk '$1==9140' "$CLAIMS")"
+want "no worktree is on the record"        "" "$(driver_state_get 9140 worktree)"
+want "no worktree was cut"                 "0" "$(trees_for 9140)"
+want "no branch was made"                  "" "$(git -C "$REPO" for-each-ref --format='%(refname:short)' 'refs/heads/tkt-9140*')"
+# A clone of the label's repo beside this one: its run belongs in that clone, still never here.
+git init -q -b main "$FIX/kit"
+git -C "$FIX/kit" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m root
+git -C "$FIX/kit" remote add origin https://github.com/acme/kit.git
+git -C "$FIX/kit" update-ref refs/remotes/origin/main HEAD
+fix_issue 9141 OPEN "status:ready,repo:acme/kit"
+out=$(driver_step_start 9141 2>&1); rc=$?
+want "with a clone of that repo here it still ends the run here" "36" "$rc"
+want_in "and names the clone its run starts in" "starts in the clone at $FIX/kit" "$out"
+want "no claim was taken"                  "" "$(awk '$1==9141' "$CLAIMS")"
+want "no worktree was cut"                 "0" "$(trees_for 9141)"
+want "and no model was called for either"  "$calls_before" "$(wc -l < "$CLAUDE_LOG" | tr -d ' ')"
+fix_issue 9142 OPEN "status:ready,repo:widgets"
+rc=0; driver_step_start 9142 >/dev/null 2>&1 || rc=$?
+want "a ticket labelled for this repo starts" "0" "$rc"
+want "in a worktree of this repo"          "1" "$(trees_for 9142)"
+bash "$CL" release 9142
+
 echo "--- a peer already holds the claim ---"
 fix_issue 106 OPEN "status:ready"
 claim_row 106 somebody@else tkt-106/theirs "$FIX/theirs"
@@ -385,5 +417,50 @@ rm -f "$BIN/openssl"
 want "a stray dir does not stop start"   "0" "$rc"
 want "the tree is cut at the path"       "tkt-154/ticket-154" "$(git -C "$stray" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 want "the stray dir's file survives"     "keep" "$(cat "$stray".aside-*/keep.txt 2>/dev/null)"
+
+echo "--- a Fix: run continues the open PR its brief names, cut from that PR's head branch ---"
+# The coordinator's fix round (scripts/rebuild.sh) queues the ticket with "Fix: PR #<n>".
+# The PR was built on another host: nothing of it is here but origin's branch.
+# open_pr <ticket> <pr> — a PR on tkt-<ticket>/the-pr, one commit past the trunk, on origin only.
+open_pr() {
+  git -C "$REPO" worktree add -q "$FIX/pr-$1" -b "tkt-$1/the-pr" develop
+  printf 'shipped\n' > "$FIX/pr-$1/shipped.txt"; git -C "$FIX/pr-$1" add shipped.txt; git -C "$FIX/pr-$1" commit -qm "feat(#$1): shipped"
+  PR_HEAD=$(git -C "$FIX/pr-$1" rev-parse HEAD)
+  git -C "$FIX/pr-$1" push -q origin "HEAD:refs/heads/tkt-$1/the-pr"
+  git -C "$REPO" worktree remove --force "$FIX/pr-$1"; git -C "$REPO" branch -q -D "tkt-$1/the-pr"
+  git -C "$REPO" update-ref -d "refs/remotes/origin/tkt-$1/the-pr" 2>/dev/null || true
+  jq -n --argjson n "$2" --arg b "tkt-$1/the-pr" --arg h "$PR_HEAD" \
+    '[{number:$n, headRefName:$b, headRefOid:$h, isDraft:false, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
+}
+# brief_on_record <ticket> <first line> — the run's brief, as build-ticket keeps it before start.
+brief_on_record() {
+  driver_state_init "$1"
+  printf '%s\n\nFix only what those checks report.\n' "$2" > "$(driver_state_dir "$1")/run-brief.md"
+  driver_state_set "$1" run_brief "$(driver_state_dir "$1")/run-brief.md"
+}
+fix_issue 160 OPEN "status:ready"; open_pr 160 88
+brief_on_record 160 'Coordinator note (new): Fix: PR #88 — required check(s) failed: unit'
+rc=0; out=$(driver_step_start 160 2>&1) || rc=$?
+want "it starts"                           "0" "$rc"
+want "the tree is at the PR's head"        "$PR_HEAD" "$(git -C "$(driver_state_get 160 worktree)" rev-parse HEAD 2>/dev/null)"
+want "on the PR's own branch"              "tkt-160/the-pr" "$(git -C "$(driver_state_get 160 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+want "the record names that branch, so ship pushes to the same PR" "tkt-160/the-pr" "$(driver_state_get 160 branch)"
+want "the claim is taken on it"            "tkt-160/the-pr" "$(awk -F'\t' '$1==160 { print $3 }' "$CLAIMS")"
+want_in "and it says so"                   'a fix of open PR #88 — #160 continues on tkt-160/the-pr' "$out"
+echo "  any other run with an open PR still builds nothing"
+fix_issue 161 OPEN "status:ready"; open_pr 161 89
+brief_on_record 161 'Coordinator note (new): The owner answered q2: keep the old copy.'
+rc=0; out=$(driver_step_start 161 2>&1) || rc=$?
+want "  a brief that is no Fix: ends the run as has-a-PR" "31" "$rc"
+want "  no worktree was cut"               "" "$(driver_state_get 161 worktree)"
+want "  no claim was taken"                "" "$(awk '$1==161' "$CLAIMS")"
+fix_issue 162 OPEN "status:ready"; open_pr 162 90
+rc=0; out=$(driver_step_start 162 2>&1) || rc=$?
+want "  no brief at all: has-a-PR"         "31" "$rc"
+brief_on_record 162 'Coordinator note (new): Fix: PR #77 — required check(s) failed: unit'
+rc=0; out=$(driver_step_start 162 2>&1) || rc=$?
+want "  a Fix: of another PR than the open one: has-a-PR" "31" "$rc"
+want "  no worktree was cut"               "" "$(driver_state_get 162 worktree)"
+printf '[]\n' > "$FIX/gh/prs.json"
 
 suite_end "$FAILED"

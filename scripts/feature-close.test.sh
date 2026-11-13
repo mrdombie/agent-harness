@@ -87,6 +87,12 @@ echo "--- no clean-up part: done once every item passes ---"
 parent NOT_PLANNED "$(comment_of "$(list_json | jq -c '.cleanup = null')")"
 want_in "done with no clean-up to wait for"           'done: #900' "$(run 900)"
 
+echo "--- a list that built whole has no parts: left alone, its passes not rewound ---"
+parent OPEN "$(comment_of "$(list_json | jq -c '.items |= map(.part = null) | .cleanup = null')")" "$(comment_of "$(list_json | jq -c '.items |= map(.part = null | .passes = true) | .cleanup = null')")"
+out=$(run 900)
+want_in "it says why"                                 'built whole: #900' "$out"
+want "nothing posted, nothing closed"                 "0" "$(grep -c 'issue comment\|PATCH' "$GH_LOG")"
+
 echo "--- an edited list is refused: the first list stands ---"
 part 902 OPEN
 parent NOT_PLANNED "$(comment_of "$(list_json)")" "$(comment_of "$(list_json | jq -c '.items[1].steps = ["anything"] | .items[1].passes = true')")"

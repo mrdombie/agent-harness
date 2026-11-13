@@ -16,9 +16,24 @@
 # ONLY A CHECK THE TRUNK REQUIRES FILES A TICKET. 201 tickets in 11 days, nearly all for
 # checks that block no merge, each built, then undone by the next merge. A check is required
 # when the trunk's LIVE rules name it (pr_red_required), or coordinator.requiredRuns maps a
-# required check to a glob of names it runs ({"<required check>": ["typecheck", "*.test.ts"]}).
+# required check to a glob of names it runs ({"<required check>": ["typecheck", "*.test.ts"]}),
+# or a required check is red at that commit and one of its failing legs ran it.
 # Any other red adds one line per check to check-class-count.tsv and is ledgered: no ticket,
-# no build. Unreadable rules are unknown: the rows wait for the next pass.
+# no build. Unreadable rules are unknown: the rows wait for the next pass; unreadable check
+# runs or leg logs hold only the checks that needed them.
+#
+# NO HOST PATH LEAVES THIS HOST: each check is named from the repo root before it reaches a
+# title, body, marker, comment or the week's count (develop_red_clean), against the files this
+# checkout or the red's own commit tracks. A path neither tracks is dropped; one whose commit is
+# not in this clone yet waits. The ledger keeps the row's own set, so prune still clears the row.
+#
+# CI ON THE SAME COMMIT IS READ FIRST (develop_red_ci, one check-runs read per sha a pass):
+# when it fails other required checks than the pre-push did, the ticket names CI's and the
+# body says what the pre-push named. CI still running: the row waits. CI unreadable: the row
+# waits and the pass is not done. Still running past coordinator.developRedCiWaitMins (120)
+# after the row was noted: the local set files and the body says CI had not finished. CI
+# green, or failing none the trunk requires, files the local set: a check only the hooks run
+# is never lost.
 #
 # FILED ONCE, the follow-up.sh way: a ledger on this host (develop-red-filed.tsv) and a
 # marker in the body, searched on the forge, so another builder, a resumed tick or another
@@ -63,10 +78,11 @@ PROC=$(toolkit_cfg coordinator.processLabel 2>/dev/null); PROC="${PROC:-process}
 rows() {
   awk -F'\t' 'NF >= 2 && $1 != "" && $2 != "" {
     k = $1 "\t" $2
-    if (!(k in seen)) { seen[k] = 1; order[++n] = k; who[k] = ""; prs[k] = "" }
+    if (!(k in seen)) { seen[k] = 1; order[++n] = k; who[k] = ""; prs[k] = ""; at[k] = "-" }
+    if ($5 ~ /^[0-9]+$/ && (at[k] == "-" || $5 + 0 < at[k] + 0)) at[k] = $5
     if ($3 != "" && index("," who[k] ",", "," "#" $3 ",") == 0) who[k] = who[k] (who[k] == "" ? "" : ",") "#" $3
     if ($4 != "" && index("," prs[k] ",", "," "#" $4 ",") == 0) prs[k] = prs[k] (prs[k] == "" ? "" : ",") "#" $4
-  } END { for (i = 1; i <= n; i++) print order[i] "\t" who[order[i]] "\t" prs[order[i]] }' "$PENDING"
+  } END { for (i = 1; i <= n; i++) print order[i] "\t" at[order[i]] "\t" who[order[i]] "\t" prs[order[i]] }' "$PENDING"
 }
 ledgered() { awk -F'\t' -v s="$1" -v c="$2" '$1 == s && $2 == c { print $3; exit }' "$LEDGER" 2>/dev/null; }
 ledger() { [ -n "$DRY" ] || printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$LEDGER"; }
@@ -81,7 +97,7 @@ prune() {
 }
 
 prune
-TODO=$(rows | while IFS=$'\t' read -r sha checks who prs; do [ -n "$(ledgered "$sha" "$checks")" ] || printf '%s\t%s\t%s\t%s\n' "$sha" "$checks" "$who" "$prs"; done)
+TODO=$(rows | while IFS=$'\t' read -r sha checks at who prs; do [ -n "$(ledgered "$sha" "$checks")" ] || printf '%s\t%s\t%s\t%s\t%s\n' "$sha" "$checks" "$at" "$who" "$prs"; done)
 [ -n "$TODO" ] || exit 0
 pending_n=$(printf '%s\n' "$TODO" | grep -c .)
 
@@ -94,26 +110,118 @@ if ! REQ=$(pr_red_required "$TRUNK"); then
 fi
 RUN_GLOBS=$(jq -r --argjson req "$REQ" '(.coordinator.requiredRuns // {}) | if type == "object" then to_entries[] else empty end
   | select((.key | ascii_downcase) as $k | any($req[]; . == $k)) | .value | if type == "array" then .[] else . end | strings' "$HARNESS_CFG" 2>/dev/null)
-required_check() { # <check name>
-  local lc g
-  lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+# red_leg_runs <sha> — LEG_CMDS: every command a failing leg of a red required check ran at
+# <sha>, one a line, every line of a multi-line run step; read once a commit. 1 when the
+# check runs or a log could not be read.
+LEG_SHA=""; LEG_CMDS=""; LEG_BAD=""
+red_leg_runs() {
+  [ "$LEG_SHA" = "$1" ] && return 0
+  [ "$LEG_BAD" = "$1" ] && return 1
+  LEG_BAD="$1"
+  local runs ids id log cmds=""
+  runs=$(SWARM_GH="$GH" gh_read "the checks on $1" api -X GET --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100&filter=latest" 2>/dev/null) || return 1
+  ids=$(jq -rs --argjson req "$REQ" '[.[].check_runs[]? | select(.conclusion == "failure")] as $f
+    | [$f[] | select((.name // "" | ascii_downcase) as $n | any($req[]; . == $n))] as $s
+    | [$f[] | . as $x | select(any($s[]; .check_suite.id == $x.check_suite.id and .id != $x.id)) | .id] | unique[]' <<<"$runs" 2>/dev/null) || return 1
+  for id in $ids; do
+    # The logs answer a 302 to the blob; gh api follows it.
+    log=$(SWARM_GH="$GH" gh_read "the log of job $id" api -X GET "repos/$REPO_SLUG/actions/jobs/$id/logs" 2>/dev/null) || return 1
+    cmds="$cmds$(printf '%s\n' "$log" | awk '{ sub(/\r$/, ""); sub(/^[0-9][0-9T:.Z-]* /, "") }
+      /^##\[group\]Run / { g = 1; print substr($0, 14); next }
+      g && (/^##\[endgroup\]/ || /^shell: /) { g = 0; next }
+      g { print }')"$'\n'
+  done
+  LEG_SHA="$1"; LEG_CMDS="$cmds"; LEG_BAD=""
+}
+required_leg_check() { # <sha> <check> — 0 when <check> is one word of a command a red leg ran, 2 unknown
+  local cmd w
+  local -a words
+  red_leg_runs "$1" || return 2
+  while IFS= read -r cmd; do
+    read -ra words <<<"$cmd"
+    [ "${#words[@]}" -gt 0 ] || continue
+    for w in "${words[@]}"; do [ "$w" = "$2" ] && return 0; done
+  done <<<"$LEG_CMDS"
+  return 1
+}
+required_check() { # <sha> <check name> — 0 required, 1 not, 2 unknown
+  local sha="$1" c="$2" lc g
+  lc=$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')
   jq -e --arg n "$lc" 'any(.[]; . == $n)' >/dev/null 2>&1 <<<"$REQ" && return 0
   while IFS= read -r g; do
     # shellcheck disable=SC2254  # the glob is the point
-    [ -n "$g" ] && case "$1" in $g) return 0 ;; esac
+    [ -n "$g" ] && case "$c" in $g) return 0 ;; esac
   done <<<"$RUN_GLOBS"
-  return 1
+  required_leg_check "$sha" "$c"
+}
+# develop_red_clean <check> <sha> — the name a ticket may carry. A path is named from the repo
+# root: a builder's worktree path becomes the file it ends with (the longest) that this checkout
+# or the red's own commit tracks. One no tracked file ends with is unplaceable when it looks like
+# a path (a leading '/' or a file's extension last): status 1, never sent, or 3 when that commit
+# is not in this clone yet, so the row waits. Any other name, 'lint/web' too, is the check's.
+TRACKED=""; TRACKED_HEAD=""; TRACKED_SHA="-"; SHA_HERE=""
+develop_red_clean() {
+  case "$1" in */*) ;; *) printf '%s' "$1"; return 0 ;; esac
+  [ -n "$TRACKED_HEAD" ] || { TRACKED_HEAD=$(git -C "${REPO_ROOT:-.}" ls-files 2>/dev/null) && TRACKED_HEAD="$TRACKED_HEAD"$'\n' || return 2; }
+  if [ "$TRACKED_SHA" != "${2:-}" ]; then
+    TRACKED_SHA="${2:-}"; TRACKED="$TRACKED_HEAD"; SHA_HERE=""
+    if [ -n "$TRACKED_SHA" ] && git -C "${REPO_ROOT:-.}" cat-file -e "$TRACKED_SHA^{commit}" 2>/dev/null; then
+      SHA_HERE=1; TRACKED="$TRACKED$(git -C "${REPO_ROOT:-.}" ls-tree -r --name-only "$TRACKED_SHA" 2>/dev/null)" || return 2
+    fi
+  fi
+  local p="${1#/}"
+  while :; do
+    p="${p#./}"
+    grep -qFx -- "$p" <<<"$TRACKED" && { printf '%s' "$p"; return 0; }
+    case "$p" in */*) p="${p#*/}" ;; *) break ;; esac
+  done
+  local miss=1; [ -n "$SHA_HERE" ] || miss=3
+  case "$1" in /*) return "$miss" ;; esac
+  [[ "${1##*/}" =~ \.[A-Za-z][A-Za-z0-9]{0,5}$ ]] && return "$miss"
+  printf '%s' "$1"
+}
+# develop_red_ci <sha> — "pending" while any run is unfinished, else "done<TAB><failed names,>".
+# Status 1 when CI's runs could not be read.
+develop_red_ci() {
+  SWARM_GH="$GH" gh_read "CI's checks on $TRUNK@${1:0:7}" api "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100&filter=latest" \
+    -q 'if (.check_runs | type) != "array" then error("no check runs") elif any(.check_runs[]; .status != "completed") then "pending"
+        else "done\t" + ([.check_runs[] | select(.conclusion as $c | ["failure", "timed_out", "startup_failure", "action_required"] | index($c)) | .name
+          | select(test(",") | not)] | unique | join(",")) end'
 }
 WEEK=$(date -u +%G-W%V)
-KEEP=""
-while IFS=$'\t' read -r sha checks who prs; do
+# A check whose commit's check runs or leg logs cannot be read is unknown. A row with a
+# required check files under those and drops the unknown ones; a row with none waits in
+# develop-red.tsv, uncounted and unledgered. Every other row goes on.
+SORTED=""; UNREAD=""; CI_FAILED=0
+CI_WAIT_MINS=$(toolkit_cfg coordinator.developRedCiWaitMins 2>/dev/null); [[ "$CI_WAIT_MINS" =~ ^[0-9]+$ ]] || CI_WAIT_MINS=120
+while IFS=$'\t' read -r sha checks at who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
-  s7=$(printf '%s' "$sha" | cut -c1-7); req=""; other=""
+  req=""; other=""; unk=""
+  s7=$(printf '%s' "$sha" | cut -c1-7)
   IFS=, read -ra names <<<"$checks"
   for c in "${names[@]}"; do
     [ -n "$c" ] || continue
-    if required_check "$c"; then req="$req${req:+,}$c"; else other="$other${other:+,}$c"; fi
+    crc=0; c=$(develop_red_clean "$c" "$sha") || crc=$?
+    if [ "$crc" = 2 ]; then
+      echo "unknown — the files $REPO_ROOT tracks could not be read — $pending_n row(s) not filed this pass"; exit 1
+    fi
+    if [ "$crc" = 3 ]; then echo "the $TRUNK red at $s7 names a path, and $s7 is not in this clone yet: the row waits"; continue 2; fi
+    if [ "$crc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
+    case ",$req,$other," in *",$c,"*) continue ;; esac
+    required_check "$sha" "$c"; rc=$?
+    case $rc in 0) req="$req${req:+,}$c" ;; 1) other="$other${other:+,}$c" ;; *) unk="$unk${unk:+,}$c" ;; esac
   done
+  if [ -n "$unk" ]; then
+    [ -n "$req" ] || { UNREAD="$UNREAD$sha"$'\n'; continue; }
+    echo "unknown — the legs that ran ${unk//,/, } at $s7 could not be read — filed under ${req//,/, } only"
+  fi
+  SORTED="$SORTED$sha"$'\t'"$checks"$'\t'"${req:--}"$'\t'"${other:--}"$'\t'"${at:--}"$'\t'"${who:--}"$'\t'"${prs:--}"$'\n'
+done <<<"$TODO"
+KEEP=""
+while IFS=$'\t' read -r sha checks req other at who prs; do
+  [ -n "$sha" ] || continue
+  [ "$req" = - ] && req=""; [ "$other" = - ] && other=""; [ "$who" = - ] && who=""; [ "$prs" = - ] && prs=""
+  s7=$(printf '%s' "$sha" | cut -c1-7)
   if [ -n "$other" ]; then
     if [ -n "$DRY" ]; then echo "would count ${other//,/, } at $s7 for $WEEK: not required on $TRUNK, no ticket"
     else
@@ -126,10 +234,42 @@ while IFS=$'\t' read -r sha checks who prs; do
     fi
   fi
   if [ -z "$req" ]; then ledger "$sha" "$checks" "-"; continue; fi
-  KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
-done <<<"$TODO"
+  if ! ci=$(develop_red_ci "$sha" 2>"${TMPDIR:-/tmp}/develop-red-ci.$$"); then
+    echo "$(grep -m1 . "${TMPDIR:-/tmp}/develop-red-ci.$$" || echo "unknown — CI's checks on $TRUNK@$s7 could not be read") — the $TRUNK red at $s7 is not filed this pass"
+    rm -f "${TMPDIR:-/tmp}/develop-red-ci.$$"; CI_FAILED=1; continue
+  fi
+  rm -f "${TMPDIR:-/tmp}/develop-red-ci.$$"
+  waited="-"
+  if [ "$ci" = pending ]; then
+    # A run stuck queued would hold a real red unfiled for ever: past the wait, the local set files.
+    if [[ "$at" =~ ^[0-9]+$ ]] && [ $(( ($(date +%s) - at) / 60 )) -ge "$CI_WAIT_MINS" ]; then
+      waited=$(( ($(date +%s) - at) / 60 )); ci="done"$'\t'
+      echo "CI has not finished on $TRUNK@$s7 after $waited min: the red on ${req//,/, } is filed from the pre-push"
+    else
+      echo "CI is still running on $TRUNK@$s7: the red on ${req//,/, } waits for it"; continue
+    fi
+  fi
+  local_set="-"; ci_req=""
+  cunk=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    required_check "$sha" "$c"; crc=$?
+    case $crc in 0) ci_req="$ci_req${ci_req:+,}$c" ;; 1) ;; *) cunk=1 ;; esac
+  done <<<"$(printf '%s' "${ci#done$'\t'}" | tr , '\n')"
+  if [ -n "$cunk" ] && [ -z "$ci_req" ]; then
+    echo "unknown — the checks on $TRUNK@$s7 could not be read — the $TRUNK red at $s7 is not filed this pass"; CI_FAILED=1; continue
+  fi
+  if [ -n "$ci_req" ] && [ "$ci_req" != "$(printf '%s\n' "${req//,/$'\n'}" | LC_ALL=C sort -u | paste -sd, -)" ]; then
+    local_set="$req"; req="$ci_req"
+  fi
+  KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$local_set"$'\t'"$waited"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
+done <<<"$SORTED"
+unread=0
+for sha in $(printf '%s' "$UNREAD" | awk '!s[$0]++'); do
+  echo "unknown — the checks on $(printf '%s' "$sha" | cut -c1-7) could not be read — $(printf '%s' "$UNREAD" | grep -c "^$sha") row(s) at it not filed this pass"; unread=1
+done
 TODO="$KEEP"
-[ -n "$TODO" ] || { prune; exit 0; }
+[ -n "$TODO" ] || { prune; exit $(( CI_FAILED || unread )); }
 pending_n=$(printf '%s' "$TODO" | grep -c .)
 if until=$(gh_backoff_search_active); then
   echo "GitHub's search limit is spent until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null) — the $pending_n pending $TRUNK red row(s) wait for a pass after it; nothing searched"
@@ -156,30 +296,42 @@ if [ -z "$OPEN_N" ] && ! MARKERS=$(SWARM_GH="$GH" gh_read "which $TRUNK reds wer
   echo "$(grep -m1 . "$E" || echo "unknown — which $TRUNK reds were filed could not be read") — $pending_n row(s) not filed this pass"; exit 1
 fi
 
-failed=0
-while IFS=$'\t' read -r sha checks own who prs; do
+failed=$unread
+while IFS=$'\t' read -r sha checks local_set waited own who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
   s7=$(printf '%s' "$sha" | cut -c1-7)
+  # A marker's set carries no space: the search scans up to the first one.
+  mkey=${checks// /_}
   if [ -n "$OPEN_N" ]; then
     case "$OPEN_SETS" in
-      *" $checks "*) ledger "$sha" "$own" "$OPEN_N"; echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's, already filed"; continue ;;
+      *" $mkey "*) ledger "$sha" "$own" "$OPEN_N"; echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's, already filed"; continue ;;
     esac
     if [ -n "$DRY" ]; then echo "would add the $TRUNK red on ${checks//,/, } at $s7 to the open #$OPEN_N"; continue; fi
-    "$GH" api "repos/$REPO_SLUG/issues/$OPEN_N/comments" -X POST \
+    "$GH" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$OPEN_N/comments" -X POST \
       -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }.${who:+ Builders that hit it: ${who//,/, }.} This ticket covers it; no second one is filed." >/dev/null 2>&1 \
       || { echo "the $TRUNK red on ${checks//,/, } at $s7 could not be added to #$OPEN_N"; failed=1; continue; }
-    ledger "$sha" "$own" "$OPEN_N"; OPEN_SETS="$OPEN_SETS$checks "
+    ledger "$sha" "$own" "$OPEN_N"; OPEN_SETS="$OPEN_SETS$mkey "
     echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's: added there as a comment"; continue
   fi
-  found=$(printf '%s\n' "$MARKERS" | awk -F'\t' -v c="$checks" -v s="$s7" '$2 == c && $3 == s { print $1; exit }')
+  found=$(printf '%s\n' "$MARKERS" | awk -F'\t' -v c="$mkey" -v s="$s7" '$2 == c && $3 == s { print $1; exit }')
   if [ -n "$found" ]; then
     ledger "$sha" "$own" "$found"
     echo "the $TRUNK red on ${checks//,/, } at $s7 is #$found's, already filed"; continue
   fi
   title="$TRUNK is red: ${checks//,/, } ($TRUNK@$s7)"
   if [ -n "$DRY" ]; then echo "would file \"$title\" ($PRI, $PROC), ready and first in the queue"; continue; fi
-  marker="<!-- develop-red: checks=$checks sha=$s7 -->"
+  marker="<!-- develop-red: checks=$mkey sha=$s7 -->"
   cmds=$(printf '%s\n' "${checks//,/$'\n'}" | sed 's/^/- `/; s/$/`/')
+  if [ "$local_set" != - ]; then
+    cmds="$cmds
+
+CI on this commit fails the check(s) above; the pre-push named \`${local_set//,/\`, \`}\`."
+  fi
+  if [ "$waited" != - ]; then
+    cmds="$cmds
+
+CI had not finished on this commit after $waited min, so these are the pre-push's checks."
+  fi
   # No builder on the row: the coordinator's sweep of the hooks' checks found it first.
   if [ -n "$who" ]; then
     body="The pre-push check(s) below fail on $TRUNK itself, at \`$sha\`, the commit the branch(es) of ${who//,/, } merged. Each was run on that commit by itself and failed there, so every branch built on it was refused the same way. Those pushes went out as base-red, and nobody parked. This ticket is the one fix: make these checks green on $TRUNK.
@@ -198,14 +350,14 @@ No builder has hit it yet.
 
 $marker"
   fi
-  if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST -f title="$title" -f body="$body" \
+  if ! n=$("$GH" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues" -X POST -f title="$title" -f body="$body" \
              -f "labels[]=$PRI" -f "labels[]=$PROC" -q .number 2>/dev/null) || [ -z "$n" ]; then
     echo "the $TRUNK red on ${checks//,/, } at $s7 could not be filed"; failed=1; continue
   fi
   ledger "$sha" "$own" "$n"
   # Filed this pass, it is the open ticket for every row after this one: the search index
   # would not show it yet.
-  OPEN_N=$n; OPEN_SETS=" $checks "
+  OPEN_N=$n; OPEN_SETS=" $mkey "
   issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "#$n is filed but could not be marked ${LBL_READY}"; failed=1; }
   if [ "${DEVELOP_RED_QUEUE:-on}" != off ]; then
     bash "${DEVELOP_RED_QUEUE_CMD:-$SELF_DIR/coordinator-queue.sh}" add "$n" --front --note "$TRUNK is red: $checks at $s7" >/dev/null 2>&1 \
@@ -214,4 +366,5 @@ $marker"
   echo "filed #$n ($PRI, $PROC): $title — ready and at the front of the queue"
 done <<<"$TODO"
 prune
+[ "$CI_FAILED" = 0 ] || failed=1
 exit "$failed"

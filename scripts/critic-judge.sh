@@ -258,7 +258,7 @@ pictures_for() {
   list=$(jq -r '.[]? | select(.status != "removed") | .filename' <<<"$list" | pictures_only) || return 1
   if [ -n "$t" ]; then
     # Unreadable comments are unknown, not "no designRef": the picture they name would go unjudged.
-    ref=$(gh_read "#$t's comments" api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate) || return 1
+    ref=$(gh_read "#$t's comments" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$t/comments?per_page=100" --paginate) || return 1
     ref=$(jq -rs '[.[][] | select(.body | startswith("**Plan**"))] | last | .body // ""' <<<"$ref" \
             | awk '/^```json/{f=1; next} /^```/{f=0} f' | jq -r '.designRef // empty' 2>/dev/null)
     case "$ref" in *.html) : ;; *) ref="" ;; esac
@@ -392,7 +392,7 @@ run() { # <pr>
     popt=(--derive)
     while IFS= read -r f; do [ -n "$f" ] && popt+=(--route "$f"); done <<<"$routes"
     if [ -n "$t" ]; then
-      gh_read "#$t's comments" api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate > "$W/ticket-comments.json" \
+      gh_read "#$t's comments" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$t/comments?per_page=100" --paginate > "$W/ticket-comments.json" \
         || { say "PR #$pr: unknown — #$t's comments could not be read; not judged this pass"; note_try "$pr" "$head"; rm -rf "$W"; return 2; }
     fi
     # Each picture is linted on its own approval date: real data is owed from REAL_DATA_FROM.

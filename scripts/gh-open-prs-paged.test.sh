@@ -51,14 +51,15 @@ jq -n '[range(0; 81) as $i | {
 F=number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt,autoMergeRequest
 open_prs() { bash -c '. "$1/gh-batch.sh" || exit 9; gh_open_prs 0' _ "$HERE"; }
 
-echo "--- 81 open PRs, and GitHub times out past 25 a request ---"
-export FAKE_GH_PRS_MAX=25
+echo "--- 81 open PRs, and GitHub times out past 50 a request ---"
+export FAKE_GH_PRS_MAX=50
 : > "$FIX/gh.log"
 out=$(open_prs); rc=$?
 want "the read succeeds"                         "0" "$rc"
 want "every open PR comes back"                  "81" "$(jq 'length' <<<"$out" 2>/dev/null)"
 want "newest first, none twice"                 "$(jq -c '[.[].number]' "$FIX/prs.json")" "$(jq -c '[.[].number]' <<<"$out" 2>/dev/null)"
-want "no request asked for more than 25"         "" "$(grep -oE 'first=[0-9]+' "$FIX/gh.log" | awk -F= '$2 > 25')"
+want "no request asked for more than 50"         "" "$(grep -oE 'first=[0-9]+' "$FIX/gh.log" | awk -F= '$2 > 50')"
+want "two requests carry all 81"                 "2" "$(grep -c OpenPullRequests "$FIX/gh.log")"
 want "in the shape gh pr list prints, field for field" "true" \
   "$(bash -c '. "$1/gh-batch.sh"; gh_prs_paged "$2"' _ "$HERE" "$F" | jq --slurpfile want "$FIX/prs.json" '. == $want[0]' 2>/dev/null)"
 want "the shared copy holds it too"              "81" "$(jq 'length' "$FIX/state/prs.json" 2>/dev/null)"
@@ -80,7 +81,7 @@ export FAKE_GH_PRS_MAX=20
 out=$(open_prs); rc=$?
 want "the read still succeeds"                  "0" "$rc"
 want "with every open PR"                        "81" "$(jq 'length' <<<"$out" 2>/dev/null)"
-want "after one 504 at 25, the rest at 12"       "25 12" "$(grep -oE 'first=[0-9]+' "$FIX/gh.log" | cut -d= -f2 | sort -rnu | tr '\n' ' ' | sed 's/ $//')"
+want "after a 504 at 50 and one at 25, the rest at 12" "50 25 12" "$(grep -oE 'first=[0-9]+' "$FIX/gh.log" | cut -d= -f2 | sort -rnu | tr '\n' ' ' | sed 's/ $//')"
 
 echo "--- any page failing fails the whole read: never a partial list ---"
 export FAKE_GH_PRS_MAX=25 FAKE_GH_FAIL_AFTER=50

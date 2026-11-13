@@ -67,7 +67,10 @@ EVERY="${CI_EVIDENCE_EVERY:-30}"
 
 die() { echo "ci-evidence: $*" >&2; exit 2; }
 ERRF=$(mktemp "${TMPDIR:-/tmp}/ci-evidence-err-XXXXXX"); trap 'rm -f "$ERRF"' EXIT
-ghr() { gh "$@" ${REPO:+--repo "$REPO"}; }
+# Through gh_call: `wait` asks once every $EVERY seconds for as long as CI runs, and a
+# call outside the wrapper is neither counted nor held when the allowance runs low.
+export GH_CALLER="${GH_CALLER:-ci-evidence}"
+ghr() { gh_call "$@" ${REPO:+--repo "$REPO"}; }
 declare -F gh_read >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || die "scripts/gh-batch.sh could not be read"
 
 # The block CI wrote, and nothing outside it: a hand-pinned link elsewhere in the
@@ -197,7 +200,7 @@ carry_remote() { # <base-sha> <head-sha> → 0 when every commit between is a ca
     and ([.commits[] | select((.parents | length) != 1)] | length == 0)
     and ([.files[]?.filename | select(startswith($d) | not)] | length == 0)' >/dev/null
 }
-ghr_api() { local p="$1"; shift; p="${p//\{repo\}/${REPO:-\{owner\}/\{repo\}}}"; gh api "$p" "$@"; }
+ghr_api() { local p="$1"; shift; p="${p//\{repo\}/${REPO:-\{owner\}/\{repo\}}}"; gh_call api "$p" "$@"; }
 
 # moved <pr> <from> <head> — 0 (and the files, one a line) when a change between the two
 # touches what this PR's own screens render: one of its screen files, or a file one of

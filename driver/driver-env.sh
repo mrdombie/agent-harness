@@ -83,9 +83,10 @@ DRIVER_PM_LABEL="${DRIVER_PM_LABEL:-${LBL_PM_DECISION:-status:pm-decision}}"
 # driver_own_install <tree> — the tree's own install, never a link to a shared one
 # (scripts/builder-install.sh says how: a copy-on-write clone of the stored install for
 # its lockfile, else an install). Its narration goes to stderr: callers sit inside
-# command substitutions. 0 installed, or nothing to install · 1 it failed.
+# command substitutions. --fresh installs and never clones the store. 0 installed, or
+# nothing to install · 1 it failed.
 driver_own_install() {
-  bash "$KIT_ROOT/scripts/builder-install.sh" "$1" >&2
+  bash "$KIT_ROOT/scripts/builder-install.sh" "$@" >&2
 }
 
 # driver_refresh_install <tree> — machine setup before anything reads the tree's install:
@@ -138,6 +139,7 @@ DRIVER_E_REWORK=30
 DRIVER_E_HAS_PR=31    # start found an open PR this run did not build: nothing is built beside it, no park (34 is retired)
 DRIVER_E_NOOP=32      # a step found nothing owed (a ticket split before it built): the run ends clean, exit 0
 DRIVER_E_MACHINE=33   # a model call failed with an API error, twice: the machine, never a question
+DRIVER_E_ELSEWHERE=36 # start read a repo:<name> label for a repo this project does not build: nothing is claimed or cut here, no park
 DRIVER_E_UPSIZE=35   # the quick change is bigger than its size: the run goes on along the full route, from plan
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
@@ -145,13 +147,20 @@ DRIVER_E_UPSIZE=35   # the quick change is bigger than its size: the run goes on
 # A shared backoff ending within DRIVER_BACKOFF_WAIT_MAX_SEC (120) is slept out and
 # costs no try, up to DRIVER_BACKOFF_WAITS (5) times: three 5-second tries inside a
 # 60-second backoff all fail at once, and that ended 36 of 124 builds at start.
+# A read held for the hourly allowance (gh_call's GH_WAIT with the budget low) is
+# waited out the same way, to the reset, up to DRIVER_BUDGET_WAITS (8) sleeps of
+# GH_BUDGET_WAIT_MAX_SEC: a spent allowance is never "no pull request" and never a park.
 driver_gh_read() {
-  local n=0 waits=0 out
+  local n=0 waits=0 bwaits=0 out rc
   while :; do
-    if out=$("$@"); then printf '%s' "$out"; return 0; fi
+    out=$("$@"); rc=$?
+    if [ "$rc" -eq 0 ]; then printf '%s' "$out"; return 0; fi
     if [ "$waits" -lt "${DRIVER_BACKOFF_WAITS:-5}" ] && gh_backoff_active >/dev/null \
        && gh_backoff_wait "${DRIVER_BACKOFF_WAIT_MAX_SEC:-120}"; then
       waits=$((waits+1)); continue
+    fi
+    if [ "$rc" -eq "${GH_WAIT:-75}" ] && [ "$bwaits" -lt "${DRIVER_BUDGET_WAITS:-8}" ] && gh_budget_wait; then
+      bwaits=$((bwaits+1)); continue
     fi
     n=$((n+1))
     [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1
@@ -335,9 +344,23 @@ driver_bounded() { # <seconds> <command>
 # pins. A launcher exports HARNESS_CFG_PATH so the kit reads the right config; a
 # project test that builds its own fixture config reads that same variable first and
 # fails on a change that is fine.
+#
+# AND WITHOUT THE BUILD RUN'S OWN STATE. The driver exports where its run lives (RUNS_DIR,
+# SWARM_DIR, SWARM_LOGS, DRIVER_DIR, STATE_DIR, KIT_ROOT, the repo and its labels) for its
+# own scripts. A project whose tests run those same scripts read every one of them: a suite
+# of this kit, proved in a clone, walked the build machine's 5,274 run records on each tick
+# it started and did not finish in an hour (245 s by itself), and ran the installed kit's
+# code where it meant the tree's. So the command's environment carries none of it: the
+# names below, and every COORDINATOR_*, COORD_*, SWARM_*, DRIVER_*, CLAIM_*, LBL_* and
+# GIT_* variable, are taken out of what the command inherits. The driver's own shell keeps
+# them; what a person exported for the project (a token, a PATH) is left alone.
+DRIVER_PROJECT_ENV_DROP="STATE_DIR KIT_ROOT REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL RUNS_DIR QUEUE REPO_SLUG ISSUE_SLUG ISSUE_REF INTEGRATION_BRANCH BRANCH_PREFIX DESIGN_KIT STATUS_PREFIX HOLD_LABEL DECISION_LABELS FINDING_CLASS PR_RED_REQ_FILE"
 driver_run_project() { # <seconds> <command>
   (
     for _v in $(env | sed -n 's/^\(HARNESS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
+    for _v in $DRIVER_PROJECT_ENV_DROP $(env | sed -n -E 's/^((COORDINATOR|COORD|SWARM|DRIVER|CLAIM|LBL|GIT)_[A-Za-z0-9_]*)=.*/\1/p'); do
+      export -n "$_v" 2>/dev/null || true
+    done
     unset _v
     driver_bounded "$@"
   )
@@ -526,6 +549,12 @@ driver_push() {
   [ -z "${DRIVER_PUSH_LEASE_SHA:-}" ] || [ "${DRIVER_PUSH_LEASE_BRANCH:-}" != "$branch" ] \
     || lease=("--force-with-lease=$branch:$DRIVER_PUSH_LEASE_SHA")
   "${penv[@]}" git -C "$wt" push -u ${lease[@]+"${lease[@]}"} origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
+  # GitHub's bare "(failed)" and its internal rules error name no reason and clear on their own: the next push of the same head went through.
+  if [ "$rc" -ne 0 ] && grep -qE '\[remote rejected\].*\(failed\)[[:space:]]*$|fatal error in commit_refs_rules' "$f" 2>/dev/null; then
+    driver_say "   $slot: GitHub refused the push with no reason; trying once more"
+    sleep "${DRIVER_PUSH_RETRY_SECS:-10}"; rc=0
+    "${penv[@]}" git -C "$wt" push -u ${lease[@]+"${lease[@]}"} origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
+  fi
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
   [ "$rc" -ne 0 ] || driver_state_set "$t" pushed_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
@@ -824,6 +853,48 @@ EOS
   return 0
 }
 
+# driver_commit_scratch <ticket> <tree> <who> — where THE PROJECT'S HISTORY keeps a
+# scratch path, the sweep leaves it alone, so a document a step's tooling left there
+# is committed BY NAME as that step ends and the tree is clean before the next one.
+#
+# NEW, STAGED OR EDITED, all three. A step's own `git add` and commit can be refused
+# by the project's commit hook, which leaves the document staged: no longer
+# untracked, and still not committed. Reading untracked files only missed it, and
+# the finished build stopped at ship's clean-tree check.
+#
+# NOTHING ELSE IS TOUCHED: no file outside a scratch path, and no deletion. Those
+# are still ship's to refuse.
+driver_commit_scratch() { # <ticket> <tree> <who>
+  local t="${1:-}" tree="${2:-}" who="${3:-step}" p f list mh sflag
+  [ -n "$tree" ] && [ -d "$tree" ] || return 0
+  # A merge in progress takes no partial commit.
+  mh=$(git -C "$tree" rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 0
+  case "$mh" in /*) : ;; *) mh="$tree/$mh" ;; esac
+  [ ! -f "$mh" ] || return 0
+  sflag=$(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$tree" 2>/dev/null)
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -n "$(git -C "$tree" ls-tree -r --name-only HEAD -- "$p" 2>/dev/null | head -1)" ] || continue
+    list=$({ git -C "$tree" -c core.quotePath=false ls-files --others --exclude-standard -- "$p"
+             git -C "$tree" -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM HEAD -- "$p"
+           } 2>/dev/null | sort -u)
+    [ -n "$list" ] || continue
+    local -a files=()
+    while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done <<< "$list"
+    ! command -v driver_format_files >/dev/null 2>&1 || driver_format_files "$tree" "${files[@]}" || true
+    # The project's commit hook is what refused the step's own commit of it.
+    if git -C "$tree" add $sflag -- "${files[@]}" >/dev/null 2>&1 \
+       && git -C "$tree" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" -- "${files[@]}" >/dev/null 2>&1; then
+      driver_say "   $who: committed the document its own tooling wrote under $p — $(printf '%s' "$list" | tr '\n' ' ')"
+    else
+      driver_say "   $who: could not commit the document its own tooling wrote under $p — $(printf '%s' "$list" | tr '\n' ' ')"
+    fi
+  done <<EOS
+$(driver_scratch_paths)
+EOS
+  return 0
+}
+
 # driver_opt <dotted.key> <default> — an OPTIONAL project fact. toolkit_cfg
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
@@ -947,6 +1018,13 @@ driver_open_prs() {
 # own "Coordinator note (<class>): " wrapper, which the next spawn adds again.
 driver_brief_note() { sed '1s/^Coordinator note ([a-z-]*): //' "$1"; }
 
+# driver_fix_brief_pr <brief-file> — the pull request a "Fix: PR #<n>" brief names (the
+# coordinator's fix round, scripts/rebuild.sh), or nothing for any other brief.
+driver_fix_brief_pr() {
+  [ -n "${1:-}" ] && [ -s "$1" ] || return 0
+  sed -n '1s/^\(Coordinator note ([^)]*): \)\{0,1\}Fix: PR #\([0-9][0-9]*\).*/\2/p' "$1" 2>/dev/null
+}
+
 # driver_record_diverged <ticket> <open-pr row> — why the record is not this PR's,
 # or nothing when it is: the same branch, still a draft, and the PR's head inside the
 # record's work (its tree's head, else the head it last pushed, when it has either).
@@ -1025,4 +1103,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRI
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_HAS_PR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_UPSIZE DRIVER_QUICK_STEPS
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_HAS_PR DRIVER_E_ELSEWHERE DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_UPSIZE DRIVER_QUICK_STEPS

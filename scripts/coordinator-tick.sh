@@ -198,7 +198,7 @@ for ended in "$RUNS_DIR"/*.ended; do
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
   case "$code" in
-    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}") ;;
+    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}"|"${DRIVER_E_ELSEWHERE:-36}") ;;
     # A claim lost to another machine's coordinator is the race's, not the ticket's.
     "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
@@ -228,6 +228,9 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif [ "$code" = "${DRIVER_E_HAS_PR:-31}" ]; then
     # The ticket already has an open PR: it merges, or the rebuild pass closes it and builds fresh.
     say "has a PR: run $rid found #${ticket:-?}'s open pull request and built nothing — it merges, or is rebuilt once it cannot (coordinator.rebuildAfterMin)"
+  elif [ "$code" = "${DRIVER_E_ELSEWHERE:-36}" ]; then
+    # Started in this project's repo by something other than this tick: nothing was claimed or cut.
+    say "another repo's: run $rid was started here on #${ticket:-?}, which its repo label sends elsewhere — nothing was claimed or built; it stays ready"
   elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
     # The machine's, never the ticket's: an API error twice, or a host missing a tool. Left ready.
     case "$last" in
@@ -306,13 +309,16 @@ ALLOWANCE=$(gh_allowance_read) || ALLOWANCE=""
 # The GitHub allowance under its low mark on any host: the token is the fleet's.
 # Read once, here: the fleet file is rewritten later in the tick.
 GH_LOW=$(gh_allowance_low) || GH_LOW=""
-PRS=$(gh_open_prs 0)
+PRS=$(gh_open_prs 0); PRS_RC=$?
 if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   coord_snap_save prs "$PRS"
 elif PRS=$(coord_snap_load prs); then
   PRS_STALE=1
-  say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
-else PRS=""; fi
+  say "open PRs: could not be read$({ [ "$PRS_RC" -eq "$GH_WAIT" ] || gh_backoff_active >/dev/null; } && echo " (GitHub's rate limit — a wait, not an empty list)") — working from the snapshot taken $(coord_snap_age prs) min ago"
+else
+  PRS=""
+  [ "$PRS_RC" -ne "$GH_WAIT" ] || say "open PRs: not read — GitHub's rate limit refused it and there is no snapshot; this tick decides nothing about pull requests"
+fi
 # The open-work cap is counted in 4d, once the claims are read: only work being finished counts.
 OPEN_PRS=""; OVER_PR_CAP=""; OPEN_PR_SAID=""
 if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
@@ -475,8 +481,10 @@ ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
 # ---- 4c. rebuild, don't repair -------------------------------------------------
 # Every open ticket PR that is stuck — a required check settled red, a clash, a draft
 # nothing builds — past coordinator.rebuildAfterMin is closed and its ticket queued fresh
-# (rebuild.sh). Never on a claim list nobody could read: a claimed ticket is being worked.
-if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass
+# (rebuild.sh). Before that, or with the rebuild off, one red on its own code goes back to
+# its builder for coordinator.fixRounds fix rounds on its own branch, then parks for the PM.
+# Never on a claim list nobody could read: a claimed ticket is being worked.
+if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass; rebuild_pass_clones
 else say "rebuild: the claim list could not be read — no PR is rebuilt this tick"; fi
 
 # ---- 4d. the open work: being finished, or not counted ------------------------
@@ -498,6 +506,8 @@ finish_pr_rows() { # pr \t ticket (- for none: a tab IFS folds an empty field) \
 }
 # The labels that mean a person acts next on the ticket. A park or the sign-off hold is not
 # one here: a PR waiting on either is still open work (rebuild.sh leaves it alone).
+# A PR parked for the PM after its fix rounds stays open (rebuild_park_open) and is not
+# counted while labels.decision names the PM's label, as the kit's config does.
 finish_person_labels() {
   printf '%s\n' "$LBL_NEEDS_HUMAN" "$LBL_OWNER_DECISION" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_GATED" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
@@ -577,10 +587,31 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   coord_wait_holds "$t" "$lab" && return 0
   # ONE TICKET, ONE CHANGE. A ticket with an open PR is never built again beside it: the PR
   # merges, or the rebuild pass closes it once it cannot and queues the ticket fresh. Only
-  # this host's own unshipped build of it (a park's draft, answered) resumes on it.
-  local pr
+  # this host's own unshipped build of it (a park's draft, answered) resumes on it, and a
+  # fix round of that PR (a "Fix: PR #<n>" note, rebuild.sh) continues its branch while
+  # the PR is still red or clashing.
+  # A ticket built in a clone has its PR in that clone's repo: the same questions, asked there.
+  local cn=""
+  if cn=$(rebuild_clone_of "$t"); then rebuild_in_clone "$cn" spawn_pr_block "$t" "$note" clone; return $?; fi
+  spawn_pr_block "$t" "$note"
+}
+spawn_pr_block() { # <ticket> <note> [clone] — the open-PR part of spawn_block; echoes why not, 0 when blocked
+  local t="$1" note="${2:-}" pr="" fpr
+  fpr=$(rebuild_fix_note_pr "$note")
+  # That repo's open PRs unread this tick: a fix round is neither started blind nor thrown away.
+  if [ "${3:-}" = clone ] && [ "${CLONE_PRS_READ:-0}" != 1 ]; then
+    [ -z "$fpr" ] || { echo "its fix round waits — the open PRs of $REPO_SLUG were not read this tick"; return 0; }
+    return 1
+  fi
   if pr=$(ticket_open_pr "$t") && ! coord_unshipped_here "$t"; then
-    echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
+    if [ "$fpr" != "$pr" ]; then
+      echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
+    fi
+    rebuild_fix_due "$t" || { echo "its fix round waits — PR #$pr is not red or clashing now"; return 0; }
+  elif [ -n "$fpr" ] && [ -z "$pr" ]; then
+    # The PR the round was for is gone: its brief would send a build to a branch nobody has.
+    coord_shadow || bash "$QUEUE" remove "$t" >/dev/null 2>&1 || true
+    echo "its fix round was for PR #$fpr, which is not open any more — taken off the queue"; return 0
   fi
   return 1
 }
@@ -645,6 +676,9 @@ else
 fi
 # The companion plugins the builds lean on, to the set the sheet declares (plugin-ensure.sh).
 say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
+# A host whose builds cannot run their step's skill takes none, and says why on the sheet.
+COORD_CLI_VERSION=$(harness_claude_cli_version)
+SKILL_HOLD=$(coord_skill_hold "$COORD_CLI_VERSION" "$HARNESS_RUNNING") || SKILL_HOLD=""
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -740,6 +774,9 @@ if [ -n "$USAGE_ACCT" ] && [ -n "$USAGE_ACCT_WAS" ] && [ "$USAGE_ACCT" != "$USAG
     say "usage: the account changed since the last reading — the probe call to read the new account failed; it tries again next tick"
   fi
 fi
+# A WALL ON FILE is asked again, or it stands until its reset whatever the account now reads
+# (2026-11-11: 4 h idle on a week that read 56%). One probe call at most per probe interval.
+if ! coord_shadow && RECHECK=$(swarm_usage_hold_recheck); then say "$RECHECK"; fi
 # Either window at swarm.usageStepHold: the running builders hold before their next step.
 STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
 # A failed re-read retries next tick only while something holds; otherwise nothing waits on it.
@@ -810,6 +847,8 @@ candidates() {
     # goes on as under the cap, still behind the host cap, tooling cap, scope and room.
     if [ -n "$OVER_PR_CAP" ] && [ "$cls" = new ] && [ "$proc" != 1 ] && [ "$pl" != 1 ] \
        && case "$exempt" in *" $pri "*) true ;; *) false ;; esac; then exm=1
+    # A fix round finishes an open PR the cap is counting: held by it, the cap never clears.
+    elif [ -n "$OVER_PR_CAP" ] && [ "$proc" != 1 ] && [ -n "$(rebuild_fix_note_pr "$note")" ]; then exm=fix
     elif [ -n "$OVER_PR_CAP" ] && [ "$proc" != 1 ]; then
       if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
         qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
@@ -836,7 +875,7 @@ candidates() {
     [ "$proc" = 1 ] || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
-    [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:P$pri"
+    [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:$([ "$exm" = fix ] && printf 'fix-round' || printf 'P%s' "$pri")"
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
   # Over the cap: the quick ones of the new work it held, in queue order, up to the free places.
@@ -958,6 +997,10 @@ elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
 elif [ -n "$FLOOR_HOLD" ]; then
   say "spawn: starting nothing new — $FLOOR_HOLD; it takes work again once it runs the floor"
   coord_act_log floor-hold - "$FLOOR_HOLD"
+elif [ -n "$SKILL_HOLD" ]; then
+  say "spawn: starting nothing new — $SKILL_HOLD"
+  coord_act_log skill-hold - "$SKILL_HOLD"
+  event "skill-hold:$COORD_HOST:${COORD_CLI_VERSION:-?}:$HARNESS_RUNNING" skill-hold false "" "" "$COORD_HOST takes no builds: $SKILL_HOLD" || true
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"
@@ -1046,12 +1089,22 @@ else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
       # A repo:<name> ticket with a clone of <name> here runs in that clone (driver_repo_clone_for).
+      # A clone with no config of its own is handed one (driver_repo_clone_config).
       in_repo=$(driver_repo_clone_for "$(coord_issue_labels "$t" 2>/dev/null)") || in_repo=""
-      [ -z "$in_repo" ] || say "#$t runs in $in_repo, the clone its repo label names"
-      spawn_out=$(SWARM_SPAWN_REPO="$in_repo" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
+      in_cfg=""
+      if [ -n "$in_repo" ]; then
+        in_cfg=$(driver_repo_clone_config "$in_repo") || say "#$t: no config could be written for the clone at $in_repo — its run reads whatever that clone carries"
+        say "#$t runs in $in_repo, the clone its repo label names$([ -z "$in_cfg" ] || echo ", on the queue's facts ($in_cfg): that clone's trunk carries no config of its own")"
+      fi
+      spawn_out=$(SWARM_SPAWN_REPO="$in_repo" SWARM_SPAWN_CFG="$in_cfg" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live
+        # Started in a clone: its pull request is that repo's, and so is the round's ledger.
+        if [ -n "$in_repo" ]; then
+          rebuild_clone_note "$t" "$in_repo" || say "#$t: its start in $in_repo could not be noted — its pull request there is not watched"
+          rebuild_in_clone "$(rebuild_clone_of "$t")" rebuild_fix_started "$note" || true
+        else rebuild_fix_started "$note"; fi
         say "spawned #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
         SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else

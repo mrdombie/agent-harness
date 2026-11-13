@@ -41,7 +41,7 @@ thinking inside one step.
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
 | 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way; a self-check red is handed on only at the head it was read on, never a command `gates.localOnly` keeps for CI, and never one red on the merged trunk commit too (base-red: noted for the one develop-red ticket) |
-| 5 | `self-check` | driver | every gate run as its own command, read by exit code. When `gates.local` holds every `gates.changed` command (or there is none) it is the local set: that list alone, and CI runs the rest once. Otherwise the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it. A red also red on the trunk commit the branch merged (`driver/base-red.sh`, run there once per check and commit) is base-red: not counted, never parked, one develop-red ticket. A database or transaction timeout in test files the branch did not change is run again once, file by file alone: all green, the red was the load's, not counted |
+| 5 | `self-check` | driver | first, with no model, what the ticket names (`driver/ticket-parts.sh`): each file it names in backticks under its change or acceptance headings (or on a split part's `**Files:**` line) is on the branch or in its diff, and each numbered change item and acceptance item is in a passing feature's `covers` or named by its id in the list's `outside` (a `note` there names no item); a miss goes to fix once, named, and a second parks named. Then every gate run as its own command, read by exit code. When `gates.local` holds every `gates.changed` command (or there is none) it is the local set: that list alone, and CI runs the rest once. Otherwise the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it. A red also red on the trunk commit the branch merged (`driver/base-red.sh`, run there once per check and commit) is base-red: not counted, never parked, one develop-red ticket. A database or transaction timeout in test files the branch did not change is run again once, file by file alone: all green, the red was the load's, not counted |
 | 6 | `compare` | model | this run's renders held beside the approved design |
 | 7 | `review` | model | `SHIP`, or findings with a file, a line, a grade, a tag and the panel's votes, from Claude Code's own `code-review` (finders in parallel, a verifier vote on each). Only agreed findings are kept; a pre-existing one goes to the sweep queue. Once per change: a later pass calls the model only when the fix round touched a file the first review never saw, graded Critical and Major only, and never past `review.maxRounds` |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
@@ -61,7 +61,16 @@ body, the file paths it names, and whether it states the change (a fenced snippe
 diff, a "set/change/rename … to …" line).
 
 - **quick**: 1 to `driver.quick.maxFiles` (3) named files, and the change is config,
-  copy or docs, or a small code edit the ticket states.
+  copy or docs, or a small code edit the ticket states. **A fix sized small is quick
+  too** (owner, 2026-11-09: the quick route is the default for small fixes). A fix is
+  a ticket wearing one of `driver.quick.fixLabels` (`type:bug`, `bug`) or whose title
+  matches `driver.quick.fixTitle` (`fix…`, `bug…`, `hotfix…`, `develop is red`). One
+  naming 1 to `driver.quick.fixMaxFiles` (5) files, or naming code on the trunk without
+  stating the change (no size call: the call answered quick or small for 37 of 41 such
+  fixes), goes quick; a size call that answers small for a fix goes quick too. An effort
+  label, `type:feature`, a schema or a screen still keep it off. Measured 23 Oct-9 Nov:
+  26 of 325 fix tickets went quick and 136 sized small walked plan and build (median
+  40 min claim to PR, 6.0 sessions) against the quick route's 9 min and 3.5.
 - **small**: a few named files (up to `driver.quick.smallMaxFiles`, 8), no schema, no
   new screen.
 - **project**: anything else. That means a schema, data-model or migration change
@@ -76,11 +85,18 @@ route=… size=…`).
 
 A **quick** ticket walks `DRIVER_QUICK_STEPS`. The `quick` step is one agent session
 (`briefs/quick.md`): it edits and commits, and cannot push. The driver then reads the
-real diff and runs the same gates `self-check` runs (`gates.local` under
+real diff (a fix may touch `driver.quick.fixMaxFiles`, 5) and runs the same gates `self-check` runs (`gates.local` under
 `gates.localOnly`, else the changed list, plus the changelog skip line). `review`
 runs once: only Critical and Major block, and a Minor is dropped. Then
 the unchanged `ship` step pushes, opens the PR, readies it and arms auto-merge. No
 plan, build, fix, compare, separate self-check or record step runs.
+
+**A fix brings its test.** The session finds the cause, makes the smallest fix and
+commits a test that fails without it. A fix whose diff changes code (anything but
+config and docs) with no test file (`driver.quick.testPattern`: `*.test.*`, `*.spec.*`,
+`test/`, `tests/`, `__tests__/`, `e2e/`, `*_test.*`, `test_*.py`) is sent back to the
+session once, naming it; still none, it moves up to the full route, whose build proves
+its test red first.
 
 **Bigger than its size moves up.** A real diff over `maxFiles`, or touching a
 never-quick file, moves the ticket up to the full route from `plan`. Never-quick files
@@ -91,37 +107,56 @@ build can still prove its test red first. The plan step is told where the attemp
 is. A review that blocks a quick change goes to the full route's `fix` step. A record
 that was already planned keeps the full route.
 
-**Split by behaviour, before building** (owner, 2026-11-02, after Anthropic's
-long-running harness; replaces the `driver.split.maxTasks` (3) / plan-time
-`driver.split.maxFiles` (20) trigger). The plan writes a feature list for every ticket
+**One change, worked through by behaviour** (owner, 2026-11-05; replaces splitting every
+list of two or more items, 2026-11-02). Why: Anthropic's long-running harness has one agent
+work through a feature list in one codebase, not separate tickets, and parts waited a median
+18 h to reach a PR against 2.9 h unsplit with no smaller changes (about 350 lines either way).
+The plan writes a feature list for every ticket
 that changes what a person sees or does: `F<n>: <behaviour>` items, each with test steps
 run as a fast component or logic test in the required test run (never a browser check),
 all failing. `driver/feature-list.sh` checks how the plan builds it (every task names its
 item; each item's test is written by its own tasks; a foundation names its reason), sends
 the plan back once with what is wrong, then refuses. The list is kept in the run record
-(`<ticket>/features.json`); a later plan that edits or removes an item or its steps is
-refused, and only `passes` ever changes. A ticket wearing one of `driver.split.featureLabels`
+(`<ticket>/features.json`); once an item passes or a part is filed, a later plan that
+edits or removes an item or its steps is refused, and only `passes` ever changes. Before
+then a later plan replaces it, the old list kept as `features.prev.json`. A ticket wearing one of `driver.split.featureLabels`
 (default `type:feature`) with no list is sent back once, then refused.
 
-Two or more items split the ticket: one part per item, each carrying its behaviour, its
-test steps and a `<!-- harness:feature-item parent=… id=F<n> test=… -->` marker, all
-ready at once. A foundation (`expand-contract`, `refactor` or `hidden-backend`) goes first,
-and only the items with `needsFoundation` wait for it; a clean-up part goes last, gated on
-every item part. The list, with its parts, is posted on the parent, which closes as split.
+The ticket builds here as one change. The plan's tasks run foundation, F1, F2…, clean-up,
+one session and one red-then-green proof each, and the session is given its item's behaviour,
+steps and test. The list is posted on the ticket. An item passes once every task of it is
+proved and one proved its test file; the same commits naming another item's test are proved
+again rather than merged. An item whose test never ran sends its last task back on the build's
+own tries. The list is posted again when every item passes. `refactor` and `hidden-backend`
+foundations ship in the same change as their behaviours.
+
+It splits in two cases: past `driver.split.planMaxFiles` (50; 0 never) distinct files named by
+the plan (4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10), and, whatever
+its file count or that setting, with an `expand-contract` foundation, so the new shape deploys
+before the old one is removed. That split is always in two: the change, whole and in list
+order, then its clean-up, gated on it; with `release.mergeFirst` on, it builds here as one
+change with the clean-up last. Past the file limit: one part per
+item, each carrying its behaviour, its test steps and a
+`<!-- harness:feature-item parent=… id=F<n> test=… -->` marker, all ready at once. A
+foundation (`expand-contract`, `refactor` or `hidden-backend`) goes first, and only the items
+with `needsFoundation` wait for it; a clean-up part goes last, gated on every item part. The
+list, with its parts, is posted on the parent, which closes as split. A part's file list leaves
+out the parent's own changelog entry unless it is the last part.
 `scripts/feature-close.sh` (a coordinator housekeeping pass) marks an item passing once
 its part closed as completed with its test file on the integration branch, and the
 feature done (closed as completed) once every item passes and the clean-up part merged.
 A mechanical change (`units`, 5-30) fans out like Claude Code's /batch: one part a unit,
-all ready, no list. One item builds in place. A branch that already has commits,
-and a part of an earlier split (" — part N of M: " in its title) build as before; a
-part's plan must run its item's test file. A finished build is still never stranded for
-its size: ship counts the branch two-dot and, over `driver.split.maxFiles`, says so in a
-"## Size" section on the PR, and ships.
+all ready, no list, whatever its size. A branch that already has commits, and a part of an
+earlier split (" — part N of M: " in its title) build as before; a part's plan must run its
+item's test file. A plan can undercount (a 211-file change once planned as 7), so a finished
+build is never stranded for its size: ship counts the branch two-dot and, over
+`driver.split.maxFiles`, says so in a "## Size" section on the PR, and ships.
 
 `driver.quick.enabled: false` turns the route off (sizes are still read and logged).
 The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)
 and the live view's run row ("Quick change" / "Full build") all say the route. Only
-quick changes the route today; small and project both walk the full order.
+quick changes the route; small and project both walk the full order (a fix sized
+small reads quick).
 
 `fix` and `compare` are in the order on every pass and are no-ops with nothing to
 do — `fix` when no review has found anything, `compare` when the change touches no
@@ -147,12 +182,20 @@ A question only a person can answer goes through `scripts/owner-question.sh`
 the queue as a brief the driver carries. The hold label goes on only when the
 question could not be asked. A driver-caused park asks nobody.
 
-**A requeue is not a park.** Three stops go back on the queue instead, because
+**A requeue is not a park.** Four stops go back on the queue instead, because
 nobody has to answer them and a later run clears them:
 
 - **The plan's usage limit** (step exit 27, run exit 28). A step's transcript carries
   the CLI's rejection. The reset goes into `$STATE_DIR/usage-hold`, and the
   coordinator spawns nothing until then.
+- **A session the API refused** (a result with `is_error` and an `api_error_status`, or
+  `terminal_reason: api_error`): the model never ran, so it is never read as a skipped
+  Skill and never reaches the skill check's record. The call is made again
+  `DRIVER_API_REFUSAL_TRIES` (4) times, after 1, 3, 5 and 7 times
+  `DRIVER_API_REFUSAL_BASE_SEC` (60). A 401 or 403 that outlasts them is the account's:
+  it goes into the same hold file for `DRIVER_API_REFUSAL_HOLD_SEC` (3600), naming the
+  status and code, the hold's own re-check clears it early, and the ticket requeues
+  (step exit 27, run exit 28). Any other status parks as a machine fault (exit 33).
 - **A GitHub read that failed in `start` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
@@ -167,6 +210,10 @@ newly finished in between: `start` re-running on every pass is not progress.
 - **The approved picture is not readable on this machine** (plan, run exit 28). The
   first miss requeues; `driver.maxPictureMisses` (2) in a row park it for the PM,
   naming the file. A run after a miss looks for the picture before it plans.
+- **A half-built ticket** (`labels.partial`: a run ended and left a branch with no pull
+  request). `start` takes it like a ready one and cuts its tree from that branch on
+  origin, not the trunk. `driver.maxPartialResumes` (3) resumes in a row, each ending
+  stranded again with no ship between, park it for the PM, naming the branch.
 
 A record that says `ship` finished while the ticket has no open pull request and none
 merged (one closed to rebuild fresh, or by hand) is a fresh build: it is set aside as a
@@ -203,6 +250,11 @@ the trunk has too waits for the trunk, and a PR a person holds is never closed.
   set aside (its commits kept at `refs/stale/<t>/local-<host>-<epoch>`), its driver state
   is moved aside, and `start` cuts a new tree from the trunk (`DRIVER_FRESH`). A record
   that says it shipped with no PR open or merged is a fresh build the same way.
+- **A "Fix: PR #<n>" note continues that open PR.** It is the coordinator's fix round
+  (`coordinator.fixRounds`, `scripts/rebuild.sh`) for a PR red on its own code. A shipped
+  record of the ticket on this host is moved aside, `start` cuts the tree from origin's
+  head of the PR's branch instead of ending with exit 31, and `ship` pushes to that branch
+  and rewrites the PR it has: no second PR is opened. Any other brief still ends with 31.
 - **Nothing resumes from `refs/stale/`.** Work a push could not hand over (a park's refused
   push, a branch tip left on this machine, a dead branch tip at ship) is kept there by
   `driver_keep_ref` so it is never only on one disk, for a person to read.
@@ -366,10 +418,22 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 32 | a step found nothing owed (a ticket split before it built): the run exits 0, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
 | 35 | the quick change is bigger than its size (more files than `driver.quick.maxFiles`, a never-quick file, or red gates): the run goes on along the full route from `plan`, with the quick commits kept at `refs/driver/quick/<ticket>`. Never a run's exit; `build-ticket` handles it |
+| 36 | start read a `repo:<name>` label naming a repo this project does not build: nothing is claimed, no worktree is cut, no model is called, no park, no requeue — the ticket stays ready, and the coordinator starts it in a clone of `<name>` when this host has one |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second
 timeout on a loaded machine goes back on the queue (29), on a quiet one it parks.
+
+A proof (the test run without the change, then with it) that runs out of time waits for
+the machine's gate and is taken once more, alone in a gate slot, with twice the limit.
+Out of time again it parks (25), and the park note names the command, the limit and what
+each half took. A proof runs its command twice inside that limit, so it runs the case, not
+the suite: a test file that carries a `# case-filter: <VAR>=… <command>` line in its first
+40 lines is proved with that variable set, and a proof command that runs the whole file is
+refused before any tree is built, with the command to give. Every step's project facts name
+the files that take one. The kit's own suites take `SUITE_ONLY='<case title or pattern>'`
+(`suite_case` in `tests/lib/suite.sh`): a case runs when its title matches, and a filter
+that matches no case fails the suite.
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
 when the call or the configuration was wrong (an unreadable `--brief` brief

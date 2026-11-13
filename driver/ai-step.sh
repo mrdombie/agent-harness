@@ -151,11 +151,48 @@ driver_never_invoked_skills() {
 # or the whole answer — after it reads as never having happened.
 driver_log_events() { jq -c -R 'fromjson? // empty' "$1" 2>/dev/null; }
 
+# Every shape the CLI has sent the name in: `skill` since 2.0.35, `command` before it,
+# `name` from hand-written fixtures; a slash or trailing arguments are not the name.
 driver_log_skills() {
   driver_log_events "$1" | jq -r 'select(.type=="assistant")
          | .message.content[]?
          | select(.type=="tool_use" and .name=="Skill")
-         | (.input.skill // .input.name // empty)' 2>/dev/null
+         | ([.input.skill, .input.name, .input.command] | map(select(type == "string" and length > 0)) | first // empty)
+         | sub("^\\s*/"; "") | sub("\\s.*$"; "") | select(length > 0)' 2>/dev/null
+}
+
+# driver_log_session <log> <skills, one per line> — what the session itself could do, from
+# its init event, as one TSV line: <CLI version> \t <cause>. The cause is "no-init",
+# "no-skill-tool", "not-loaded" (none of the skills is in the session's list) or
+# "loaded" (it was there and the model did not call it).
+driver_log_session() {
+  local want; want=$(printf '%s\n' "$2" | grep -v '^$' | jq -R . | jq -sc .)
+  driver_log_events "$1" | jq -r -s --argjson want "${want:-[]}" '
+    [.[] | select(.type == "system" and .subtype == "init")] | last
+    | if . == null then "\t" + "no-init"
+      else (.claude_code_version // "") + "\t"
+           + (if ((.tools // []) | index("Skill")) == null then "no-skill-tool"
+              elif ([(.skills // []), (.slash_commands // [])] | add | map(ltrimstr("/")) as $have
+                    | any($want[]; . as $w | $have | index($w) != null)) then "loaded"
+              else "not-loaded" end) end' 2>/dev/null
+}
+
+# The host's record of every step's skill check, newest last: <epoch> \t <ticket> \t <step>
+# \t ok|none \t <CLI version> \t <harness version> \t <cause> \t <skills wanted> \t <the first wanted
+# Skill's plugin version, empty when unread>. The coordinator stops this host taking builds when the
+# newest few all read none (coordinator-tick.sh).
+driver_skill_check_record() { # <ticket> <step> <ok|none> <cli> <cause> <skills wanted>
+  local f="${HARNESS_SKILL_CHECKS:-$DRIVER_DIR/skill-checks.tsv}" hv sk pv
+  hv=$(jq -r '.version // empty' "$KIT_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+  sk=$(printf '%s' "${6:-}" | tr '\t\n' '  ' | sed 's/ *$//')
+  pv=$(bash "$KIT_ROOT/scripts/plugin-ensure.sh" skill-version "${sk%% *}" 2>/dev/null | head -1 | tr -d '\t')
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "$4" "$hv" "$5" "$sk" "$pv" >> "$f" 2>/dev/null || return 0
+  # Kept short: only the newest rows are ever read.
+  if [ "$(wc -l < "$f" 2>/dev/null | tr -d ' ')" -gt 200 ]; then
+    tail -100 "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  fi
+  return 0
 }
 
 # The model's final answer.
@@ -328,8 +365,21 @@ SHIM
   local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
   # Built outside the heredoc: inside \${x:+…} the quotes are removed, and the shim ran
   # `exec gh $@` — every argument with a space in it split (a -q filter, a --body).
+  # Through gh_call: a step's own gh calls spend the token every machine shares, and
+  # outside the wrapper they were neither counted nor held when the allowance ran low.
+  # The wait is short here: a step's shell command has a time limit of its own.
   local gh_exec='echo "gh: not installed" >&2; exit 127'
-  [ -z "$real_gh" ] || gh_exec="exec $(printf '%q' "$real_gh") \"\$@\""
+  if [ -n "$real_gh" ]; then
+    gh_exec="exec $(printf '%q' "$real_gh") \"\$@\""
+    if [ -f "$KIT_ROOT/scripts/gh-batch.sh" ]; then
+      gh_exec="if . $(printf '%q' "$KIT_ROOT/scripts/gh-batch.sh") 2>/dev/null; then
+  export SWARM_GH=$(printf '%q' "$real_gh") GH_BACKOFF_FILE=$(printf '%q' "$(gh_backoff_file)") GH_CALLER=builder-step
+  GH_BUDGET_WAIT_MAX_SEC=\"\${GH_BUDGET_WAIT_MAX_SEC_STEP:-60}\"; unset GH_ESSENTIAL
+  gh_call \"\$@\"; exit \$?
+fi
+$gh_exec"
+    fi
+  fi
   cat > "$shim/gh" <<SHIM
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in "pr ready"|"pr merge"|"pr create")
@@ -463,6 +513,55 @@ _driver_sa_commit() {
 # "not JSON", and that parked #13642 for the owner over a false safeguards flag.
 driver_api_error() { swarm_api_error_log "$1"; }
 
+# driver_api_refusal <log> — 0, printing the status, code and the CLI's words, when the API
+# refused the session and the model never ran (swarm_api_refusal_log). Read before the
+# skill check: a session that never ran called no Skill, and that is not a skipped Skill.
+driver_api_refusal() { swarm_api_refusal_log "$1"; }
+
+# _driver_api_refusal_wait <prompt> <log> [session-id] — a refused session is a wait: the
+# call is made again DRIVER_API_REFUSAL_TRIES (4) times, after 1, 3, 5 and 7 times
+# DRIVER_API_REFUSAL_BASE_SEC (60). 0 once a call ran. Still refused: a 401 or 403 is the
+# account's, so it goes in the usage hold file for DRIVER_API_REFUSAL_HOLD_SEC (3600) and
+# the ticket requeues; any other status is a machine fault. Never the skill check's.
+_driver_api_refusal_wait() {
+  local in="$1" out="$2" sid="${3:-}" why err n=0 wait until
+  local tries="${DRIVER_API_REFUSAL_TRIES:-4}" base="${DRIVER_API_REFUSAL_BASE_SEC:-60}" hold="${DRIVER_API_REFUSAL_HOLD_SEC:-3600}"
+  why=$(driver_api_refusal "$out") || return 0
+  case "$tries" in ''|*[!0-9]*) tries=4 ;; esac
+  case "$base" in ''|*[!0-9]*) base=60 ;; esac
+  case "$hold" in ''|0|*[!0-9]*) hold=3600 ;; esac
+  cp "$out" "$out.refused" 2>/dev/null
+  while [ "$n" -lt "$tries" ]; do
+    wait=$(( base * (2 * n + 1) )); n=$((n+1))
+    driver_say "↻ $step: the session could not run — the API refused it: $why. Try $n of $tries in ${wait}s."
+    ${DRIVER_API_REFUSAL_WAIT_CMD:-sleep} "$wait"
+    _driver_ai_run "$in" "$out" "$sid"
+    driver_record_usage "$t" "$slot" "$out" "$in"
+    driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+    if ! why=$(driver_api_refusal "$out"); then
+      if err=$(driver_api_error "$out"); then
+        driver_say "✋ $step: the API took the session on try $n and the call then failed — $err. A machine fault, not a question."
+        driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API ($err). The next run tries again."
+        return "$DRIVER_E_MACHINE"
+      fi
+      driver_say "▶ $step: the API took the session on try $n — carrying on"
+      return 0
+    fi
+  done
+  case "${why%%[ :]*}" in
+    401|403)
+      until=$(( $(swarm_now) + hold ))
+      swarm_usage_hold_write "$until" "the API refused the session: $why (#$t $step)" \
+        || driver_say "   $step: the hold could not be written to ${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}"
+      driver_say "✋ $step: the session could not run — the API refused it $((tries + 1)) times: $why. The account's, not this ticket's: spawning holds until $(swarm_iso "$until"), re-checked on the usage hold's timer."
+      driver_state_set "$t" park_note "the API refused the $step session: $why; held until $(swarm_iso "$until")"
+      return "$DRIVER_E_USAGE" ;;
+  esac
+  driver_say "✋ $step: the session could not run — the API refused it $((tries + 1)) times: $why. A machine fault, not a question."
+  driver_state_set "$t" park_note "machine fault, nothing to answer: the API refused the $step session: $why. The next run tries again."
+  return "$DRIVER_E_MACHINE"
+}
+
 # driver_question_silent_agent <question> — 0 when a step's "question" is that a subagent
 # it started had not reported: still running, timed out, or returned nothing. That has
 # one answer (run it again), so it is the machine's, never a person's question.
@@ -474,20 +573,21 @@ driver_question_silent_agent() {
 # _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
 # wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
 # after DRIVER_API_RETRY_SEC; failing again it is a machine fault, never a question.
-# No step chunks its diff, so a safeguards flag is retried whole.
+# No step chunks its diff, so a safeguards flag is retried whole. A session the API
+# refused outright is waited for instead (_driver_api_refusal_wait).
 _driver_ai_call() {
   local in="$1" out="$2" sid="${3:-}" err
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
-  err=$(driver_api_error "$out") || return 0
+  err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "↻ $step: the model call failed at the API — $err. Trying once more in ${DRIVER_API_RETRY_SEC:-30}s."
   cp "$out" "$out.apierr" 2>/dev/null
   sleep "${DRIVER_API_RETRY_SEC:-30}"
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
-  err=$(driver_api_error "$out") || return 0
+  err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "✋ $step: the model call failed at the API twice — $err. A machine fault, not a question."
   driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API twice ($err). The next run tries again."
   return "$DRIVER_E_MACHINE"
@@ -568,6 +668,7 @@ _driver_ai_judge() {
   # sweeping there moves another agent's untracked files out from under them.
   if [ -n "$(driver_state_get "$t" worktree)" ]; then
     driver_sweep_scratch "$t" "$wt"
+    driver_commit_scratch "$t" "$wt" "$step"
   fi
 
   if [ ! -s "$log" ]; then
@@ -589,11 +690,22 @@ _driver_ai_judge() {
     done <<EOW
 $want
 EOW
+    local sess s_cli s_cause s_said
+    sess=$(driver_log_session "$log" "$want"); s_cli=${sess%%$'\t'*}; s_cause=${sess#*$'\t'}
     if [ "$hit" -eq 0 ]; then
-      driver_say "✋ $step: the brief's skills are $(printf '%s' "$want" | tr '\n' ' ')and the run log does not contain any of those Skill calls (saw: ${skill_saw:-none}). Inside a ticket Superpowers does the work; a step that skipped it has not run."
-      driver_state_set "$t" park_note "the $step step ran none of the skills briefs/facts.json declares for it ($(printf '%s' "$want" | tr '\n' ' ')); the transcript shows: ${skill_saw:-none}"
+      case "$s_cause" in
+        no-init)       s_said="the transcript has no session start to read the session from" ;;
+        no-skill-tool) s_said="the session (Claude Code ${s_cli:-?}) had no Skill tool" ;;
+        not-loaded)    s_said="the session (Claude Code ${s_cli:-?}) did not list the skill, so it could not be called on this host" ;;
+        loaded)        s_said="the session (Claude Code ${s_cli:-?}) listed the skill and the model did not call it" ;;
+        *)             s_said="the session could not be read" ;;
+      esac
+      driver_skill_check_record "${DRIVER_TICKET:-$t}" "$step" none "$s_cli" "${s_cause:-unread}" "$want"
+      driver_say "✋ $step: the brief's skills are $(printf '%s' "$want" | tr '\n' ' ')and the run log does not contain any of those Skill calls (saw: ${skill_saw:-none}); $s_said. Inside a ticket Superpowers does the work; a step that skipped it has not run."
+      driver_state_set "$t" park_note "the $step step ran none of the skills briefs/facts.json declares for it ($(printf '%s' "$want" | tr '\n' ' ')); the transcript shows: ${skill_saw:-none}; $s_said"
       return "$DRIVER_E_NO_SKILL"
     fi
+    driver_skill_check_record "${DRIVER_TICKET:-$t}" "$step" ok "$s_cli" "$s_cause" "$want"
     driver_say "   $step: $(printf '%s' "$skill_saw" | sort -u | tr '\n' ' ')ran"
   fi
 
@@ -700,6 +812,22 @@ EOC
     # one never blocks (the contract exempts it), so it never turns a SHIP.
     jq 'del(..|nulls) | if (.verdict? == "SHIP") and ([.findings[]? | select((.tag // "") != "pre-existing") | select((.grade // "") | IN("critical","major","minor"))] | length > 0) then .verdict = "BLOCKED" else . end' \
       "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ] && mv "$ans.norm" "$ans" || rm -f "$ans.norm"
+    # A left-out entry whose `item` is prose names no ticket item: it is a note. Moved
+    # here, by the contract's own pattern, so it never costs a second planning call.
+    local idre moved
+    idre=$(jq -r '.properties.outside.items.properties | select(has("note")) | .item.pattern // empty' "$DRIVER_SCHEMAS/$step.json" 2>/dev/null)
+    if [ -n "$idre" ]; then
+      moved=$(jq -r --arg re "$idre" '
+        def prose: type == "object" and ((.item | type) == "string") and (.item != "") and (.item | test($re) | not);
+        [(.outside | arrays)[] | select(prose)] | length' "$ans" 2>/dev/null)
+      if [ "${moved:-0}" -gt 0 ] 2>/dev/null && jq --arg re "$idre" '
+          def prose: type == "object" and ((.item | type) == "string") and (.item != "") and (.item | test($re) | not);
+          .outside |= map(if prose then (.note = (if ((.note | type) == "string") and .note != "" then .item + " — " + .note else .item end) | del(.item)) else . end)' \
+          "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ]; then
+        mv "$ans.norm" "$ans"
+        driver_say "   $step: $moved left-out entr$([ "$moved" = 1 ] && printf y || printf ies) named no ticket item id — kept as a note, not asked again"
+      else rm -f "$ans.norm"; fi
+    fi
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash
     # read as "the answer was never checked" and parked finished work.

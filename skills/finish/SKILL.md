@@ -281,18 +281,6 @@ exit code is the gate.
 sh scripts/prisma-generate-if-needed.sh >/dev/null  # #3570 — fingerprint-skips when unchanged
 
 # gates.changed runs through the machine-gate block above, never as a bare eval.
-
-# #9966 (2026-09-01): the trio above does NOT include check:deploy-trigger.
-# That gate reads COMMITS (merge-base..HEAD), so it must run after Step 2's
-# clean-tree check, which is where we are. A PR sat 9 minutes with auto-merge
-# armed and Code gates red for exactly this. Stamp and commit only when it
-# fails. A sentinel bump does not move the UI-Gate fingerprint (verified).
-if ! npm run check:deploy-trigger; then
-  sh scripts/bump-deploy-trigger.sh >/dev/null
-  git add .deploy-trigger apps/web/.deploy-trigger apps/api/.deploy-trigger
-  git commit -q -m "chore: bump .deploy-trigger" -m "no-changelog: deploy plumbing only"
-  npm run check:deploy-trigger || { echo "🛑 .deploy-trigger gate still failing"; exit 1; }
-fi
 ```
 
 If any fail, **stop**. Fix or surface. No `--no-verify`. No skipping. **Before declaring a failure "pre-existing on develop", re-verify it in a worktree that has run `npx prisma generate`** — a stash-baseline comparison in an ungenerated worktree shows the same phantom errors on both sides and proves nothing.
@@ -1184,7 +1172,7 @@ For a partial (human-blocker case): leave the issue open, post the merge comment
 
 **7e. (removed) — promoting `develop → uat` is the review gate's job, not `/agent-harness:finish`'s.**
 
-`/agent-harness:finish` no longer fast-forwards the `uat` branch or smoke-tests UAT. The automated review gate ([`docs/operations/automated-code-review.md`](../../docs/operations/automated-code-review.md)) picks up new `origin/uat..origin/develop` commits, reviews them in batches, promotes the passing ones to `uat` → Railway, and pings the PM only on FAIL / promote / rollback. (Railway layer-cache invalidation via `.deploy-trigger` (#824) is handled at promote time, not here.)
+`/agent-harness:finish` no longer fast-forwards the `uat` branch or smoke-tests UAT. The automated review gate ([`docs/operations/automated-code-review.md`](../../docs/operations/automated-code-review.md)) picks up new `origin/uat..origin/develop` commits, reviews them in batches, promotes the passing ones to `uat` → Railway, and pings the PM only on FAIL / promote / rollback.
 
 For an urgent manual promote (e.g. a live demo before the gate's next cycle), run `/push-to-uat` explicitly — it is the manual override.
 

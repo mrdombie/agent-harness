@@ -536,22 +536,10 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. driver_sweep_scratch moves
-  # tooling leavings out of the worktree, but leaves a scratch path the project keeps
-  # in git alone (there it is the change). The plan this run wrote into it was then
-  # neither moved nor committed, and every such ticket stopped here after its build
-  # (five on 2026-10-18). Commit those new files, as park already does.
-  local sp newp
-  while IFS= read -r sp; do
-    [ -n "$sp" ] && [ -n "$(git -C "$wt" ls-files -- "$sp" 2>/dev/null | head -1)" ] || continue
-    newp=$(git -C "$wt" ls-files --others --exclude-standard -- "$sp" 2>/dev/null)
-    [ -n "$newp" ] || continue
-    local -a newf=(); while IFS= read -r f; do [ -n "$f" ] && newf+=("$f"); done <<< "$newp"
-    driver_format_files "$wt" "${newf[@]}" || true
-    printf '%s\n' "$newp" | while IFS= read -r f; do git -C "$wt" add -- "$f"; done
-    git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
-      && driver_say "   ship: committed the run's own plan under $sp"
-  done <<< "$(driver_scratch_paths)"
+  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. Each step commits its own as it
+  # ends (driver_commit_scratch); this is the same commit for a tree an older run or a
+  # resume left with one, so a finished build never stops here on it.
+  driver_commit_scratch "$t" "$wt" ship
 
   # The trunk is resolved again below, and measured; here it only finds the pictures.
   local ptrunk="origin/$INTEGRATION_BRANCH"
@@ -597,8 +585,8 @@ driver_step_ship() { # <ticket>
   smax=$(driver_split_max)
   driver_state_set "$t" size_note ""
   if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ]; then
-    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax; lockfiles not counted) — it ships; the plan step splits before building, never here"
-    driver_state_set "$t" size_note "This change is $snum files, over the $smax-file size limit (driver.split.maxFiles). It shipped because it was already built; the limit splits plans before they build."
+    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax; lockfiles not counted) — it ships; only the plan step splits, past driver.split.planMaxFiles, never here"
+    driver_state_set "$t" size_note "This change is $snum files, over the $smax-file size limit (driver.split.maxFiles). It shipped because it was already built; a plan splits only past driver.split.planMaxFiles."
   fi
 
   # ORIGIN'S COPY OF THIS BRANCH FIRST. An earlier run of the same ticket may have
@@ -757,7 +745,7 @@ driver_step_ship() { # <ticket>
   replaced=$(_driver_ship_replaced "$t")
   local polish="" closes pr_n; closes=$(_driver_ship_closes "$t")
   # A PR already open has its number now: its items are reserved before the body says so.
-  pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
+  pr_n=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   local routes="" required="" deferred tierline
@@ -833,11 +821,13 @@ PRBODY
     driver_state_set "$t" park_note "the existing pull request #$open_pr could not be rewritten at ship"
     return "$DRIVER_E_REFUSED"
   fi
-  swarm_gh pr create --repo "$REPO_SLUG" --draft \
+  # A branch whose pull request is open (a park's draft, a "Fix:" run's own PR) was
+  # rewritten above and takes the push: a second one is never asked for.
+  [ -n "$open_pr" ] || swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
-  if ! pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
+  if ! pr_n=$(driver_gh_read swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
   fi
@@ -912,10 +902,22 @@ $polish"
     driver_say "✋ ship: the pull request for $branch could not be marked ready, so it is still a draft and cannot land. The work is pushed and reviewed; the hand-off is not done."
     return "$DRIVER_E_REFUSED"
   fi
-  if ! swarm_gh pr merge "$branch" --repo "$REPO_SLUG" --auto --squash >/dev/null 2>&1; then
-    driver_say "✋ ship: auto-merge would not arm on the pull request for $branch. It is ready and reviewed, and nothing will land it — so this says so rather than handing off."
-    return "$DRIVER_E_REFUSED"
-  fi
+  # A PR READIED A MOMENT AGO CAN STILL READ AS A DRAFT: a park's draft was readied, the
+  # arm refused 3 s later and the run parked on a finished change. Tried again after a
+  # pause, readied again each time, and GitHub's own reason is kept for the refusal.
+  local armerr="" armtry=0
+  while ! armerr=$(swarm_gh pr merge "$branch" --repo "$REPO_SLUG" --auto --squash 2>&1 >/dev/null); do
+    armtry=$((armtry+1))
+    armerr=$(printf '%s' "$armerr" | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-200)
+    if [ "$armtry" -ge "${DRIVER_ARM_TRIES:-3}" ]; then
+      driver_say "✋ ship: auto-merge would not arm on the pull request for $branch, in $armtry tries. GitHub said: ${armerr:-nothing}. It is reviewed, and nothing will land it — so this says so rather than handing off."
+      driver_state_set "$t" park_note "auto-merge would not arm on the pull request for $branch in $armtry tries. GitHub said: ${armerr:-nothing}"
+      return "$DRIVER_E_REFUSED"
+    fi
+    driver_say "   ship: auto-merge did not arm on try $armtry (${armerr:-no reason given}) — readying the pull request again and trying once more"
+    sleep $(( ${DRIVER_ARM_RETRY_SEC:-5} * armtry ))
+    swarm_gh pr ready "$branch" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+  done
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a change that goes red or clashes and cannot merge within the hour is rebuilt fresh from the trunk." >/dev/null 2>&1 || true
   # A CLEAN ENDING FREES ITS OWN CLAIM, in review first: a claim left held reads to the
@@ -925,7 +927,7 @@ $polish"
   fi
 
   driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
-  _driver_state_edit "$t" '.counters.machine_parks = 0' 2>/dev/null || true
+  _driver_state_edit "$t" '.counters.machine_parks = 0 | .counters.partial_resume = 0' 2>/dev/null || true
   driver_say "   ship: $branch pushed, pull request ready, auto-merge armed at $(printf '%s' "$head" | cut -c1-8). Handing off."
   return "$DRIVER_OK"
 }

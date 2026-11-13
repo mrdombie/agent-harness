@@ -125,6 +125,23 @@ check '## Deleted tests
 expect_rc 1 "'covered by' a test file with no live case fails"
 expect_out 'no live it\(/test\( case' "and says why"
 
+# --- 6b. Covered by an ESLint RuleTester file, whose cases are its valid/invalid arrays --
+repo covered-ruletester
+git -C "$R" rm -q src/desk.test.ts
+printf "import { RuleTester } from 'eslint'\nnew RuleTester({}).run('no-thing', rule, { valid: ['a'], invalid: [] })\n" > "$R/src/one-desk.test.ts"
+commit
+check '## Deleted tests
+- `src/desk.test.ts` → covered by `src/one-desk.test.ts`'
+expect_rc 0 "'covered by' a RuleTester file passes"
+
+repo covered-ruletester-word
+git -C "$R" rm -q src/desk.test.ts
+printf "// RuleTester.run('no-thing') was retired\nconst notes = 'RuleTester';\n" > "$R/src/one-desk.test.ts"
+commit
+check '## Deleted tests
+- `src/desk.test.ts` → covered by `src/one-desk.test.ts`'
+expect_rc 1 "a file that only mentions RuleTester has no live case"
+
 # --- 7. Removed on purpose, with and without a reason -----------------------------
 repo purpose
 git -C "$R" rm -q src/desk.test.ts; commit
@@ -577,6 +594,79 @@ commit
 check
 expect_rc 0 "a .only inside a string does not turn the file's cases off"
 expect_not_out 'turned off' "and nothing is reported as turned off"
+
+# --- 49–53. A path the trunk made after the cut is absent at the merge-base ---------------
+at() { git -C "$R" cat-file -e "$1:$2" 2>/dev/null && echo there || echo absent; }
+
+# 49. The trunk renames a script INTO a test name; the branch never touched it.
+repo trunk-renames-in
+git -C "$R" checkout -q main; mkdir -p "$R/scripts"
+printf '#!/bin/sh\n# checks the recorder\nset -e\necho one\necho two\necho three\n' > "$R/scripts/test-verdict.sh"
+commit "trunk has the script"; git -C "$R" checkout -q work; git -C "$R" merge -q --ff-only main
+printf 'x\n' > "$R/notes.txt"; commit
+git -C "$R" checkout -q main; git -C "$R" mv scripts/test-verdict.sh scripts/verdict.test.sh; commit "trunk renames it"
+git -C "$R" checkout -q work
+MBF=$(git -C "$R" merge-base main work)
+[ "$(at main scripts/verdict.test.sh)/$(at "$MBF" scripts/verdict.test.sh)/$(at work scripts/verdict.test.sh)" = there/absent/absent ] \
+  || bad "fixture: the file should be on base only"
+git -C "$R" diff --name-status -M main work | grep -q '^R.*scripts/verdict.test.sh.*scripts/test-verdict.sh' \
+  || bad "fixture: git should read the trunk's rename backwards"
+HARNESS_TEST_PATTERNS='*.test.ts *.test.tsx *.test.sh' check
+expect_rc 0 "a script the trunk renamed into a test name after the cut ships clean"
+expect_out 'test files deleted or losing cases   : 0' "and the count says zero"
+
+# 50. The trunk moves a test file; the branch still has it under the old name.
+repo trunk-moves-test
+git -C "$R" checkout -q main
+mkdir -p "$R/src/desk"; git -C "$R" mv src/desk.test.ts src/desk/desk.test.ts; commit "trunk moves the desk test"
+git -C "$R" checkout -q work
+printf 'x\n' > "$R/notes.txt"; commit
+[ "$(at "$(git -C "$R" merge-base main work)" src/desk/desk.test.ts)" = absent ] || bad "fixture: the new name should not be at the merge-base"
+check
+expect_rc 0 "a test file the trunk moved after the cut ships clean"
+# The same shape, and the branch drops a case from its own copy.
+perl -pi -e 's/  test\("shows the queue", \(\) => \{\}\);\n//' "$R/src/desk.test.ts"
+grep -q 'shows the queue' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+commit
+git -C "$R" diff --name-status -M main work | grep -q '^R.*src/desk/desk.test.ts.*src/desk.test.ts' \
+  || bad "fixture: git should still pair the two names"
+check
+expect_rc 1 "and a case the branch drops from it is still reported"
+expect_out 'src/desk.test.ts: shows the queue' "naming the case under the branch's path"
+
+# 51. The trunk and the branch each add the same test path.
+repo both-add
+git -C "$R" checkout -q main
+printf "it('trunk only', () => {});\n" > "$R/src/later.test.ts"; commit "trunk adds later"
+git -C "$R" checkout -q work
+printf "it('the branch wrote its own', () => {});\n" > "$R/src/later.test.ts"; commit
+[ "$(at "$(git -C "$R" merge-base main work)" src/later.test.ts)" = absent ] || bad "fixture: the file should not be at the merge-base"
+check
+expect_rc 0 "a test path both sides added after the cut ships clean"
+
+# 52. The trunk adds a test file; the branch really deletes another.
+repo trunk-adds-branch-deletes
+git -C "$R" checkout -q main
+printf "it('trunk only', () => {});\n" > "$R/src/later.test.ts"; commit "trunk adds later"
+git -C "$R" checkout -q work
+git -C "$R" rm -q src/inbox.test.tsx; commit
+check
+expect_rc 1 "a test file the branch deleted is still reported"
+expect_out 'src/inbox.test.tsx — deleted \(1 cases\)' "naming it"
+expect_not_out 'src/later.test.ts' "and never the file the trunk added"
+
+# 53. The path is listed at the merge-base but its object is gone: unreadable, not absent.
+repo mb-object-gone
+git -C "$R" checkout -q main; printf "it('a trunk case', () => {});\n" >> "$R/src/desk.test.ts"; commit "trunk moves on"
+git -C "$R" checkout -q work; add_case; commit
+MBF=$(git -C "$R" merge-base main work)
+OBJ=$(git -C "$R" rev-parse "$MBF:src/desk.test.ts")
+rm -f "$R/.git/objects/$(printf '%s' "$OBJ" | cut -c1-2)/$(printf '%s' "$OBJ" | cut -c3-)"
+git -C "$R" cat-file -e "$OBJ" 2>/dev/null && bad "fixture: the object should be gone"
+[ -n "$(git -C "$R" ls-tree --name-only "$MBF" -- src/desk.test.ts)" ] || bad "fixture: the tree should still list the path"
+check
+expect_rc 2 "a merge-base copy whose object is gone refuses"
+expect_out "could not read src/desk.test.ts at $MBF" "naming the file and the commit"
 
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"

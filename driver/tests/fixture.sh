@@ -108,6 +108,9 @@ emit() { if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  # $FIX/gh/gist-<id>/<name> is what `gh gist view <id> --raw --filename <name>` prints.
+  "gist view") n=""; p=""; for a in "$@"; do [ "$p" = --filename ] && n="$a"; p="$a"; done
+               f="$FIX/gh/gist-$3/$n"; [ -f "$f" ] || exit 1; cat "$f" ;;
   api\ *)
     # $FIX/gh/api-<endpoint>.json answers `gh api <endpoint>` (/ ? & = read as _); absent, empty as before.
     ep=""; skip=0
@@ -183,7 +186,7 @@ SH
   GH_OPEN_PRS_PAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/fixtures" && pwd)/gh-open-prs-page.sh"; export GH_OPEN_PRS_PAGE
   export GH_PRS_RETRY_SEC=0
   # Retries wait in real runs; a suite counts them instead.
-  export DRIVER_API_RETRY_SEC=0 DRIVER_KEPT_RETRY_SEC=0
+  export DRIVER_API_RETRY_SEC=0 DRIVER_API_REFUSAL_BASE_SEC=0 DRIVER_KEPT_RETRY_SEC=0 DRIVER_ARM_RETRY_SEC=0
   export PATH="$BIN:$PATH"
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
@@ -301,6 +304,44 @@ fix_schema() { printf '%s\n' "$2" > "$DRIVER_BRIEFS/schemas/$1.json"; }
 
 # fix_gh_fail <noun verb…> — make those gh writes fail, the way an expired token,
 # a protected base or a rate limit does. No call: everything succeeds.
+# A per-call stub: the nth call answers with $FIX/ai/<step>.<n>.jsonl, so two calls
+# in one step can return two different answers. With one answer for both, the
+# two-task case below proved task 1 twice and task 2 never, and passed.
+nth_claude() {
+cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+# Everything the fixture stub records, kept — a replacement that quietly drops
+# them makes the next assertion added below measure a different stub than the
+# ones above it. The one thing it adds is a per-step call counter.
+step=""; prev=""; schema=""
+for a in "$@"; do
+  case "$prev" in --name) step="$a" ;; --json-schema) schema="$a" ;; esac
+  prev="$a"
+done
+printf '%s
+' "$step" >> "$CLAUDE_LOG"
+printf '%s	%s	%s
+' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
+printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
+# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
+# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
+# plain `cat` here that plant HUNG instead of going red, which reports the guard as
+# sound. perl is the same tool driver_bounded uses and is on every machine this kit
+# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
+# data received in 3s, proceeding without it").
+perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
+  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
+n=$(( $(cat "$FIX/nth.$step" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth.$step"
+if [ -f "$FIX/ai/$step.$n.jsonl" ]; then cat "$FIX/ai/$step.$n.jsonl"; exit 0; fi
+# The fixture stub's own refusal, kept: a missing transcript must not read as
+# "the agent produced no transcript".
+f="$FIX/ai/$step.jsonl"
+[ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
+cat "$f"
+SH
+chmod +x "$BIN/claude"; rm -f "$FIX"/nth.*
+}
+
 fix_gh_fail() { printf '%s\n' "$@" > "$FIX/gh-fail"; }
 fix_gh_ok()   { rm -f "$FIX/gh-fail"; }
 

@@ -114,7 +114,7 @@ unfinished() { # <pr> <why> <ticket…> — 1 when a write or a read failed
     fi
     kids=$(cut -f4 "$RD/$t" | base64 --decode 2>/dev/null | batch_children "$t")
     for c in $kids; do
-      info=$(gh_read "batch child #$c" api "repos/$REPO_SLUG/issues/$c" \
+      info=$(gh_read "batch child #$c" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$c" \
         --jq '[.state, ([.labels[].name] | join(","))] | join("\t")') || { f=1; continue; }
       [ "${info%%$'\t'*}" = open ] || continue
       case ",${info#*$'\t'}," in *",${LBL_BATCHED:-status:batched},"*) ;; *) continue ;; esac
@@ -154,7 +154,7 @@ while IFS=$'\t' read -r at pr parked tickets; do
   [ -n "${at:-}" ] || continue
   failed=0; open_named=""; batch=0
   for t in $tickets; do
-    info=$(gh_read "ticket #$t" api "repos/$REPO_SLUG/issues/$t" \
+    info=$(gh_read "ticket #$t" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$t" \
       --jq '[.state, (if .pull_request then "pr" else "issue" end), ([.labels[].name] | join(",")), ((.body // "") | @base64)] | join("\t")'); r=$?
     [ "$r" -eq "$GH_READ_MISSING" ] && { echo "PR #$pr names #$t, which does not exist — skipped"; continue; }
     [ "$r" -eq 0 ] || { failed=1; continue; }
@@ -198,7 +198,7 @@ done <<<"$rows"
 if [ -s "$WAIT_FILE" ]; then
   while read -r t pr; do
     case "$t$pr" in ''|*[!0-9]*) continue ;; esac
-    info=$(gh_read "waiting ticket #$t" api "repos/$REPO_SLUG/issues/$t" \
+    info=$(gh_read "waiting ticket #$t" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$t" \
       --jq '[.state, ([.labels[].name] | join(","))] | join("\t")'); r=$?
     [ "$r" -eq "$GH_READ_MISSING" ] && { wait_drop "$t"; continue; }
     [ "$r" -eq 0 ] || { rc=1; continue; }

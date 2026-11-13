@@ -482,7 +482,7 @@ coord_pace_window_said() {
 COORD_RUN_CLASSES="$COORD_DIR/run-classes.tsv"
 coord_record_class() { # <ticket> <class> — after a spawn returns
   local rec rid="-"
-  rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json 2>/dev/null | head -1)
+  rec=$(swarm_newest_logs 1 "$RUNS_DIR"/claim-"$1"-*.json)
   [ -n "$rec" ] && rid=$(basename "$rec" .json)
   printf '%s\t%s\t%s\t%s\n' "$rid" "$1" "$2" "$(date +%s)" >> "$COORD_RUN_CLASSES"
   tail -500 "$COORD_RUN_CLASSES" > "$COORD_RUN_CLASSES.$$" 2>/dev/null && mv -f "$COORD_RUN_CLASSES.$$" "$COORD_RUN_CLASSES"
@@ -535,13 +535,18 @@ coord_kill_tree() {
   kill -KILL "$1" 2>/dev/null
 }
 coord_lock() { # <dir> <noun> [max-sec]
-  local lock="$1" who="${2:-run}" max="${3:-}" holder age i
+  local lock="$1" who="${2:-run}" max="${3:-}" holder age i m
   COORD_LOCK_WHY=""; COORD_LOCK_STOPPED=""
   case "$max" in ''|*[!0-9]*|0) max="" ;; esac
   if ! mkdir "$lock" 2>/dev/null; then
     holder=$(cat "$lock/pid" 2>/dev/null)
-    if [ -z "$holder" ] && [ $(( $(date +%s) - $(coord_mtime "$lock") )) -lt 60 ]; then
-      COORD_LOCK_WHY="another $who is taking the lock"; return 1
+    if [ -z "$holder" ]; then
+      m=$(coord_mtime "$lock")
+      # An unreadable age is a dir let go mid-read, not an ancient one.
+      case "$m" in ''|0) COORD_LOCK_WHY="another $who just let the lock go"; return 1 ;; esac
+      if [ $(( $(date +%s) - m )) -lt 60 ]; then
+        COORD_LOCK_WHY="another $who is taking the lock"; return 1
+      fi
     fi
     if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
        && [ "$(coord_started_of "$holder")" = "$(cat "$lock/started" 2>/dev/null)" ]; then
@@ -686,6 +691,9 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # (a resume, an owner's answer), half-built work or a process fix — the polish hold
 # never parks any of them. A process fix (coord_process) runs first of all, ahead of
 # even an entry the PM put on top, in the sheet's order as in this machine's own.
+# A fix round of an open PR ("Fix: PR #<n>" note, rebuild.sh) runs next, ahead of every
+# new build whatever its priority: behind them it waited hours for a place (2026-11-11).
+# So does the resume of a draft whose build is unfinished ("Resume: PR #<n>" note).
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority every non-follow-up ticket before a fix-after-merge one
 # (release.followUpLabel, or a queue note "follow-up of PR #": owner call 2026-10-23, after
@@ -716,12 +724,13 @@ coord_queue_ordered() {
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
+         | .fix = (($t.note // "") | test("^(Fix|Resume): PR #[0-9]"))
          | . + {tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # Every P0 first (owner, 2026-10-30: urgent first), then the tiers. .top (the PM putting it on top
      # with add --front) leads its tier; .front (a resume, an answer, a requeue) leads its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .proc then 0 else 1 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+       else sort_by(if .proc then 0 elif .fix then 1 else 2 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | if $wide == 2 then ([range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t"))

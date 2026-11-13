@@ -25,6 +25,7 @@
 # an argument list.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || exit 1
 
 driver_fact_dir() { printf '%s' "$(driver_state_dir "$1")/steps/$2.facts"; }
 
@@ -98,6 +99,17 @@ driver_fact_ticket() { # <ticket>
     '"#\($n) \(.title)\n\nLabels: \([.labels[].name] | join(", "))\n\n\(.body // "(the ticket has no body)")"'
 }
 
+# The ticket's numbered change items and acceptance items, by the ids a feature list's
+# `covers` names them with (ticket-parts.sh), so the plan and self-check count alike.
+driver_fact_ticket_items() { # <ticket>
+  local b f out
+  b=$(driver_ticket_view "$1" body '.body // ""' 2>/dev/null) || { _driver_fact_none "#$1 could not be read"; return 0; }
+  f=$(mktemp "${TMPDIR:-/tmp}/ticket-items.XXXXXX") || return 0
+  printf '%s\n' "$b" > "$f"; out=$(ticket_parts_items "$f" | awk -F'\t' '{ print "- " $1 ": " $2 }'); rm -f "$f"
+  [ -n "$out" ] || { _driver_fact_none "the ticket numbers no change item and ticks no acceptance box, so each feature's \`covers\` is empty, and anything left out is a \`note\` in \`outside\`"; return 0; }
+  printf 'Each id below is in some feature'"'"'s `covers` (the behaviour that delivers it), or in `outside` with why when no behaviour can carry it:\n%s' "$out"
+}
+
 # The project's own facts file. It IS the answer to "this project": the kit names
 # no project, so there is nothing here to compose.
 driver_fact_project() {
@@ -108,6 +120,7 @@ driver_fact_project() {
       printf '\nLocal checks are gates.local and nothing more (gates.localOnly): run those and the one test file you wrote, never gates.changed or the whole suite. Every test runs once, in CI.'
       _driver_fact_local_only_limits; printf '\n'
     fi
+    _driver_fact_case_filters
   else
     _driver_fact_none "this run resolved no harness.json"
   fi
@@ -505,6 +518,7 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
   driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
+  driver_fact_put "$t" "$s" TICKET_ITEMS    "$(driver_fact_ticket_items "$t")"
   case "$s" in fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
   case "$s" in build*|fix) driver_fact_put "$t" "$s" PROOF_LIMITS "$(driver_fact_proof_limits)" ;; esac
 }
@@ -542,6 +556,19 @@ driver_fact_proof_limits() {
 _driver_fact_base_red_limits() {
   printf ' A check or test red on %s itself is base-red: never yours, never a question, never a deferral, and "wait or fix here" is not asked. The driver runs it on the commit this branch merged, files the one develop-red ticket and does not count it here. This check is red on %s itself; the develop-red ticket owns it; carry on. A red only on this branch is yours.' \
     "${INTEGRATION_BRANCH:-the integration branch}" "${INTEGRATION_BRANCH:-the integration branch}"
+}
+
+# _driver_fact_case_filters — the test files here that run one case at a time, and how.
+# Read off the files themselves (a `# case-filter:` line near the top): no config names them.
+_driver_fact_case_filters() {
+  local wt files n eg
+  wt=$(driver_state_get "${DRIVER_TICKET:-}" worktree 2>/dev/null); [ -n "$wt" ] && [ -d "$wt" ] || wt="${MAIN_REPO:-}"
+  [ -n "$wt" ] || return 0
+  files=$(git -C "$wt" grep -lE '^#[[:space:]]*case-filter:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' -- 2>/dev/null) || return 0
+  n=$(printf '%s\n' "$files" | grep -c .); [ "$n" -gt 0 ] || return 0
+  eg=$(sed -n '1,40s/^#[[:space:]]*case-filter:[[:space:]]*//p' "$wt/$(printf '%s\n' "$files" | head -1)" 2>/dev/null | head -1)
+  printf '\nSome test files here run one case at a time (%s: %s). Each says how on its `# case-filter:` line, e.g. %s. A test you add to one of them is one named case, and its proof command carries that filter: a command that runs the whole file is refused, because a proof runs it twice inside one time limit.\n' \
+    "$n" "$(printf '%s\n' "$files" | head -4 | paste -sd, - | sed 's/,/, /g')$([ "$n" -le 4 ] || printf ', …')" "$eg"
 }
 
 # _driver_fact_local_only_limits — what a model never runs here under gates.localOnly.

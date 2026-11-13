@@ -205,7 +205,10 @@ fi
 exec "$BIN/gh" "$@"
 SH
 
-  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn" "$BIN/gh-labels"
+  # The tick reads the CLI's version every pass; a suite's own `claude` stub counts calls.
+  printf '#!/usr/bin/env bash\necho "2.1.999 (Claude Code)"\n' > "$BIN/claude-version"
+  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn" "$BIN/gh-labels" "$BIN/claude-version"
+  export COORDINATOR_CLAUDE_CLI="$BIN/claude-version"
 
   export FIX REPO STATE BIN GH_LOG SPAWNS
   GH_OPEN_PRS_PAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/fixtures" && pwd)/gh-open-prs-page.sh"; export GH_OPEN_PRS_PAGE

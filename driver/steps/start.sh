@@ -11,7 +11,12 @@
 #   closed            there is nothing to build
 #   the hold label    a person owns it; an agent taking it is a slot nobody can use
 #   gated             the PM flips that label, never the driver
+#   another repo's    a repo:<name> label names a repo this project does not build: its
+#                     files are not in this repo's worktrees. Nothing is claimed or cut
+#                     (DRIVER_E_ELSEWHERE); the coordinator starts it in a clone of <name>
 #   not ready         a status that is not ready is a status somebody chose
+#                     (partial is the machine's: resumed from the branch a dead run
+#                     left, driver.maxPartialResumes (3) times in a row, then the PM's)
 #   already claimed   a peer holds it. NEVER adopt a live claim: two agents on one
 #                     branch is the failure the ref-based lock exists to prevent
 #   unreadable        a ticket that cannot be read is not a ticket that is fine
@@ -40,6 +45,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-lib.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/branch-ticket.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/size-rules.sh" || exit 1
 
 # _driver_start_clear_way <ticket> <repo> <tree> <branch> <cut> — make room for
 # `worktree add` at <tree> on <branch>. 1, with DRIVER_START_WHY, when it must not.
@@ -121,9 +128,28 @@ _driver_start_acquire() {
   fi
 }
 
+# _driver_start_stranded <ticket> <record's branch> — the branch a dead run left on origin
+# for the ticket, by the reconciler's own rule, fetched. Prints nothing when origin has
+# none. 1 when origin could not be read: unread is not "none".
+_driver_start_stranded() {
+  local t="$1" b="$2" heads
+  heads=$(git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 ls-remote --heads origin 2>/dev/null) || return 1
+  heads=$(printf '%s\n' "$heads" | awk '{ sub("^refs/heads/", "", $2); print $2 }')
+  # The record's branch is kept: only a ticket with none on the record takes origin's.
+  if [ -n "$b" ]; then b=$(printf '%s\n' "$heads" | grep -xF -- "$b" | head -1)
+  else b=$(printf '%s\n' "$heads" | branch_tickets | awk -F'\t' -v n="$t" '$1 == n { print $2; exit }'); fi
+  [ -n "$b" ] || return 0
+  git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null || return 1
+  printf '%s' "$b"
+}
+
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
   local meta st labels repo slug branch wt sha l hrc cw cb ow ob
+  # A start has built nothing yet: on a spent allowance it gives up in seconds and the
+  # ticket goes back on the queue (DRIVER_E_UNREAD), rather than hold a builder's place
+  # asleep until the reset. Only the later steps wait a spent allowance out.
+  local DRIVER_BUDGET_WAITS=0
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
@@ -144,6 +170,20 @@ driver_step_start() { # <ticket>
   if [ "$st" != "OPEN" ]; then
     driver_say "✋ start: #$t is $st. There is nothing to build."
     return "$DRIVER_E_REFUSED"
+  fi
+  # ANOTHER REPO'S TICKET IS NEVER BUILT IN THIS ONE. A repo:<name> ticket started here
+  # got a worktree of this repo, where none of its files exist: the plan and the first
+  # build task were paid for before the model asked where the files were. Read off the
+  # labels, before the claim and the worktree, with no model call. A run the coordinator
+  # spawned in a clone of <name> reads that clone's config, so the label names its own repo.
+  local elsewhere
+  if elsewhere=$(driver_repo_elsewhere "$labels"); then
+    if [ -n "${elsewhere#*$'\t'}" ]; then
+      driver_say "✋ start: #$t is labelled for ${elsewhere%%$'\t'*}, which this repo ($(driver_repo_self)) does not build. Its run starts in the clone at ${elsewhere#*$'\t'} (the coordinator starts it there), never in a worktree of this repo. Nothing was claimed or cut."
+    else
+      driver_say "✋ start: #$t is labelled for ${elsewhere%%$'\t'*}, which this repo ($(driver_repo_self)) does not build, and this host has no clone of it (a directory of that name beside this repo's clone with that repo as its origin, or HARNESS_REPO_CLONES). Nothing was claimed or cut; it stays ready."
+    fi
+    return "$DRIVER_E_ELSEWHERE"
   fi
   case ",$labels," in
     *",$HOLD_LABEL,"*)
@@ -170,7 +210,11 @@ driver_step_start() { # <ticket>
   # AND IN REVIEW IS OURS WHEN THE BUILD IS. A build that parked keeps its work on a
   # draft PR, marked in review, and build-ticket resumes the build on its record. Refused here, it parked back to ready and was
   # spawned again, for ever. Only that resume, with its draft on the record's branch.
-  local own=""
+  local own="" partial=0
+  # PARTIAL IS THE MACHINE'S: the reconciler sets it on a dead run's branch with no PR.
+  case ",$labels," in
+    *",${LBL_PARTIAL:-$LBL_READY},"*) own=1; [ -z "${LBL_PARTIAL:-}" ] || partial=1 ;;
+  esac
   case ",$labels," in
     *",$LBL_READY,"*|*",$LBL_CLAIMED,"*|*",$LBL_PARKED,"*) own=1 ;;
     *",$LBL_IN_REVIEW,"*)
@@ -193,6 +237,19 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: #$t is not $LBL_READY (labels: ${labels:-none}). A status that is not ready is a status somebody chose."
       return "$DRIVER_E_REFUSED" ;;
   esac
+  # Stranded again after every resume, with no ship between: the PM's, never a fourth run.
+  if [ "$partial" = 1 ]; then
+    local pmax pn
+    pmax="${DRIVER_MAX_PARTIAL_RESUMES:-$(driver_opt driver.maxPartialResumes 3)}"
+    case "$pmax" in ''|*[!0-9]*|0) pmax=3 ;; esac
+    pn=$(driver_state_count "$t" partial_resume)
+    if [ "${pn:-0}" -ge "$pmax" ]; then
+      driver_say "✋ start: #$t is $LBL_PARTIAL again after $pn resumes in a row — each run ended with a branch and no pull request. Parked for the PM, not resumed again."
+      driver_state_set "$t" park_cause pm
+      driver_state_set "$t" park_note "Resumed from its stranded branch $pn times in a row, and every run ended with the branch and no pull request ($(driver_state_get "$t" branch)). Something ends the run before it ships: read the last run's log, then clear \`$DRIVER_PM_LABEL\`."
+      return "$DRIVER_E_QUESTION"
+    fi
+  fi
 
   # A TICKET WITH AN OPEN PULL REQUEST IS NEVER BUILT TWICE. Without a tree of its own
   # on the record, everything below would cut a fresh branch from the trunk beside the
@@ -208,7 +265,16 @@ driver_step_start() { # <ticket>
     fi
     # OUR OWN PARKED DRAFT, ITS TREE SWEPT: the PR is on the record's branch, so the
     # tree is cut again from origin's head of it and the build resumes.
-    local rb; rb=$(driver_state_get "$t" branch)
+    # A "Fix:" RUN CONTINUES THE ONE OPEN PR ITS BRIEF NAMES (the coordinator's fix round,
+    # scripts/rebuild.sh): that PR's branch is this run's, whichever host built it, and
+    # its tree is cut from origin's head of it exactly as a swept one is. Any other open
+    # PR still ends the run below.
+    local rb fixpr; rb=$(driver_state_get "$t" branch)
+    fixpr=$(driver_fix_brief_pr "$(driver_state_get "$t" run_brief)")
+    if [ -n "$fixpr" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
+       && [ "$(printf '%s' "$prs" | cut -f1)" = "$fixpr" ]; then
+      rb=$(printf '%s' "$prs" | cut -f2)
+    else fixpr=""; fi
     if [ -n "$prs" ] && [ -n "$rb" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
        && [ "$(printf '%s' "$prs" | cut -f2)" = "$rb" ] \
        && git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$rb:refs/remotes/origin/$rb" 2>/dev/null; then
@@ -218,14 +284,20 @@ driver_step_start() { # <ticket>
       if _driver_start_cut "$t" "$MAIN_REPO" "$owt" "$rb" "origin/$rb" \
          && driver_own_install "$owt" && driver_prepare_worktree "$owt"; then
         driver_state_set "$t" worktree "$owt"
-        driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
+        if [ -n "$fixpr" ]; then
+          driver_state_set "$t" branch "$rb"
+          driver_say "   start: a fix of open PR #$fixpr — #$t continues on $rb, cut from origin/$rb"
+        else
+          driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
+        fi
         prs=""
       fi
     fi
     # ONE OPEN PR IS NOT PARKED ON, AND NOT BUILT BESIDE. #12649 parked on "start will
     # not cut a second branch" with its PR right there. There is no repair route: the PR
     # merges, or the coordinator closes it and builds the ticket fresh once it cannot
-    # merge (scripts/rebuild.sh). This run ends without a park (DRIVER_E_HAS_PR).
+    # merge (scripts/rebuild.sh). This run ends without a park (DRIVER_E_HAS_PR). Only a
+    # run whose brief is the coordinator's "Fix:" of that PR continues it (above).
     # Several PRs are a person's call.
     if [ -n "$prs" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ]; then
       driver_say "↪ start: #$t already has an open pull request #$(printf '%s' "$prs" | cut -f1) on $(printf '%s' "$prs" | cut -f2) — it merges, or the coordinator rebuilds it fresh once it cannot merge (coordinator.rebuildAfterMin); this run builds nothing."
@@ -243,6 +315,16 @@ driver_step_start() { # <ticket>
   # look at the second. The worktree below is guarded that way already; the branch
   # was not, and the two have to agree.
   branch=$(driver_state_get "$t" branch)
+  # A PARTIAL TICKET RESUMES FROM ITS STRANDED BRANCH, never from the trunk beside it.
+  # Read before the claim, so an unreadable origin leaves nothing held.
+  local stranded=""
+  if [ "$partial" = 1 ] && [ "${DRIVER_FRESH:-}" != 1 ] && { [ -z "$owt" ] || [ ! -d "$owt" ]; }; then
+    if ! stranded=$(_driver_start_stranded "$t" "$branch"); then
+      driver_say "⏳ start: could not read origin for the branch #$t's last run left, so a cut now might start over beside it. Left as it was for the next tick."
+      return "$DRIVER_E_UNREAD"
+    fi
+    [ -z "$stranded" ] || branch="$stranded"
+  fi
   if [ -z "$branch" ]; then
     # A fresh run, not a resume: what an earlier run of this ticket took from a
     # polish list and never reserved for a PR is let go, so nothing ships it unbuilt.
@@ -330,6 +412,7 @@ driver_step_start() { # <ticket>
     # A build starts from the trunk. Work kept on refs/stale/ (a park's refused push,
     # an old PR head a rebuild closed) is reference only and never restored.
     local cut="$sha"
+    [ -z "$stranded" ] || cut="origin/$stranded"
     [ "${DRIVER_FRESH:-}" != 1 ] || driver_say "   start: a rebuild — #$t starts from $INTEGRATION_BRANCH"
     # UNDER THE PROJECT'S OWN WORKTREE ROOT, not $TMPDIR. On macOS $TMPDIR is a
     # /var/folders directory the system prunes, and between the build and the push
@@ -345,7 +428,7 @@ driver_step_start() { # <ticket>
     wt="$wt_root/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
     mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     # A fresh branch has reworded and removed no tests: the ledger starts empty.
-    mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"
+    [ -n "$stranded" ] || { mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"; }
     if ! _driver_start_cut "$t" "$repo" "$wt" "$branch" "$cut"; then
       driver_say "✋ start: could not create a worktree at $wt on $branch — $DRIVER_START_WHY"
       driver_state_set "$t" park_note "start could not create a worktree at $wt on $branch — $DRIVER_START_WHY"
@@ -372,8 +455,13 @@ driver_step_start() { # <ticket>
     fi
     driver_state_set "$t" worktree "$wt"
     driver_state_set "$t" claimed_at_sha "$sha"
-    driver_say "   start: #$t claimed, worktree at $wt on $branch (cut at $(printf '%s' "$sha" | cut -c1-8))"
+    if [ -n "$stranded" ]; then
+      driver_say "   start: #$t is $LBL_PARTIAL — resumed from the branch its last run left, worktree at $wt on $branch (cut at origin/$stranded)"
+    else
+      driver_say "   start: #$t claimed, worktree at $wt on $branch (cut at $(printf '%s' "$sha" | cut -c1-8))"
+    fi
   fi
+  [ "$partial" != 1 ] || driver_state_bump "$t" partial_resume
 
   # The run's id and log on the claim: claim-lock notes runs/<run>.worktrees only for a
   # claim tagged with this run, and that note is how the spawner's post-exit stop finds

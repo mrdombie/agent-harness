@@ -444,7 +444,7 @@ reads. One agent each, in a single message so they go concurrently:
 | Reason | Agent's job |
 |---|---|
 | `carries no screenshot` | Render the route, commit shots to `docs/evidence/<issue>/`, add SHA-pinned links to the body, rerun the gate |
-| Real conflict | Merge `develop` in, resolve, push. **Merge FIRST, prune suppressions SECOND, gate LAST** — merging voids a `/agent-harness:ui-gate` fingerprint |
+| Real conflict | Merge `develop` in, resolve, push. **Merge FIRST, prune suppressions SECOND, gate LAST** |
 | Dead claim holding commits | Verify not superseded, then adopt and take to `/agent-harness:finish` |
 
 Report the count in the 🟡 line. **Do not report their progress** — they did not

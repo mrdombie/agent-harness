@@ -29,10 +29,21 @@
 #   gh_open_prs [max-age-sec]       the open PRs, from one shared copy (prs.json)
 #                                   every reader takes while it is young enough
 #   gh_prs_paged <fields> [base]    every open PR in `gh pr list --json` shape, read
-#                                   GH_PRS_PAGE (25) a request; exit 1 on any failed page
+#                                   GH_PRS_PAGE (50) a request; exit 1 on any failed page
 #   gh_allowance_read / _low        what is left of the hourly allowance (free reads);
 #                                   _low holds below GH_ALLOWANCE_LOW_PCT (10)
 #   gh_limit_why                    the rate limit and its reset, as a sentence
+#   gh_budget_read / _low           REST and GraphQL left on THIS token, from one free
+#                                   `gh api rate_limit` kept GH_BUDGET_CACHE_SEC (60);
+#                                   _low holds while either is under GH_ALLOWANCE_LOW_PCT
+#   gh_budget_gate <gh args…>       what gh_call asks first: under the low mark a read
+#                                   that is not essential (GH_ESSENTIAL=1, or a caller in
+#                                   GH_ESSENTIAL_CALLERS) sleeps to the reset when that is
+#                                   within GH_BUDGET_WAIT_MAX_SEC (900), else exit GH_WAIT
+#                                   (75). Writes always go through.
+#   GH_WAIT (75)                    gh_call's exit for "GitHub's rate limit: wait and ask
+#                                   again" — under a backoff, at the budget gate, and for
+#                                   the refusal itself. Never an empty answer.
 #   gh_calls_tally <since> [caller] who spent it, from gh-calls.log
 #   gh_read <what> <gh args…>       a read whose answer decides something: the body on
 #                                   success; on any failure (exit, error body, GraphQL
@@ -202,6 +213,8 @@ gh_calls_note() { # <args…>
   local f verb; f=$(gh_calls_file)
   mkdir -p "$(dirname "$f")" 2>/dev/null
   if [ "${1:-}" = api ]; then verb=$(_gh_api_verb "${@:2}"); else verb="${1:-} ${2:-}"; fi
+  # One line a call: an argument holding a newline or a tab must not start a row of its own.
+  verb=$(printf '%s' "$verb" | tr '\t\r\n' '   ' | cut -c1-200)
   printf '%s\t%s\t%s\n' "$(gh_batch_now)" "${GH_CALLER:-$(basename "${0:-?}" .sh)}" "$verb" >> "$f" 2>/dev/null || true
 }
 # _gh_api_verb <gh api args…> — "api [METHOD] <endpoint>": the first positional, query and leading / dropped.
@@ -223,18 +236,27 @@ _gh_api_verb() {
 }
 # gh_calls_tally <since-epoch> [caller] — "caller N, caller N" (most first), or the count for one caller.
 gh_calls_tally() {
+  # by-verb: "N \t caller \t verb" rows, most first, numbers and shas folded to N.
+  if [ "${2:-}" = --by-verb ]; then
+    local f2; f2=$(gh_calls_file); [ -s "$f2" ] || return 0
+    awk -F'\t' -v s="$1" '$1 ~ /^[0-9]+$/ && $1 + 0 >= s + 0 && $2 != "" { v = $3; sub(/ -f query=.*/, "", v); gsub(/[0-9a-f]{40}/, "SHA", v); gsub(/[0-9]{2,}/, "N", v)
+        n[$2 "\t" v]++ } END { for (k in n) printf "%d\t%s\n", n[k], k }' "$f2" | sort -rn
+    return 0
+  fi
   local f; f=$(gh_calls_file); [ -s "$f" ] || { [ -n "${2:-}" ] && printf '0'; return 0; }
   if [ -n "${2:-}" ]; then
-    awk -F'\t' -v s="$1" -v c="$2" '$1 >= s && $2 == c { n++ } END { printf "%d", n }' "$f"
+    awk -F'\t' -v s="$1" -v c="$2" '$1 ~ /^[0-9]+$/ && $1 + 0 >= s + 0 && $2 == c { n++ } END { printf "%d", n }' "$f"
   else
-    awk -F'\t' -v s="$1" '$1 >= s { n[$2]++ } END { for (k in n) printf "%d\t%s\n", n[k], k }' "$f" \
+    awk -F'\t' -v s="$1" '$1 ~ /^[0-9]+$/ && $1 + 0 >= s + 0 && $2 != "" { n[$2]++ } END { for (k in n) printf "%d\t%s\n", n[k], k }' "$f" \
       | sort -rn | awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $2, $1 }'
   fi
 }
-# Keeps the last two hours, so the tally stays a cheap read.
+# Keeps the last two hours, so the tally stays a cheap read. A row that does not open
+# with an epoch is dropped: compared as text it outlived every trim (7,201 of 9,765
+# rows on 2026-11-11, counted in each tick's "last hour" under no caller).
 gh_calls_trim() {
   local f; f=$(gh_calls_file); [ -s "$f" ] || return 0
-  awk -F'\t' -v s="$(( $(gh_batch_now) - 7200 ))" '$1 >= s' "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  awk -F'\t' -v s="$(( $(gh_batch_now) - 7200 ))" '$1 ~ /^[0-9]+$/ && $1 + 0 >= s + 0' "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
 }
 
 # ---- how much of the allowance is left ---------------------------------------
@@ -313,6 +335,137 @@ gh_limit_why() {
 }
 gh_batch_clock() { date -u -r "$1" +%H:%MZ 2>/dev/null || date -u -d "@$1" +%H:%MZ 2>/dev/null; }
 
+# ---- the budget every call asks first ----------------------------------------
+# ONE TOKEN, TWO HOURLY ALLOWANCES (REST "core" and GraphQL), EVERY HOST AND SESSION ON
+# IT. On 2026-11-11 REST ran at 82 requests a minute (4,920 an hour of 5,000) and every
+# reader went blind for the end of each hour. Under the low mark a read that is not
+# essential waits for the reset; the coordinator's own reads and every write go through.
+GH_WAIT=75
+# gh_token_key — names the token a reading belongs to without holding it: `login` for
+# gh's own stored login, else a checksum of the token's last six characters. A machine
+# with GH_TOKEN set in one place and the keyring in another has two budgets.
+gh_token_key() {
+  local t="${GH_TOKEN:-${GITHUB_TOKEN:-}}" n
+  [ -n "$t" ] || { printf 'login'; return 0; }
+  n=${#t}; [ "$n" -le 6 ] || t="${t:$(( n - 6 ))}"
+  printf '%s' "$t" | cksum | awk '{ printf "t%08x", $1 }'
+}
+gh_budget_file() { printf '%s.%s' "${GH_BUDGET_FILE:-$(dirname "$(gh_backoff_file)")/gh-budget}" "$(gh_token_key)"; }
+
+# gh_budget_read — <resource> \t <remaining> \t <limit> \t <reset-epoch> \t <used> for core
+# and graphql, from the copy while it is younger than GH_BUDGET_CACHE_SEC (60), else from
+# one `gh api rate_limit` (free). 1, and no rows, when GitHub could not say: that too is
+# kept for the cache time, so a dead network is asked once a minute, not once a call.
+gh_budget_read() {
+  local f now at j rows
+  f=$(gh_budget_file); now=$(gh_batch_now)
+  if [ -s "$f" ]; then
+    at=$(awk -F'\t' 'NR == 1 && $1 == "at" { print $2 }' "$f" 2>/dev/null)
+    case "$at" in ''|*[!0-9]*) at=0 ;; esac
+    if [ "$at" -le "$now" ] && [ $(( now - at )) -lt "${GH_BUDGET_CACHE_SEC:-60}" ]; then
+      rows=$(awk -F'\t' 'NR > 1 && NF >= 4' "$f"); [ -n "$rows" ] || return 1
+      printf '%s\n' "$rows"; return 0
+    fi
+  fi
+  rows=""
+  if j=$(_gh_rate_limit); then
+    rows=$(jq -r '.resources | to_entries[] | select(.key == "core" or .key == "graphql") | .value as $v
+                  | select(($v.limit | type) == "number" and ($v.remaining | type) == "number" and ($v.reset | type) == "number")
+                  | "\(.key)\t\($v.remaining)\t\($v.limit)\t\($v.reset)\t\($v.used // ($v.limit - $v.remaining))"' <<<"$j" 2>/dev/null)
+  fi
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  { printf 'at\t%s\n' "$now"; [ -z "$rows" ] || printf '%s\n' "$rows"; } > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  [ -n "$rows" ] || return 1
+  printf '%s\n' "$rows"
+}
+
+# gh_budget_low — 0, printing the shortest row, while REST or GraphQL is under
+# GH_ALLOWANCE_LOW_PCT on this token with its reset still ahead. This token's own reading
+# alone decides: the fleet's readings (gh_allowance_low) are not kept per token, and one
+# read on another token must not hold this one's readers. A reading GitHub could not
+# give is not low.
+gh_budget_low() {
+  local rows
+  rows=$(gh_budget_read 2>/dev/null) || return 1
+  printf '%s\n' "$rows" | awk -F'\t' -v p="${GH_ALLOWANCE_LOW_PCT:-10}" -v now="$(gh_batch_now)" '
+    $3 + 0 > 0 && $4 + 0 > now + 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
+    END { if (found) { print row; exit 0 } exit 1 }'
+}
+
+# _gh_is_read <gh args…> — 0 for a call that only reads. Anything unsure is a write, and
+# a write is never held: a lost comment, label or merge is lost work.
+_gh_is_read() {
+  local a prev=""
+  case "${1:-}" in
+    search) return 0 ;;
+    api)
+      for a in "${@:2}"; do
+        case "$prev" in -X|--method) case "$a" in GET|get) ;; *) return 1 ;; esac ;; esac
+        case "$a" in
+          -XGET|--method=GET) ;;
+          -X?*|--method=*|--input|--input=*) return 1 ;;
+          *mutation*) return 1 ;;
+        esac
+        prev="$a"
+      done
+      # Fields with no -X GET make a POST, except on graphql, where they carry the query.
+      case " ${*:2} " in
+        *" graphql "*) return 0 ;;
+        *" -X GET "*|*" --method GET "*|*" -XGET "*|*" --method=GET "*) return 0 ;;
+        *" -f "*|*" -F "*|*" --field "*|*" --raw-field "*) return 1 ;;
+      esac
+      return 0 ;;
+    pr|issue|run|label|release|repo|workflow|cache|ruleset|gist)
+      case "${2:-}" in view|list|checks|status|diff) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+_gh_essential() {
+  [ "${GH_ESSENTIAL:-0}" = 1 ] && return 0
+  case " ${GH_ESSENTIAL_CALLERS-coordinator-tick} " in *" ${GH_CALLER:-$(basename "${0:-?}" .sh)} "*) return 0 ;; esac
+  return 1
+}
+
+# gh_budget_gate <gh args…> — 0 to go on. Under the low mark, a read that is not essential
+# sleeps to the reset when that is within GH_BUDGET_WAIT_MAX_SEC (900) and then goes on;
+# when the reset is further off it is refused with GH_WAIT. One line on stderr either way.
+gh_budget_gate() {
+  _gh_essential && return 0
+  _gh_is_read "$@" || return 0
+  local row left max what
+  row=$(gh_budget_low 2>/dev/null) || return 0
+  left=$(( $(printf '%s' "$row" | cut -f4) - $(gh_batch_now) + 1 )); [ "$left" -ge 1 ] || return 0
+  max="${GH_BUDGET_WAIT_MAX_SEC:-900}"
+  what="GitHub's hourly allowance is under ${GH_ALLOWANCE_LOW_PCT:-10}% ($(printf '%s' "$row" | cut -f1 | sed 's/graphql/GraphQL/; s/core/REST/') $(printf '%s' "$row" | cut -f2) of $(printf '%s' "$row" | cut -f3) left)"
+  if [ "$left" -gt "$max" ]; then
+    echo "gh: wait — $what and it resets in ${left}s, at $(gh_batch_clock "$(printf '%s' "$row" | cut -f4)"); this read (gh ${1:-} ${2:-}) was not sent. Ask again then: this is not an empty answer" >&2
+    return "$GH_WAIT"
+  fi
+  echo "gh: $what — waiting ${left}s for the reset before this read (gh ${1:-} ${2:-})" >&2
+  sleep "$left"
+  rm -f "$(gh_budget_file)" 2>/dev/null
+  return 0
+}
+
+# gh_budget_wait [max-sec] — sleeps while the budget is low: to the reset, or max-sec
+# (GH_BUDGET_WAIT_MAX_SEC) when that is sooner. 0 when it slept, 1 when nothing is low.
+gh_budget_wait() {
+  local row left max="${1:-${GH_BUDGET_WAIT_MAX_SEC:-900}}"
+  row=$(gh_budget_low 2>/dev/null) || return 1
+  left=$(( $(printf '%s' "$row" | cut -f4) - $(gh_batch_now) + 1 )); [ "$left" -ge 1 ] || return 1
+  [ "$left" -le "$max" ] || left=$max
+  sleep "$left"
+  rm -f "$(gh_budget_file)" 2>/dev/null
+  return 0
+}
+
+# gh_budget_used — "REST 4920 of 5000, GraphQL 792 of 5000" used this hour on this token.
+gh_budget_used() {
+  local rows; rows=$(gh_budget_read 2>/dev/null) || return 1
+  printf '%s\n' "$rows" | sort | awk -F'\t' '{ printf "%s%s %d of %d", (NR > 1 ? ", " : ""), ($1 == "core" ? "REST" : "GraphQL"), $5, $3 }'
+}
+
 # ---- the open pull requests, read once and shared ----------------------------
 # Every reader takes this file while it is younger than the age it can bear; past
 # that, the first one to ask reads GitHub for all of them. Its mtime is its time.
@@ -336,7 +489,9 @@ gh_open_prs() {
     if [ "$max" -gt 0 ] && { [ "$age" -le "$max" ] || gh_allowance_low >/dev/null; }; then cat "$f"; return 0; fi
   fi
   slug="${GH_REPO:-${REPO_SLUG:-}}"; [ -n "$slug" ] || return 1
-  prs=$(gh_prs_paged "$GH_PRS_FIELDS" 2>/dev/null) || return 1
+  local rc=0
+  prs=$(gh_prs_paged "$GH_PRS_FIELDS" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || { [ "$rc" -eq "$GH_WAIT" ] && return "$GH_WAIT"; return 1; }
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" || return 1
   mkdir -p "$(dirname "$f")" 2>/dev/null
   printf '%s\n' "$prs" > "$f.$$" && mv -f "$f.$$" "$f"
@@ -344,13 +499,14 @@ gh_open_prs() {
 }
 
 # gh_prs_paged <fields> [base] — every open PR (on <base> when given) as ONE JSON
-# array in the shape `gh pr list --json <fields>` prints, read GH_PRS_PAGE (25) a
+# array in the shape `gh pr list --json <fields>` prints, read GH_PRS_PAGE (50) a
 # request. Any page that fails fails the whole read: exit 1, never a partial list.
 # A read whose size grows with the repo is paged: `gh pr list --limit 200` asks
 # for 100 a request, and with statusCheckRollup on 81 open PRs GitHub answered
 # 504 every time while 50 came back. A page that times out is asked again at half
 # the size (GH_PRS_PAGE_TRIES, 3), since the timeout tracks the work per request.
-GH_PRS_PAGE="${GH_PRS_PAGE:-25}"
+# 50, not 25: a tick's read is then one request for up to 50 open PRs, whatever their number.
+GH_PRS_PAGE="${GH_PRS_PAGE:-50}"
 gh_prs_paged() {
   local fields="${1:?gh_prs_paged: need fields}" base="${2:-}" _o _r f sel="" proj="" q
   local after="" size="$GH_PRS_PAGE" tries page out="[]" pages=0 rc err
@@ -396,6 +552,7 @@ gh_prs_paged() {
         break
       fi
       cat "$err" >&2
+      [ "$rc" -ne "$GH_WAIT" ] || { rm -f "$err"; return "$GH_WAIT"; }
       # Only a timeout is asked again, smaller; anything else, or past the tries, fails whole.
       grep -qiE 'HTTP 50[234]|gateway|time-?out|timed out' "$err" && [ "$tries" -lt "${GH_PRS_PAGE_TRIES:-3}" ] \
         || { rm -f "$err"; return 1; }
@@ -482,12 +639,13 @@ gh_call() {
   local until e rc
   if until=$(gh_backoff_active); then
     echo "gh: GitHub is rate-limiting this token — backing off until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
-    return 75
+    return "$GH_WAIT"
   fi
   if _gh_is_search "$@" && until=$(gh_backoff_search_active); then
     echo "gh: GitHub's search limit is spent — search calls wait until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
     return 75
   fi
+  gh_budget_gate "$@" || return "$GH_WAIT"
   # Tickets filed in another repo's queue (issueRepo, toolkit-env.sh): a `gh issue` aimed at
   # this repo, or at none (the checkout's), goes to that queue. PRs stay this repo's.
   if [ "${1:-}" = issue ] && [ -n "${ISSUE_REF:-}" ]; then
@@ -507,7 +665,11 @@ gh_call() {
   _gh_timed "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
   [ "$rc" -ne 142 ] || echo "gh: no answer in ${GH_CALL_TIMEOUT}s — the call was cut at its time limit" >>"$e"
   [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"
-  if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" "$@" || true; fi
+  # A rate-limit refusal is a wait, told apart from every other failure by its exit.
+  if [ "$rc" -ne 0 ] && [ -s "$e" ] && gh_backoff_note "$(cat "$e")" "$@"; then
+    rc=$GH_WAIT; rm -f "$(gh_budget_file)" 2>/dev/null
+    echo "gh: wait — GitHub refused this call for its rate limit; nothing was read. Ask again after the reset: this is not an empty answer" >>"$e"
+  fi
   cat "$e" >&2; rm -f "$e"
   return "$rc"
 }
@@ -548,6 +710,8 @@ gh_issues_batch() {
   local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
   [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
+  # Tickets filed in another repo's queue (issueRepo) are read there, as gh_call sends `gh issue`.
+  if [ -z "${GH_REPO:-}" ] && [ -n "${ISSUE_REF:-}" ] && [ "${ISSUE_REF#*/}" != "$ISSUE_REF" ]; then _o="${ISSUE_REF%%/*}"; _r="${ISSUE_REF#*/}"; fi
   # GraphQL under its low mark on any host while REST still has room: one REST read a
   # ticket costs the allowance that is left, not the one that is spent.
   local rest_only=0

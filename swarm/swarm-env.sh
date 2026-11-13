@@ -119,6 +119,17 @@ swarm_log() { # <logfile> <message…>
   printf '%s %s\n' "$(swarm_stamp)" "$*" >> "$f"
 }
 
+# swarm_newest_logs <n> <file…> — the n newest of those files, newest first. Never
+# `ls -t <glob>`: past ARG_MAX ls is not run, the error is discarded, and every reader
+# below sees no log at all (2026-11-11: 13,616 logs, 1.11 MB of names against 1.05 MB).
+swarm_newest_logs() {
+  local n="$1"; shift
+  printf '%s\0' "$@" | perl -0 -e 'my $n = shift;
+    my @f = sort { $b->[0] <=> $a->[0] || $a->[1] cmp $b->[1] }
+            map { chomp; my @s = stat $_; (@s && -f _) ? [$s[9], $_] : () } <STDIN>;
+    $#f = $n - 1 if @f > $n; print "$_->[1]\n" for @f' "$n"
+}
+
 # ---- cli-signal reader: begin ----------------------------------------------
 # The ONE place a builder log is read for a limit or error. scripts/check-signal-source.sh
 # fails on such a read anywhere else.
@@ -149,7 +160,7 @@ swarm_log() { # <logfile> <message…>
 # mere presence would stop the swarm permanently.
 swarm_usage_event_hold() {
   local newest row n epoch kind now
-  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  newest=$(swarm_newest_logs 1 "$SWARM_LOGS"/claim-*.log)
   [ -n "$newest" ] || return 1
   # The LAST rejection in the newest log. Earlier ones in the same run are history.
   row=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="rejected"' | tail -1)
@@ -167,7 +178,7 @@ swarm_usage_event_hold() {
 }
 
 # The CLI's own limit signals, one row each: `<line>\trejected\t<epoch>\t<window>`,
-# `<line>\twindow\t<epoch>\t<window>\t<utilization>`, `<line>\terror\t<text>` or
+# `<line>\twindow\t<epoch>\t<window>\t<utilization>\t<status>`, `<line>\terror\t<text>` or
 # `<line>\tauth\t<text>`. The same sentence inside a tool result is a quote, never a wall.
 swarm_usage_cli_events() { # <log>
   grep -nE '"type":"(rate_limit_event|result)"|"model":"<synthetic>"' "$1" 2>/dev/null \
@@ -180,7 +191,7 @@ swarm_usage_cli_events() { # <log>
         elif $e.type == "rate_limit_event" then
           ($e.rate_limit_info.unifiedWindows // {} | to_entries[]
            | select((.value.resetsAt | type) == "number" and (.value.utilization | type) == "number")
-           | [$c.n, "window", (.value.resetsAt | tostring), .key, (.value.utilization | tostring)])
+           | [$c.n, "window", (.value.resetsAt | tostring), .key, (.value.utilization | tostring), (.value.status // $e.rate_limit_info.status // "" | tostring)])
         elif $e.type == "assistant" and $e.message.model == "<synthetic>" and ($e.error // "") != "" then
           ([$c.n, "error", ([$e.message.content[]? | select(.type == "text") | .text] | join(" "))],
            (if $e.error == "authentication_failed" then [$c.n, "auth", ($e.message.content[0].text // "")] else empty end))
@@ -190,7 +201,7 @@ swarm_usage_cli_events() { # <log>
 
 swarm_usage_text_hold() {
   local newest row n text reset h m ap now_m reset_m dated
-  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  newest=$(swarm_newest_logs 1 "$SWARM_LOGS"/claim-*.log)
   [ -n "$newest" ] || return 1
   # A log carrying the CLI's own rejection has said when it resets: the event
   # reading above answers, and once that reset passes the wording must not
@@ -260,7 +271,7 @@ swarm_usage_log_reset() { # <log>
 # A window already at swarm.usageCeiling: a run started now dies at the wall mid-work.
 swarm_usage_near_hold() {
   local newest rows last pick now
-  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  newest=$(swarm_newest_logs 1 "$SWARM_LOGS"/claim-*.log)
   [ -n "$newest" ] || return 1
   rows=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="window"')
   [ -n "$rows" ] || return 1
@@ -358,19 +369,21 @@ swarm_account_since() {
 # window (the account was switched, or the window reset) and is dropped, never
 # compared. Only inside that one window does utilization only rise, so the highest
 # of its readings wins. Resets within 10 min are one window. A reading with no `at`
-# (an older harness's heartbeat) is the oldest.
+# (an older harness's heartbeat) is the oldest. Except after a probe call: its log is one
+# call, so its reading is dated exactly and everything observed before it is superseded
+# (2026-11-11: one week read 99%, then 56% with the same reset, and the 99% kept winning).
 swarm_usage_freshest_at() {
-  local w="${1:-five_hour}" extra="${2:-[]}" now files f m best acct since
+  local w="${1:-five_hour}" extra="${2:-[]}" now files f m best acct since p
   now=$(swarm_now); acct=$(swarm_account); since=$(swarm_account_since)
-  # shellcheck disable=SC2012  # names we wrote, no newlines
-  files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
+  files=$(swarm_newest_logs 8 "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log)
   best=$( { while IFS= read -r f; do
               [ -n "$f" ] || continue
               m=$(swarm_mtime "$f")
               # A log names no account: one that began before the account changed is another
               # account's, however recently a wait line was appended to it.
               [ "$since" -eq 0 ] || [ "$(swarm_log_began "$f")" -ge "$since" ] || continue
-              swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" -v m="$m" '$2 == "window" && $4 == w { print $5 "\t" $3 "\t" m }'
+              p="${f##*/}"; [ "${p#claim-usage-probe-}" = "$p" ] && p="" || p=probe
+              swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" -v m="$m" -v p="$p" '$2 == "window" && $4 == w { print $5 "\t" $3 "\t" m "\t" p }'
             done <<< "$files"
             jq -r --arg w "$w" --arg a "$acct" '.hosts[]? | select((.account // "") == $a) | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
                                 | "\(.u)\t\(.reset)\t\((.at // 0) | tonumber? // 0)"' "${COORDINATOR_DIR:-$STATE_DIR/coordinator}/fleet.json" 2>/dev/null
@@ -379,11 +392,12 @@ swarm_usage_freshest_at() {
           } | awk -F'\t' -v now="$now" '
             $2 + 0 > now + 0 {
               n++; U[n] = $1 + 0; R[n] = $2 + 0; A[n] = $3 + 0
+              if ($4 == "probe" && A[n] > pa) pa = A[n]
               # The newest observation; at the same time, the later reset (a log that spans a reset).
               if (n == 1 || A[n] > na || (A[n] == na && R[n] > nr)) { na = A[n]; nr = R[n] }
             }
             END { for (i = 1; i <= n; i++) { d = R[i] - nr; if (d < 0) d = -d
-                    if (d <= 600 && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] } }
+                    if (d <= 600 && A[i] >= pa && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] } }
                   if (p) printf "%s\t%d\t%d", bu, br, na }')
   [ -n "$best" ] || return 1
   printf '%s' "$best"
@@ -396,13 +410,13 @@ swarm_usage_freshest_at() {
 # 0 when it probed; 1 when it did not need to or could not.
 swarm_usage_probe() { # [--now]: skip the interval gates (the account changed; read the new one)
   local min every now newest m stamp last log dir force=""
+  SWARM_USAGE_PROBE_LOG=""
   [ "${1:-}" = --now ] && force=1
   min="${SWARM_USAGE_PROBE_MIN:-$(swarm_opt swarm.usageProbeMin 15 2>/dev/null || echo 15)}"
   case "$min" in ''|*[!0-9]*) min=15 ;; esac
   [ "$min" -gt 0 ] || return 1
   every=$(( min * 60 )); now=$(swarm_now)
-  # shellcheck disable=SC2012  # names we wrote
-  newest=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -1)
+  newest=$(swarm_newest_logs 1 "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log)
   if [ -n "$newest" ] && [ -z "$force" ]; then
     m=$(swarm_mtime "$newest"); [ $(( now - ${m:-0} )) -ge "$every" ] || return 1
   fi
@@ -413,6 +427,7 @@ swarm_usage_probe() { # [--now]: skip the interval gates (the account changed; r
   dir=$(mktemp -d 2>/dev/null) || return 1
   ( cd "$dir" && swarm_bounded "${SWARM_USAGE_PROBE_TIMEOUT:-120}" ${SWARM_USAGE_PROBE_CMD:-claude -p "Reply with the single word ok." --model haiku --output-format stream-json --verbose} ) > "$log" 2>&1 < /dev/null
   rm -rf "$dir"
+  SWARM_USAGE_PROBE_LOG="$log"
   grep -q '"type":"rate_limit_event"' "$log" 2>/dev/null
 }
 
@@ -463,6 +478,25 @@ swarm_api_error_log() { # <log>
   [ -n "$r" ] || return 1
   printf '%s' "$r"
 }
+
+# swarm_api_refusal_log <log> — 0 when the API refused the session outright, so the model
+# never ran: the last result is an error carrying an api_error_status, or ended on
+# terminal_reason api_error. Prints "<status> <code>: <the CLI's words, 200 chars>". Read
+# from the CLI's own result line only; an answer that quotes one is never the signal.
+swarm_api_refusal_log() { # <log>
+  local r
+  [ -s "$1" ] || return 1
+  r=$(grep -F '"type":"result"' "$1" 2>/dev/null | jq -r -s '
+    ([.[] | select(.type == "result")] | last) as $r
+    | if $r == null or ($r.structured_output? // null) != null or ($r.is_error // false) != true then empty
+      elif ($r.api_error_status? // null) == null and ($r.terminal_reason? // "") != "api_error" then empty
+      else ([$r.api_error_status?, $r.api_error_code?] | map(select(. != null) | tostring) | join(" ")) as $h
+        | (($r.result // "") | tostring | gsub("\\s+"; " ") | .[0:200]) as $x
+        | (if $h == "" then "api_error" else $h end) + (if $x == "" then "" else ": " + $x end)
+      end' 2>/dev/null)
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
 # ---- cli-signal reader: end ------------------------------------------------
 
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) and the driver write
@@ -476,11 +510,7 @@ swarm_usage_file_hold() {
   case "$e" in ''|*[!0-9]*) return 1 ;; esac
   [ "$e" -gt "$(swarm_now)" ] || return 1
   if why=$(swarm_usage_file_hold_stale "$f"); then
-    to=$(swarm_usage_hold_field "$f" 3); to=$(printf '%s' "${to:-unknown}" | tr -c 'A-Za-z0-9@._-' '_' | cut -c1-80)
-    to="$SWARM_LOGS/usage-hold.stale-$to-$(date -u +%Y%m%dT%H%M%SZ)"
-    if mkdir -p "$SWARM_LOGS" 2>/dev/null && mv -f "$f" "$to" 2>/dev/null; then
-      printf 'usage: the usage hold until %s no longer applies — %s; moved aside to %s\n' "$(swarm_iso "$e")" "$why" "$to" >&2
-    fi
+    swarm_usage_hold_aside "$f" "$why" >&2
     return 1
   fi
   if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
@@ -488,6 +518,15 @@ swarm_usage_file_hold() {
     return 0
   fi
   printf '%s (recorded by a window)' "$(swarm_iso "$e")"
+}
+# swarm_usage_hold_aside <file> <why> — move a hold that no longer binds to logs/, and say so.
+swarm_usage_hold_aside() {
+  local f="$1" e to
+  e=$(swarm_usage_hold_field "$f" 1)
+  to=$(swarm_usage_hold_field "$f" 3); to=$(printf '%s' "${to:-unknown}" | tr -c 'A-Za-z0-9@._-' '_' | cut -c1-80)
+  to="$SWARM_LOGS/usage-hold.stale-$to-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$SWARM_LOGS" 2>/dev/null && mv -f "$f" "$to" 2>/dev/null || return 1
+  printf 'usage: the usage hold until %s no longer applies — %s; moved aside to %s\n' "$(swarm_iso "$e")" "$2" "$to"
 }
 # swarm_usage_hold_field <file> <n> — field n of the hold's line; empty when it has no such field.
 swarm_usage_hold_field() { head -1 "$1" 2>/dev/null | awk -F'\t' -v n="$2" '{ printf "%s", $n }'; }
@@ -536,6 +575,50 @@ swarm_usage_hold_write() {
   [ "$(swarm_usage_hold_field "$f" 3)" = "$acct" ] || cur=0
   [ "$1" -gt "$cur" ] || return 0
   printf '%s\t%s\t%s\t%s\n' "$1" "$(printf '%s' "${2:-}" | tr '\n\t' '  ' | cut -c1-200)" "$acct" "${3:-}" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
+}
+
+# swarm_usage_hold_recheck — a hold file is asked again: one probe call at most every
+# swarm.usageProbeMin (15) min, never in the hold's first interval, judged on that call's own
+# reading. Every window the hold is on must read not rejected and under swarm.usageCeiling
+# to move the hold aside; a rejection, a missing window or no reading keeps it. Only under
+# the hold's own account: another login is swarm_usage_file_hold_stale's case. 0, printing
+# what it found, when it probed; 1 when it did not. The verdict is kept for the sheet in
+# logs/.usage-hold-recheck as `<epoch>\t<cleared|held>\t<text>`.
+swarm_usage_hold_recheck() {
+  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" e acct cur min every now at last ws w ev row u st said="" keep=""
+  e=$(swarm_usage_hold_field "$f" 1); case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(swarm_now); [ "$e" -gt "$now" ] || return 1
+  min="${SWARM_USAGE_PROBE_MIN:-$(swarm_opt swarm.usageProbeMin 15 2>/dev/null || echo 15)}"
+  case "$min" in ''|*[!0-9]*) min=15 ;; esac
+  [ "$min" -gt 0 ] || return 1
+  every=$(( min * 60 ))
+  at=$(swarm_mtime "$f"); [ $(( now - ${at:-0} )) -ge "$every" ] || return 1
+  last=$(cat "$SWARM_LOGS/.usage-probe.at" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $(( now - last )) -ge "$every" ] || return 1
+  acct=$(swarm_usage_hold_field "$f" 3)
+  if [ -n "$acct" ]; then cur=$(swarm_account); [ "$cur" = "$acct" ] || return 1; fi
+  swarm_usage_probe --now; [ -n "${SWARM_USAGE_PROBE_LOG:-}" ] || return 1
+  ev=$(swarm_usage_cli_events "$SWARM_USAGE_PROBE_LOG")
+  ws=$(swarm_usage_hold_field "$f" 4); [ -n "$ws" ] || ws="$SWARM_USAGE_WINDOWS"
+  for w in $ws; do
+    if printf '%s\n' "$ev" | awk -F'\t' -v w="$w" '$2 == "rejected" && ($4 == w || $4 == "") { f = 1 } END { exit !f }'; then
+      keep="$w is still rejected"; break
+    fi
+    row=$(printf '%s\n' "$ev" | awk -F'\t' -v w="$w" '$2 == "window" && $4 == w' | tail -1)
+    [ -n "$row" ] || { keep="the call gave no $w reading"; break; }
+    u=$(printf '%s' "$row" | cut -f5); st=$(printf '%s' "$row" | cut -f6)
+    [ "$st" != rejected ] || { keep="$w is still rejected"; break; }
+    awk -v u="$u" -v c="$SWARM_USAGE_CEILING" 'BEGIN{exit !(u + 0 < c + 0)}' \
+      || { keep="$w is at $(awk -v u="$u" 'BEGIN{printf "%d", u * 100 + 0.5}')%, not under the $SWARM_USAGE_CEILING ceiling"; break; }
+    said="$said${said:+, }$w at $(awk -v u="$u" 'BEGIN{printf "%d", u * 100 + 0.5}')%"
+  done
+  if [ -z "$keep" ] && [ -n "$said" ]; then
+    swarm_usage_hold_aside "$f" "a probe call taken to re-check it reads $said, not rejected" || return 1
+    printf '%s\tcleared\t%s\n' "$now" "$said" > "$SWARM_LOGS/.usage-hold-recheck" 2>/dev/null
+    return 0
+  fi
+  printf '%s\theld\t%s\n' "$now" "${keep:-nothing to read}" > "$SWARM_LOGS/.usage-hold-recheck" 2>/dev/null
+  printf 'usage: the usage hold until %s was re-checked with one probe call and stays — %s\n' "$(swarm_iso "$e")" "${keep:-nothing to read}"
 }
 
 swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_near_hold || swarm_usage_text_hold; }
@@ -739,12 +822,14 @@ swarm_spawn() { # <ticket> [brief-file] [budget]
   (
     [ -n "$brief" ] && [ -f "$brief" ] && CLAIM_EXTRA="$(cat "$brief")" && export CLAIM_EXTRA
     # Another repo's clone (driver_repo_clone_for): the run starts there and reads that
-    # clone's config, never this project's. Its state dir and its claim stay this project's
+    # clone's config (or SWARM_SPAWN_CFG, written for a clone with none), never this project's. Its state dir and its claim stay this project's
     # (CLAIM_REPO below), so every host's coordinator counts the run.
     if [ -n "${SWARM_SPAWN_REPO:-}" ]; then
       cd "$SWARM_SPAWN_REPO" || exit 1
       unset HARNESS_CFG_PATH HARNESS_CFG HARNESS_REPO_ROOT HARNESS_INTEGRATION_BRANCH HARNESS_CFG_REF
       export HARNESS_MAIN_REPO="$SWARM_SPAWN_REPO" HARNESS_STATE_DIR="${STATE_DIR:-${HARNESS_STATE_DIR:-}}"
+      # A clone whose trunk carries no config is handed the one written for it.
+      [ -z "${SWARM_SPAWN_CFG:-}" ] || export HARNESS_CFG_PATH="$SWARM_SPAWN_CFG"
     fi
     CLAIM_BUDGET_USD="$budget" CLAIM_REPO="${CLAIM_REPO:-$MAIN_REPO}" \
       "$SWARM_SPAWN" "$t" > "$out" 2>&1 < /dev/null

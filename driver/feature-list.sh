@@ -7,11 +7,16 @@
 #
 #   . driver/feature-list.sh
 #   feature_list_problems <plan.json>        what is wrong with how the plan builds its list; exit 1 when any
+#   feature_list_uncovered <plan.json> <body> each ticket item (ticket-parts.sh) no list item covers and
+#                                            `outside` does not name by id (a `note` entry names none), and each
+#                                            id covered that the ticket lacks
 #   feature_list_of <plan.json> <ticket>     the list, every item failing, no part filed yet
 #   feature_list_guard <old.json> <new.json> exit 0 when only passes changed (or a part was named once); 3 with why
 #   feature_list_store <ticket> <list.json>  keep it in the ticket's driver state; 3 when it edits the one kept
+#                                            once an item passes or a part is filed (before that it replaces it,
+#                                            the old one kept as features.prev.json)
 #   feature_list_set_pass <list.json> <Fn> [false]  the list with that item passing (or not)
-#   feature_list_comment <list.json>         the comment that carries it on the parent
+#   feature_list_comment <list.json>         the comment that carries it on the ticket
 #   feature_list_from_comments < comments    every list in a ticket's comments ([{body}]), oldest first, one a line
 #
 # The steps run as fast component or logic tests in the project's required test run
@@ -36,7 +41,7 @@ feature_list_problems() { # <plan.json>
           elif (.item | startswith("F")) and (.item as $it | $ids | any(. == $it) | not) then "task \($k) (\(.title)) names \(.item), which the list does not have"
           else empty end),
       ($f[] | . as $i | [$t[] | select(.item == $i.id)] as $mine
-        | if ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own part"
+        | if ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own tasks"
           elif ([$mine[].tests[]?.file] | any(. == $i.test) | not) then "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it"
           else empty end),
       ($f[] | select(.test | test($br)) | "\(.id) runs its steps in \(.test), a browser check: the steps run as fast component or logic tests in the required test run"),
@@ -44,16 +49,34 @@ feature_list_problems() { # <plan.json>
       (if $nf == 0 and (.foundation != null) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
       ($f[] | select(.needsFoundation == true and $nf == 0) | "\(.id) needs a foundation and the plan has none"),
       (if (.foundation.reason // "") == "expand-contract" and ([$t[] | select(.item == "cleanup")] | length) == 0
-           then "an expand-contract foundation has no clean-up part: the contract step (the old path removed) is a task with item cleanup" else empty end),
+           then "an expand-contract foundation has no clean-up: the contract step (the old path removed) is a task with item cleanup" else empty end),
       (if (.units // []) != [] then "it has units and a feature list: a mechanical change fans out with no feature list" else empty end)
       end' "$1" 2>/dev/null) || { printf 'the plan could not be read as JSON\n'; return 1; }
   [ -z "$out" ] && return 0
   printf '%s\n' "$out"; return 1
 }
 
+# A list mapped against the ticket it builds: every numbered change item and acceptance item
+# is some item's, or named outside it with why.
+feature_list_uncovered() { # <plan.json> <body-file>
+  local items out
+  [ "$(jq '(.features // []) | length' "$1" 2>/dev/null)" -gt 0 ] 2>/dev/null || return 0
+  declare -F ticket_parts_items >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || return 0
+  items=$(ticket_parts_items "$2" | jq -Rn '[inputs | split("\t") | {id: .[0], text: (.[1] // "")}]')
+  out=$(jq -r --argjson items "$items" '
+    ([(.features // [])[] | (.covers // [])[]] + [(.outside // [])[] | .item // empty]) as $named
+    | ($items | map(.id)) as $ids
+    | ($items[] | select(.id as $i | $named | index($i) | not)
+        | "\(.id) (“\(.text[0:140])”) is in no item'"'"'s covers and not in outside: say which behaviour delivers it, or put it in outside with why"),
+      ([(.features // [])[] | . as $f | (.covers // [])[] | select(. as $c | $ids | index($c) | not) | "\($f.id) covers \(.), which the ticket does not have (its items: \(if $ids == [] then "none" else $ids | join(", ") end))"] | unique[])' "$1" 2>/dev/null) || return 0
+  [ -z "$out" ] && return 0
+  printf '%s\n' "$out"; return 1
+}
+
 feature_list_of() { # <plan.json> <ticket>
   jq --arg t "$2" '{ticket: ($t | tonumber? // $t),
-      items: [(.features // [])[] | {id, behaviour, steps, test, needsFoundation: (.needsFoundation // false), passes: false, part: null}],
+      items: [(.features // [])[] | {id, behaviour, steps, test, needsFoundation: (.needsFoundation // false), covers: (.covers // []), passes: false, part: null}],
+      outside: (.outside // []),
       foundation: (if .foundation then (.foundation + {part: null}) else null end),
       cleanup: (if ([(.tasks // [])[] | select(.item == "cleanup")] | length) > 0 then {part: null} else null end)}' "$1"
 }
@@ -67,6 +90,7 @@ feature_list_guard() { # <old.json> <new.json>
     ($o[0].items // []) as $a | ($n[0].items // []) as $b
     | ($a[] | . as $x | ([$b[] | select(.id == $x.id)] | first) as $y
        | if $y == null then "\($x.id) was removed: an item, once listed, stays until it passes"
+         elif ($x | has("covers")) and ($x.covers != $y.covers) then "\($x.id) was edited: the ticket items it covers are fixed once listed"
          elif ($x | fixed) != ($y | fixed) then "\($x.id) was edited: its behaviour, steps and test are fixed once listed; only passes may change"
          elif ($x.part != null) and ($y.part != $x.part) then "\($x.id) moved from part #\($x.part) to \($y.part // "none")"
          else empty end),
@@ -80,7 +104,12 @@ feature_list_store() { # <ticket> <list.json>
   local f why; f="$(driver_state_dir "$1")/features.json"
   mkdir -p "$(dirname "$f")"
   if [ -s "$f" ]; then
-    why=$(feature_list_guard "$f" "$2") || { printf '%s\n' "$why"; return 3; }
+    # Nothing passed and no part filed: a fresh plan replaces it; an unreadable list stays guarded.
+    if [ "$(jq '[.. | objects | select(has("passes") or has("part")) | (.passes == true) or (.part != null)] | any' "$f" 2>/dev/null)" = false ]; then
+      cp "$f" "$(dirname "$f")/features.prev.json"
+    else
+      why=$(feature_list_guard "$f" "$2") || { printf '%s\n' "$why"; return 3; }
+    fi
   fi
   jq . "$2" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
 }
@@ -94,9 +123,11 @@ feature_list_set_pass() { # <list.json> <Fn> [true|false]
 
 feature_list_comment() { # <list.json>
   jq -r --arg m "$FEATURE_LIST_MARK" '
-    "**Feature list** — one behaviour a part, each passing only when its test steps pass in the required test run. Only `passes` changes; an item'"'"'s steps are never edited or removed. The feature is done when every item passes and its clean-up part has merged.\n\n"
+    ([.items[].part, .cleanup.part?] | map(select(. != null)) | length > 0) as $parts
+    | "**Feature list** — " + (if $parts then "one behaviour a part" else "one behaviour an item, built here as one change" end) + ", each passing only when its test steps pass. Only `passes` changes; an item'"'"'s steps are never edited or removed. " + (if $parts then "The feature is done when every item passes and its clean-up part has merged." else "The feature is done when every item passes and this change has merged." end) + "\n\n"
     + ([.items[] | "- " + (if .passes then "✅" else "⬜" end) + " **" + .id + "** " + .behaviour
         + (if .part then " — #\(.part)" else "" end) + (if .passes then " (passes)" else " (failing)" end)] | join("\n"))
+    + (if ((.outside // []) | length) > 0 then "\n\nLeft out, with why:\n" + ([.outside[] | "- " + (.item // .note // "?") + ": " + (.why // "")] | join("\n")) else "" end)
     + "\n\n```json\n" + (. | tojson) + "\n```\n" + $m' "$1"
 }
 

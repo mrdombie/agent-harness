@@ -150,10 +150,6 @@ a stale review past a new commit.
 **Never batch a gate with a push in one shell line.** `gate && git push` pushes on the
 shell's exit status, not the gate's verdict.
 
-If the fix touches deploy behaviour, **append** to the root `.deploy-trigger` with
-`>>`. `npm run check:deploy-trigger` prints the real path; `apps/.deploy-trigger` is a
-tracked decoy the gate never reads.
-
 ## Step 7 — Ship
 
 ```

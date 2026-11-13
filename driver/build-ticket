@@ -8,6 +8,8 @@
 # There is no repair route. A pull request that goes red or clashes and cannot merge
 # within coordinator.rebuildAfterMin is closed and its ticket built again fresh from the
 # trunk by the coordinator (scripts/rebuild.sh), carrying the reviewed plan as the brief.
+# Before that, a PR red on its own code comes back at most coordinator.fixRounds times as
+# a build with a "Fix: PR #<n>" brief, which continues that PR's own branch (below).
 #
 # THIS FILE IS THE CHANGE THE EPIC IS ABOUT. Until now the order of the work was
 # a list an agent read in 49,657 words of instructions and then chose from: the
@@ -82,6 +84,7 @@ DRIVER_RUN_STARTED=$(date +%s); export DRIVER_RUN_STARTED
 trap 'declare -F driver_proof_trees_drop >/dev/null && DRIVER_TICKET="$TICKET" driver_proof_trees_drop; driver_dev_stop "$(driver_state_get "$TICKET" worktree 2>/dev/null)" >/dev/null 2>&1; driver_ticket_snap_drop "$TICKET"' EXIT
 # Every GitHub call this run and its children make is logged as the builder's.
 export GH_CALLER=build-ticket
+unset GH_ESSENTIAL   # the coordinator's reads are essential; a build's wait for the reset
 # One read of the ticket serves every step up to the first model step (driver_ticket_view).
 DRIVER_TICKET_SNAP_RUN="$DRIVER_RUN_STARTED-$$-$RANDOM"; export DRIVER_TICKET_SNAP_RUN
 driver_ticket_snap_open "$TICKET"
@@ -193,6 +196,37 @@ if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ] && grep -qE '^(Coordinator note \(
   driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
 fi
 
+# ---- "Fix:" continues the open pull request's own branch --------------------------
+# A queue note starting "Fix: PR #<n>" (rebuild_fix's) is a fix of a red pull request where
+# it is: start cuts the tree from origin's head of that PR's branch, and ship pushes to the
+# same PR. The build that shipped the PR left a finished record on this host, and read as
+# finished the run would say "nothing left to do". So that record moves aside and its tree,
+# whose commits are on origin, is removed; a tree with commits origin lacks is kept the way
+# a rebuild keeps one. A record not yet shipped is a fix run's own (a requeue): it resumes.
+driver_fix_set_aside() { # <ticket>
+  local t="$1" d wt br stamp
+  d=$(driver_state_dir "$t"); [ -f "$d/state.json" ] || return 0
+  driver_state_is_done "$t" ship || return 0
+  wt=$(driver_state_get "$t" worktree); br=$(driver_state_get "$t" branch)
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    [ -z "$br" ] || git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" 2>/dev/null || true
+    if [ -z "$(git -C "$wt" for-each-ref --contains HEAD --format=x refs/remotes/origin/ 2>/dev/null)" ]; then
+      driver_rebuild_set_aside "$t" || return 1
+      unset DRIVER_FRESH   # a fix is cut from the PR's branch, never the trunk
+      return 0
+    fi
+    git -C "$MAIN_REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  fi
+  stamp=$(date +%s)
+  mv "$d" "$d.set-aside-$stamp" 2>/dev/null || { driver_say "✋ fix: #$t's shipped record could not be moved aside"; return 1; }
+  driver_say "↻ fix: #$t's shipped record moved to $d.set-aside-$stamp — this run continues its open pull request's branch"
+}
+if [ -n "$(driver_fix_brief_pr "$RUN_BRIEF")" ]; then
+  # The brief may live inside the state about to be moved: keep a copy outside it first.
+  _rb_copy="$DRIVER_DIR/.fix-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
+  driver_fix_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+fi
+
 # ---- finished on the record, with nothing to show for it, is a fresh build ------
 # A record with ship done says the work went out. With no open pull request and none
 # merged, it went nowhere: a PR closed to rebuild fresh (scripts/rebuild.sh) or by hand. Read
@@ -211,6 +245,20 @@ if [ "$RESTART" -eq 0 ] && driver_state_is_done "$TICKET" ship \
       _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
     fi
     driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+  elif [ -z "$_live" ]; then
+    # Merged and the ticket open again: the merged run's steps would skip ship for the new work.
+    if ! _tstate=$(driver_gh_read swarm_gh issue view "$TICKET" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null); then
+      driver_say "⏳ #$TICKET's record says it shipped ($_landed), and GitHub could not be asked whether the ticket is open — nothing is decided; the next tick tries again"
+      exit "$DRIVER_E_UNREAD"
+    fi
+    if [ "$_tstate" = OPEN ]; then
+      driver_say "↻ #$TICKET is open again after $_landed — the merged run's record is set aside and the ticket builds and ships as new work"
+      if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ]; then
+        _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
+      fi
+      driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+    fi
+    unset _tstate
   fi
   unset _live _landed
 fi
@@ -341,8 +389,8 @@ done
 # review pass. Past the sum, no honest combination remains, so it IS a step
 # returning rework without counting — which is the only thing this exists to catch.
 REWORKS=0
-# Plus the one extra round a red self-check may send to fix.
-REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 2 * ${DRIVER_MAX_GATE_FIXES:-3} + 1 ))
+# Plus the one extra round a red self-check may send to fix, and its one round for what the ticket names.
+REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 2 * ${DRIVER_MAX_GATE_FIXES:-3} + 2 ))
 
 # The steps that run on EVERY pass, finished or not. `start` is the re-entry check:
 # the hold label, the ticket's state and the claim are all read there, and a park
@@ -478,6 +526,7 @@ driver_usage_step_wait() {
 
 skipped=0
 ran=0        # steps that did real work — start re-checking itself is not work
+ship_ran=0   # the ship step ran in this run, not only on the record
 # With a shared sheet, the claim carries the step, so every host's coordinator can say
 # what a build is on. Best effort: before start there is no claim, and nothing waits on it.
 SHARE_STEP=""; [ -z "$(driver_opt coordinator.sheet.owner "")" ] || SHARE_STEP=1
@@ -530,6 +579,7 @@ while [ "$i" -lt "$N" ]; do
     driver_say "↑ #$TICKET route=full: the review of the quick change found what blocks — on to the full route's fix step"
   fi
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
+  [ "$step" != ship ] || ship_ran=1
 
   # A note a step left behind. An exit code says which check said no; it cannot say
   # WHAT, and a step that knows — what a review graded critical, major or minor —
@@ -585,7 +635,7 @@ while [ "$i" -lt "$N" ]; do
   # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
-  park_reason=""; park_question=""; unread=0; requeue=0; has_pr=0; claim_busy=0; noop=0; machine=0; upsize=0
+  park_reason=""; park_question=""; unread=0; requeue=0; has_pr=0; elsewhere=0; claim_busy=0; noop=0; machine=0; upsize=0
   [ -z "$claim_elsewhere" ] || claim_busy=1
   # start's busy is always a claim another run holds; a later step's can be an install.
   [ "$rc" != "$DRIVER_E_BUSY" ] || [ "$step" != start ] || claim_busy=1
@@ -696,13 +746,18 @@ while [ "$i" -lt "$N" ]; do
       has_pr=1
       ;;
 
+    "$DRIVER_E_ELSEWHERE")
+      elsewhere=1
+      ;;
+
     "$DRIVER_E_NOOP")
       noop=1
       ;;
 
     "$DRIVER_E_TIMEOUT")
       park_reason="$step ran past its time limit"
-      park_question="Something it ran does not return — a watch-mode test runner is the usual cause. Which command was it?"
+      # The step's own note names the command and how long it ran; this stands in only when it left none.
+      park_question="A command it ran did not finish inside the limit, and the step left no note of which. Its lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
 
     *)
@@ -794,6 +849,13 @@ Closed as completed, with nothing to build (standard answer (h), release.mergeFi
     exit "$DRIVER_E_HAS_PR"
   fi
 
+  # ANOTHER REPO'S TICKET, STARTED IN THIS ONE: start read it off the labels before the
+  # claim, so nothing is held, cut or labelled. No park and no requeue: the ticket stays
+  # ready for a coordinator with a clone of its repo.
+  if [ "$elsewhere" -eq 1 ]; then
+    exit "$DRIVER_E_ELSEWHERE"
+  fi
+
   # NOBODY'S TO ANSWER, AND GONE BY A LATER RUN: GitHub unreadable (a 504 parked every
   # ready ticket it reached on 2026-10-19), the plan's usage limit, a claim another run
   # on this host holds. A park is never retried, so these go back on the queue instead.
@@ -852,6 +914,24 @@ if [ -n "$(driver_state_get "$TICKET" route)" ]; then
   _c2p=$(driver_state_get "$TICKET" claim_to_pr_secs)
   [ -z "$_c2p" ] || _route_line="$_route_line claim→PR $(_driver_mins "$_c2p")"
   _route_line="$_route_line ($(driver_state_get "$TICKET" size_reason | cut -c1-160))"
+fi
+# Ship done on the record but skipped here: this run's head is shipped only if origin and an open PR carry it.
+if driver_state_is_done "$TICKET" ship && [ "$ship_ran" -eq 0 ]; then
+  _wt=$(driver_state_get "$TICKET" worktree); _br=$(driver_state_get "$TICKET" branch); _why=""
+  _head=$( [ -n "$_wt" ] && git -C "$_wt" rev-parse -q --verify HEAD 2>/dev/null )
+  if [ -z "$_head" ] || [ -z "$_br" ]; then _why="its worktree or branch is not on the record"
+  elif ! _rhead=$(git -C "$_wt" ls-remote origin "refs/heads/$_br" 2>/dev/null); then _why="origin could not be asked for $_br"
+  elif [ "$(printf '%s' "$_rhead" | cut -f1)" != "$_head" ]; then _why="its head ${_head:0:9} is not on origin's $_br"
+  elif ! _live=$(driver_open_prs_for "$TICKET"); then _why="the open pull requests could not be listed"
+  elif ! printf '%s\n' "$_live" | awk -F'\t' -v h="$_head" '$3 == h { f = 1 } END { exit !f }'; then _why="no open pull request carries its head ${_head:0:9}"
+  fi
+  if [ -n "$_why" ]; then
+    driver_state_reopen "$TICKET" ship record
+    driver_say "✋ #$TICKET not shipped: ship was on the record from an earlier run and $_why — ship and record are reopened for the next run"
+    driver_requeue "$TICKET" "not shipped: $_why"
+    exit "$DRIVER_E_REQUEUE"
+  fi
+  unset _wt _br _head _rhead _live _why
 fi
 if driver_state_is_done "$TICKET" ship; then
   driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')$_route_line"

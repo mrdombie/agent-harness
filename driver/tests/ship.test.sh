@@ -37,8 +37,11 @@ driver_state_bump 101 review
 # list is read off that, so a record with nothing done cannot tell an empty line
 # from a rendered one.
 for st in start plan build self-check review record; do driver_state_done 101 "$st"; done
+driver_state_bump 101 partial_resume; driver_state_bump 101 machine_parks
 out=$(driver_step_ship 101 2>&1); rc=$?
 want "it finishes" "0" "$rc"
+want "a ship ends the row of stranded resumes, and of machine parks" "0 0" \
+  "$(driver_state_count 101 partial_resume) $(driver_state_count 101 machine_parks)"
 want "the branch is really on origin" "1" \
   "$(git -C "$FIX/origin" rev-parse --verify tkt-101/work >/dev/null 2>&1 && echo 1)"
 want_in "the PR is opened as a draft"     'pr create.*--draft' "$(cat "$GH_LOG")"
@@ -63,7 +66,7 @@ want_not_in "no run watch" 'run watch'   "$(cat "$GH_LOG")"
 want_not_in "no check wait" 'pr checks.*--watch' "$(cat "$GH_LOG")"
 
 echo "--- past the size cap a finished build still ships, and says its size ---"
-# The limit splits plans before they build; a finished build is never stranded for size
+# Only a plan past planMaxFiles splits; a finished build is never stranded for size
 # (#12273 finished at 37 files and parked "split needed", 2026-10-23).
 wide_wt() { # <ticket> <files> [lockfile] — a branch changing that many files
   local t=$1 n=$2 wt i

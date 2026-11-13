@@ -30,8 +30,11 @@ DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^
 DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
 # A FEATURE TICKET WRITES A FEATURE LIST (owner, 2026-11-02): a ticket wearing one of
 # driver.split.featureLabels (default type:feature) whose plan has none is sent back once,
-# then refused. The plan splits by behaviour, never by task or file count: driver.split.maxTasks
-# and the plan-time driver.split.maxFiles trigger are gone (maxFiles still names the size at ship).
+# then refused. The ticket builds whole, working through its list (owner, 2026-11-05); the plan
+# splits past driver.split.planMaxFiles distinct files (50; 0 never); an expand-contract
+# foundation builds as the change then its clean-up, one change under merge-first (steps/plan.sh). Measured from our own
+# clashes: 4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10. A plan can
+# undercount (211 files once planned as 7), so maxFiles still names the real size at ship.
 driver_split_feature_labels() {
   jq -r '(.driver.split.featureLabels // ["type:feature"]) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
     "$HARNESS_CFG" 2>/dev/null || printf 'type:feature\n'
@@ -39,6 +42,10 @@ driver_split_feature_labels() {
 driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
+}
+driver_split_plan_max() {
+  local n; n=$(jq -r '.driver.split.planMaxFiles // 50' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=50 ;; esac; printf '%s' "$n"
 }
 # driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
 driver_split_count() {
@@ -68,6 +75,35 @@ driver_quick_max_files() {
   local n; n=$(jq -r '.driver.quick.maxFiles // 3' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*|0) n=3 ;; esac; printf '%s' "$n"
 }
+# A FIX TAKES THE QUICK ROUTE (owner, 2026-11-09: the quick route is the default for small
+# fixes). Measured over 1,290 sized tickets, 23 Oct-9 Nov: 26 of 325 fix tickets went
+# quick, 136 sized small walked plan and three-plus build sessions (median 40 min to a PR,
+# 6.0 sessions) against the quick route's 9 min and 3.5. A fix is a ticket wearing one of
+# driver.quick.fixLabels (type:bug, bug) or whose title matches driver.quick.fixTitle;
+# sized small, it goes quick, its diff held to driver.quick.fixMaxFiles (5: 18 of 25
+# quick changes that moved up touched 4 or 5 files, the fix and its test). An effort
+# label, a feature label, a schema or a screen still keep it off.
+DRIVER_QUICK_FIX_LABELS_DEFAULT='["type:bug", "bug"]'
+DRIVER_QUICK_FIX_TITLE_DEFAULT='^(fix|bug|hotfix)([^a-z]|$)|(^|[^a-z])develop is red([^a-z]|$)'
+driver_quick_fix_max_files() {
+  local n; n=$(jq -r '.driver.quick.fixMaxFiles // 5' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*|0) n=5 ;; esac; printf '%s' "$n"
+}
+# driver_size_is_fix <labels-csv> <title> — 0 when the ticket is a fix.
+driver_size_is_fix() {
+  local l re
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case ",$1," in *",$l,"*) return 0 ;; esac
+  done <<<"$(jq -r --argjson d "$DRIVER_QUICK_FIX_LABELS_DEFAULT" \
+      '(.driver.quick.fixLabels // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
+      "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_FIX_LABELS_DEFAULT")"
+  re=$(jq -r --arg d "$DRIVER_QUICK_FIX_TITLE_DEFAULT" '.driver.quick.fixTitle // $d | strings' "$HARNESS_CFG" 2>/dev/null) || re="$DRIVER_QUICK_FIX_TITLE_DEFAULT"
+  [ -n "$re" ] && printf '%s\n' "$2" | tr '[:upper:]' '[:lower:]' | grep -qE -- "$re"
+}
+# driver_quick_max_for <kind> — the most files a quick change of that kind touches.
+driver_quick_max_for() { if [ "${1:-}" = fix ]; then driver_quick_fix_max_files; else driver_quick_max_files; fi; }
+
 _driver_size_small_max() {
   local n; n=$(jq -r '.driver.quick.smallMaxFiles // 8' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*|0) n=8 ;; esac; printf '%s' "$n"
@@ -109,11 +145,13 @@ driver_repo_own() {
 # stayed empty while every harness ticket, which names the harness repo, was refused as
 # another repo's work. A repo:<name> ticket is this host's to build when a clone of <name>
 # sits beside this project's own (or HARNESS_REPO_CLONES="<name>=<path> …" names one), its
-# origin is that repo, and its trunk carries .claude/harness.json: the run is spawned in
-# that clone and reads that config. With no such clone it is still another repo's.
+# origin is that repo, and origin's trunk is known: the run is spawned in that clone. A
+# clone whose trunk carries .claude/harness.json is read by that config; one that carries
+# none is built on the queue's facts and its own git facts (driver_repo_clone_config).
+# With no such clone it is still another repo's.
 # driver_repo_clone <name> — the clone's path, or fails.
 driver_repo_clone() {
-  local want dir="" pair url ref main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
+  local want dir="" pair url main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
   want=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$want" ] || return 1
   [ "$want" != "$(driver_repo_self)" ] || return 1
   for pair in ${HARNESS_REPO_CLONES:-}; do
@@ -125,10 +163,59 @@ driver_repo_clone() {
   url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
   url="${url%/}"; url="${url%.git}"
   [ "$(printf '%s' "${url##*/}" | tr '[:upper:]' '[:lower:]')" = "$want" ] || return 1
-  for ref in origin/HEAD origin/main origin/develop origin/master; do
-    git -C "$dir" cat-file -e "$ref:.claude/harness.json" 2>/dev/null && { printf '%s' "$dir"; return 0; }
+  driver_repo_clone_trunk "$dir" >/dev/null || return 1
+  printf '%s' "$dir"
+}
+# driver_repo_clone_trunk <clone> — the branch its pull requests go to: origin's default
+# branch, else the first of main, develop, master that origin has. Fails when it has none.
+driver_repo_clone_trunk() {
+  local dir="$1" b
+  b=$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || b=""
+  b="${b#origin/}"
+  if [ -n "$b" ] && git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1; then
+    printf '%s' "$b"; return 0
+  fi
+  for b in main develop master; do
+    git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1 && { printf '%s' "$b"; return 0; }
   done
   return 1
+}
+# driver_repo_clone_config <clone> — the config a run in that clone is handed. Prints
+# nothing when the clone's trunk carries its own .claude/harness.json: the run reads that.
+# Otherwise writes one under the state dir and prints its path: the queue's facts from
+# this project's config (where the tickets live, the labels, the branch prefix, the state
+# dir) and the clone's own git facts (its repo, its trunk), two local gates that need no
+# install, and no screen. Fails when it cannot be written.
+driver_repo_clone_config() {
+  local dir="${1:?driver_repo_clone_config: need a clone}" trunk ref url slug out
+  trunk=$(driver_repo_clone_trunk "$dir") || return 1
+  for ref in "origin/$trunk" origin/HEAD origin/main origin/develop origin/master; do
+    git -C "$dir" cat-file -e "$ref:.claude/harness.json" 2>/dev/null && return 0
+  done
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] && [ -n "${STATE_DIR:-}" ] || return 1
+  url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
+  url="${url%/}"; url="${url%.git}"
+  slug=$(printf '%s' "$url" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')
+  case "$slug" in */*) ;; *) return 1 ;; esac
+  out="$STATE_DIR/clone-config/$(printf '%s' "${slug##*/}" | tr '[:upper:]' '[:lower:]').json"
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
+  # ITS LOCAL GATES RUN IN ANY REPO, WITH NO INSTALL. A config naming none built the
+  # first ticket whole and parked it at self-check, which refuses to pass on nothing run.
+  # Two true checks of the change itself: git's own whitespace and conflict-marker check
+  # of the diff, and a parse of every shell script it adds or changes. They are the local
+  # set (localOnly): the full suite is the required checks on the pull request.
+  # IT DECLARES NO SCREEN. With no screen set every build took the screen process, design
+  # steps and sign-off hold included, in a repo whose config names no screen at all.
+  jq --arg repo "$slug" --arg trunk "$trunk" --arg state "$STATE_DIR" '
+    { repo: $repo, issueRepo: (.issueRepo // .repo), integrationBranch: $trunk, trunks: [$trunk],
+      branchPrefix, stateDir: $state, labels,
+      gates: { localOnly: true, prePush: false,
+               local: [ "git diff --check origin/\($trunk)...HEAD",
+                        "git diff --name-only --diff-filter=ACMR origin/\($trunk)...HEAD -- \("*.sh" | @sh) | while IFS= read -r f; do bash -n \"$f\" || exit 1; done" ] },
+      tiers: { enabled: true }, design: { surfacePaths: [], surfacePathsComplete: true } }
+    + (if (.legacyEnvPrefix // "") != "" then { legacyEnvPrefix } else {} end)' "$HARNESS_CFG" > "$out.$$" 2>/dev/null \
+    && mv -f "$out.$$" "$out" || { rm -f "$out.$$"; return 1; }
+  printf '%s' "$out"
 }
 # driver_repo_clone_for <labels-csv> — the clone a ticket's repo:<name> label sends its
 # run to; fails when its labels name none (no repo: label, or only this project's own).
@@ -157,19 +244,27 @@ driver_repo_own_here() {
       done; } | sed '/^$/d' | awk '!s[$0]++'
 }
 
-# driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
-# returns 0 when the ticket belongs to another repo: it carries a repo: label and none
-# of them names a repo this project builds or has a clone of here (driver_repo_clone).
-# Never sized, seeded or started here.
-driver_repo_foreign() {
+# driver_repo_elsewhere <labels-csv> — returns 0 when the ticket carries a repo: label and
+# none of them names a repo this project builds (driver_repo_own): it is never built in
+# this project's own repo. Prints "<repo> \t <its clone on this host, or nothing>".
+driver_repo_elsewhere() {
   local own want
   own=$(driver_repo_own); [ -n "$own" ] || return 1
   want=$(printf '%s' "$1" | tr ',' '\n' | sed -nE 's/^[[:space:]]*[Rr][Ee][Pp][Oo]:[[:space:]]*//p' \
     | sed -E 's#.*/##; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]' | sed '/^$/d')
   [ -n "$want" ] || return 1
   printf '%s\n' "$want" | grep -qxF -f <(printf '%s\n' "$own") && return 1
-  driver_repo_clone_for "$1" >/dev/null && return 1
-  printf '%s' "$(printf '%s\n' "$want" | head -1)"
+  printf '%s\t%s' "$(printf '%s\n' "$want" | head -1)" "$(driver_repo_clone_for "$1" 2>/dev/null)"
+}
+# driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
+# returns 0 when the ticket belongs to another repo: it is built elsewhere
+# (driver_repo_elsewhere) and this host has no clone of that repo (driver_repo_clone).
+# Never sized, seeded or started on this host.
+driver_repo_foreign() {
+  local e
+  e=$(driver_repo_elsewhere "$1") || return 1
+  [ -z "${e#*$'\t'}" ] || return 1
+  printf '%s' "${e%%$'\t'*}"
 }
 
 # _driver_size_globs — the never-quick globs as a JSON list: the defaults plus
@@ -260,8 +355,26 @@ _driver_size_stated() {
 }
 
 # driver_size_read <ticket> <title> <labels-csv> <body> — the mechanical read, as
-# "<size|undecided>\t<why>\t<files, comma-separated>".
+# "<size|undecided>\t<why>\t<files, comma-separated>". A fix the rules size small, naming
+# 1 to driver.quick.fixMaxFiles files, reads quick; one held small by a label stays small.
 driver_size_read() {
+  local rd size why files n
+  rd=$(_driver_size_read_rules "$@")
+  IFS=$'\t' read -r size why files <<<"$rd"
+  if [ "$size" = small ] && driver_size_is_fix "$3" "$2" && [ "${why#it carries }" = "$why" ]; then
+    n=$(printf '%s' "$files" | tr ',' '\n' | grep -c .)
+    if [ "$n" -ge 1 ] && [ "$n" -le "$(driver_quick_fix_max_files)" ]; then
+      printf 'quick\ta fix sized small takes the quick route (%s files at most): %s\t%s\n' "$(driver_quick_fix_max_files)" "$why" "$files"; return 0
+    fi
+  fi
+  # Code files on the trunk with no stated change: for a fix the size call answered small
+  # quick or small 37 times in 41, so it is not asked. Named files off the trunk, or none, still ask it.
+  if [ "$size" = undecided ] && [ "${why#it names }" != "$why" ] && driver_size_is_fix "$3" "$2"; then
+    printf 'quick\ta fix naming the code it touches takes the quick route: %s\t%s\n' "$why" "$files"; return 0
+  fi
+  printf '%s\n' "$rd"
+}
+_driver_size_read_rules() {
   local t="$1" title="$2" labels="$3" body="$4" text low l paths n never cfg max smax have gone note=""
   text="$title
 $body"

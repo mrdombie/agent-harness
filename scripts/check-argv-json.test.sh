@@ -43,6 +43,50 @@ bash "$C" "$T/far.sh" >/dev/null; [ "$?" = 1 ] && ok "a marker two lines up excu
 
 # The kit itself.
 out=$(bash "$C"); rc=$?
-[ "$rc" = 0 ] && ok "the kit hands no GitHub list to jq on argv" || bad "the kit: $out"
+[ "$rc" = 0 ] && ok "the kit hands no GitHub list to jq on argv, and no state-folder glob to a command" || bad "the kit: $out"
+
+# A glob over a state directory as arguments: the listing that went blind on 2026-11-11, and its kin.
+cat > "$T/globs-bad.sh" <<'X'
+ls $STATE_DIR/logs/*.log
+newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
+cat "$RUNS_DIR"/*.json | jq -s .
+grep -l wall "$d"/steps/*.log
+jq -s . "$COORD_DIR/judges"/*.json
+if [ -n "$x" ]; then rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json | head -1); fi
+wc -l \
+  "$STATE"/runs/*.ended
+X
+cat > "$T/globs-good.sh" <<'X'
+for rec in "$RUNS_DIR"/claim-*.json; do [ -f "$rec" ] && jq . "$rec"; done
+newest=$(swarm_newest_logs 1 "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log)
+printf '%s\0' "$SWARM_LOGS"/*.log | xargs -0 cat
+find "$RUNS_DIR" -maxdepth 1 -name 'claim-*.ended' -mmin -60
+ls "$STATE_DIR/logs/*.log"
+case "$f" in "$STATE_DIR"/*) echo in ;; esac
+  "$SWARM_LOGS"/*) echo arm ;;
+pat="$SWARM_LOGS"/claim-*.log
+local pat="$SWARM_LOGS"/claim-*.log
+[[ "$f" == "$RUNS_DIR"/* ]] && echo yes
+rel="${f#"$STATE_DIR"/*}"
+# ls "$SWARM_LOGS"/*.log   (a comment)
+ls "$SWARM_LOGS"/claim-"$t"-*.log   # argv-bounded: one ticket's runs
+rm -f "$tmp"/*.out
+ls "$W/pictures"/*
+X
+out=$(bash "$C" "$T/globs-bad.sh"); rc=$?
+[ "$rc" = 1 ] && ok "a state-folder glob handed to a command fails the check" || bad "the bad globs passed (rc=$rc)"
+[ "$(printf '%s\n' "$out" | grep -c .)" = 8 ] && ok "all eight are named, a continued line by its first" || bad "named: $out"
+printf '%s\n' "$out" | grep -q 'globs-bad.sh:1: .*ls \$STATE_DIR/logs/\*\.log' && ok "the planted ls \$STATE_DIR/logs/*.log is refused" || bad "the planted ls was not named: $out"
+out=$(bash "$C" "$T/globs-good.sh"); rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "a for loop, the kit's listing, builtins, find, quoted and case patterns, assignments and marked lists pass" || bad "flagged correct code: $out"
+out=$(bash "$C" --globs "$T/bad.sh"); rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "--globs checks the glob rule alone" || bad "--globs flagged a jq list: $out"
+bash "$C" --globs "$T/globs-bad.sh" >/dev/null; [ "$?" = 1 ] && ok "and still refuses the globs" || bad "--globs passed the bad globs"
+# Planted: the rule records no hit, and the same ls passes.
+sed 's/push @hit, \$w if \$star/push @hit, $w if 0 \&\& $star/' "$C" > "$T/planted.sh"
+if [ "$(grep -cF 'push @hit, $w if $star' "$C")" = 1 ] && [ "$(grep -cF 'push @hit, $w if 0 && $star' "$T/planted.sh")" = 1 ]; then
+  bash "$T/planted.sh" "$T/globs-bad.sh" >/dev/null; [ "$?" = 0 ] && ok "planted: the glob rule removed → the bad globs pass" || bad "planted: the bad globs still fail with the rule removed"
+else bad "the plant did not land"; fi
 
 suite_end "$FAILED"

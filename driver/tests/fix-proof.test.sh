@@ -97,10 +97,11 @@ printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdi
   > "$(driver_state_dir 501)/steps/review.json"
 
 # Round 1 names a change that does not do the job; the retry names the one that does.
-printf 'mode=old\n' > "$WT/mode.txt"
+# mode.txt lands before the test: a file the test commit writes is the feature's, so a later edit to it counts.
+printf 'mode=old\n' > "$WT/mode.txt"; git -C "$WT" add mode.txt; c "$WT" "chore: mode starts old" >/dev/null
 { echo '#!/usr/bin/env bash'; echo "$BANNER"
   echo "grep -q 'mode=new' mode.txt || { echo ' FAIL  mode.test > new'; exit 1; }"; } > "$WT/mode.test.sh"
-git -C "$WT" add mode.txt mode.test.sh; TS=$(c "$WT" "test: mode is new")
+git -C "$WT" add mode.test.sh; TS=$(c "$WT" "test: mode is new")
 printf 'noise\n' > "$WT/other.txt"; git -C "$WT" add other.txt; BAD_IS=$(c "$WT" "fix: not the fix")
 printf 'mode=new\n' > "$WT/mode.txt"; git -C "$WT" add mode.txt; GOOD_IS=$(c "$WT" "fix: mode is new")
 

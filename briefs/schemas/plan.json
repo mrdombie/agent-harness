@@ -145,7 +145,7 @@
             }
           },
           "item": {
-            "description": "Which part of a split builds this task: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so each item becomes one part and no part is a layer.",
+            "description": "What this task builds: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so no task is a layer.",
             "type": "string",
             "pattern": "^(F[1-9][0-9]*|foundation|cleanup)$"
           }
@@ -267,7 +267,7 @@
       }
     },
     "features": {
-      "description": "The feature list (Anthropic's long-running harness): one user-visible behaviour per item, each with the test steps that prove it, all failing. Write it for every ticket that adds or changes something a person can see or do. Kept in the driver state and on the parent; only `passes` ever changes, and editing or removing an item's steps is refused. Two or more items split the ticket: one part per item, built side by side.",
+      "description": "The feature list (Anthropic's long-running harness): one user-visible behaviour per item, each with the test steps that prove it, all failing. Write it for every ticket that adds or changes something a person can see or do. Kept in the driver state and on the ticket; only `passes` ever changes, and editing or removing an item's steps is refused. The ticket builds the whole list as one change, in order; only a plan past driver.split.planMaxFiles files is split one part per item; an expand-contract foundation builds as the change, then its clean-up.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -278,12 +278,21 @@
           "behaviour",
           "steps",
           "test",
-          "passes"
+          "passes",
+          "covers"
         ],
         "properties": {
           "id": {
             "type": "string",
             "pattern": "^F[1-9][0-9]*$"
+          },
+          "covers": {
+            "description": "The ticket's items this behaviour delivers, by the ids its items list gives them: `C<n>` a numbered change item, `A<n>` an acceptance item. Every item is covered by a list item or named in `outside`; self-check refuses the branch while any covered item's list item fails.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[CA][1-9][0-9]*$"
+            }
           },
           "behaviour": {
             "description": "One behaviour a person sees or does, in their words. Never a layer (a table, an endpoint, a component).",
@@ -305,18 +314,57 @@
             "minLength": 1
           },
           "passes": {
-            "description": "Every item starts failing. Only the driver sets it, when the item's part has merged with its steps passing.",
+            "description": "Every item starts failing. Only the driver sets it, once the item's test steps are proved.",
             "const": false
           },
           "needsFoundation": {
-            "description": "True when this item builds on the foundation part and so waits for it. False or absent, it is built side by side with the others from the start.",
+            "description": "True when this item builds on the foundation. Built whole, the foundation simply goes first; if the plan is split, this item's part waits for the foundation part.",
             "type": "boolean"
           }
         }
       }
     },
+    "outside": {
+      "description": "What the plan knowingly leaves out, each with why. Two cases, never mixed up. A ticket item no behaviour can carry (a run on the trunk, a shot in the pull request, a review verdict) is named by its id in `item`. Anything left out that is not one of the ticket's listed items (a later sweep, a job red by design) is described in `note`, in plain words. Every other ticket item is in some list item's `covers`.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "why"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "item"
+            ]
+          },
+          {
+            "required": [
+              "note"
+            ]
+          }
+        ],
+        "properties": {
+          "item": {
+            "description": "The id of a ticket item left out, exactly as the ticket items list gives it: `C<n>` or `A<n>`. Never prose: what has no id goes in `note`.",
+            "type": "string",
+            "pattern": "^[CA][1-9][0-9]*$"
+          },
+          "note": {
+            "description": "In plain words, something left out that is not one of the ticket's listed items. It marks no ticket item as left out.",
+            "type": "string",
+            "minLength": 1
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "foundation": {
-      "description": "A shared foundation that goes first, before the items that need it. Allowed only with a named reason: `expand-contract` (the new shape added beside the old; a clean-up part removes the old), `refactor` (a change in structure with no change in behaviour), or `hidden-backend` (backend shipped dark, switched on by a later item's screen). Its tasks carry `item: foundation`.",
+      "description": "A shared foundation that goes first, before the items that need it. Allowed only with a named reason: `expand-contract` (the new shape added beside the old; clean-up tasks remove the old; the clean-up follows the change, so the new shape deploys first), `refactor` (a change in structure with no change in behaviour), or `hidden-backend` (backend shipped dark, switched on by a later item's screen). Its tasks carry `item: foundation`.",
       "type": "object",
       "additionalProperties": false,
       "required": [

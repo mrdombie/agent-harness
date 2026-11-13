@@ -188,6 +188,9 @@ fill_merge() { # <scope> <labels> <rows> <pins>
                 | map(select(coord_stopped(.ls; .class; "OPEN") | not))
                 # A repo:<other> ticket belongs to that repo, pinned or not: never built here.
                 | map(select(coord_foreign(.ls) == null))) as $open
+    # Kept beside the order so the sheet can say why nothing starts them (coordinator-sheet.sh).
+    | ($fresh | map(select(coord_stopped(.ls; .class; "OPEN") | not) | coord_foreign(.ls) as $r
+                    | select($r != null) | {n, repo: $r}) | sort_by(.n)) as $elsewhere
     # Outside coordinator.releaseScopeOnly a new ticket is never seeded; one the PM
     # pinned stays, and the tick holds it at spawn.
     | ([$open[] | select((.pinned | not) and coord_release_held(.ls; .title; .ms; .class))] | length) as $held
@@ -216,7 +219,8 @@ fill_merge() { # <scope> <labels> <rows> <pins>
                 (if $t.class == "new" then -$t.n else $i end)] end))
     | map(.value)
     | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: .}
-      + (if $release.on == true then {release_held: $held} else {} end)') || return 1
+      + (if $release.on == true then {release_held: $held} else {} end)
+      + (if ($elsewhere | length) > 0 then {elsewhere: $elsewhere} else {} end)') || return 1
   printf '%s\n' "$out" | write
 }
 

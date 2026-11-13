@@ -21,7 +21,8 @@ open_work_person_drafted() {
     return "${hit%%$'\t'*}"
   fi
   cmd="${OPEN_WORK_PERSON_STOP:-${KIT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/person-stop.sh}"
-  out=$(bash "$cmd" drafted "$pr" 2>/dev/null) || rc=$?
+  # OPEN_WORK_REPO: the pull request's repo when it is not this project's own (a clone's, rebuild.sh).
+  out=$(GH_REPO="${OPEN_WORK_REPO:-${GH_REPO:-}}" bash "$cmd" drafted "$pr" 2>/dev/null) || rc=$?
   case "$rc" in 0|1) ;; *) return 2 ;; esac
   out=$(printf '%s' "$out" | head -1 | tr '\t' ' ')
   if [ -n "$at" ]; then

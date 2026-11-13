@@ -150,13 +150,9 @@ driver_base_red_note() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$1" "${4:-}" "$(date +%s)" >> "$DEVELOP_RED"
 }
 
-# _driver_base_failing_tests <output> — test files a runner printed on a failure line.
-_driver_base_failing_tests() {
-  perl -ne 's/\e\[[0-9;]*[A-Za-z]//g;
-    next unless /(\bFAIL(ED)?\b|\bfailed\b|\bnot ok\b|\xe2\x9c\x97|\xc3\x97|\xe2\x9c\x95|\xe2\x9c\x98)/;
-    while (m{((?:[\w@.+-]+/)*[\w@+-][\w.@+-]*\.(?:test|spec)\.[A-Za-z]+)}g) {
-      my $p = $1; $p =~ s{^(\./)+}{}; print "$p\n" }' "$1" 2>/dev/null | awk '!seen[$0]++'
-}
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/failing-tests.sh"
+# _driver_base_failing_tests <output> [tree] — test files a runner printed on a failure line.
+_driver_base_failing_tests() { failing_test_files "$1" "${2:-}"; }
 
 driver_base_red_gate() {
   local wt="$1" cmd="$2" out="$3" mode="${4:-}" sha tests branch f c v red="" kind="" s7
@@ -164,9 +160,9 @@ driver_base_red_gate() {
   [ -f "$out" ] || return 1
   sha=$(driver_base_red_sha "$wt") || { DRIVER_BASE_RED_WHY="the $INTEGRATION_BRANCH commit this branch merged could not be read"; return 1; }
   s7=$(printf '%s' "$sha" | cut -c1-7)
-  tests=$(_driver_base_failing_tests "$out")
+  # A failing test file this branch changed is the branch's own, whatever else the log names.
+  tests=$(_driver_base_failing_tests "$out" "$wt")
   if [ -n "$tests" ]; then
-    kind=test
     branch=$(driver_branch_files "$wt" 2>/dev/null)
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -174,9 +170,14 @@ driver_base_red_gate() {
         DRIVER_BASE_RED_WHY="$f is a file this branch changed"; return 1
       fi
     done <<<"$tests"
-  elif [ "$mode" = prepush ]; then
-    tests=$(driver_base_red_checks "$out")
-  else
+  fi
+  # A pre-push's own summary names the checks to rerun; the test files under it are not.
+  c=""; [ "$mode" = prepush ] && c=$(driver_base_red_checks "$out")
+  if [ -n "$c" ]; then
+    tests="$c"
+  elif [ -n "$tests" ]; then
+    kind=test
+  elif [ "$mode" != prepush ]; then
     kind=cmd; tests="$cmd"
   fi
   [ -n "$tests" ] || { DRIVER_BASE_RED_WHY="its output names no check"; return 1; }

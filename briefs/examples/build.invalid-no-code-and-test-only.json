@@ -1,0 +1,29 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "Re-run the failed CI job",
+  "noCode": {
+    "reason": "the job failed on a runner fault; the task is to re-run it, and no file changes",
+    "run": "https://github.com/acme/widgets/actions/runs/42920514828"
+  },
+  "changed": [],
+  "changelog": {
+    "skipped": "no code changed"
+  },
+  "testOnly": {
+    "test": {
+      "file": "src/lib/format.test.ts",
+      "behaviour": "formatPrice renders pence as pounds"
+    },
+    "command": "npx vitest run src/lib/format.test.ts",
+    "testCommit": "a1b2c3d4",
+    "break": {
+      "file": "src/lib/format.ts",
+      "find": "pence / 100",
+      "replace": "pence"
+    }
+  }
+}

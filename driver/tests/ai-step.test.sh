@@ -41,6 +41,44 @@ fix_ai    build '{"items":[]}' superpowers:test-driven-development
 rc=0; driver_ai_step 101 build >/dev/null 2>&1 || rc=$?
 want "a sibling skill does not"           "21" "$rc"
 
+echo "--- a Skill call in the shape the CLI sent before 2.0.35: input {command} ---"
+# Recorded from @anthropic-ai/claude-code 2.0.34's tool schema: the name was `command`,
+# and a reader of `skill // name` read every call as none.
+plan_ok='{"files":["a.sh"],"tests":["a.test.sh"]}'
+for shape in '{"command":"superpowers:writing-plans"}' '{"command":"/superpowers:writing-plans"}' \
+             '{"skill":"/superpowers:writing-plans","args":"the ticket"}'; do
+  { printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Skill","input":'"$shape"'}]}}'
+    jq -nc --arg r "$plan_ok" '{type:"result", subtype:"success", is_error:false, result:$r, structured_output:($r | fromjson)}'
+  } > "$FIX/ai/plan.jsonl"
+  want "the reader names the skill from $shape" "superpowers:writing-plans" "$(driver_log_skills "$FIX/ai/plan.jsonl")"
+  rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
+  want "and the plan step passes with it" "0" "$rc"
+done
+
+echo "--- a skill that cannot be read: the park says what the session could do, and the host records it ---"
+export HARNESS_SKILL_CHECKS="$FIX/skill-checks.tsv"; rm -f "$HARNESS_SKILL_CHECKS"
+init() { jq -nc --argjson sk "$1" --argjson tools "$2" '{type:"system", subtype:"init", claude_code_version:"2.1.300", tools:$tools, skills:$sk, slash_commands:$sk}'; }
+answer() { jq -nc --arg r "$plan_ok" '{type:"result", subtype:"success", is_error:false, result:$r, structured_output:($r | fromjson)}'; }
+{ init '["superpowers:brainstorming"]' '["Read","Skill"]'; answer; } > "$FIX/ai/plan.jsonl"
+rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
+want    "a session without the skill still refuses" "21" "$rc"
+want_in "the note says the session did not list it" 'Claude Code 2\.1\.300\) did not list the skill' "$(driver_state_get 101 park_note)"
+want_in "the host's record has the check as none, with the CLI and the cause" $'\t101\tplan\tnone\t2\\.1\\.300\t[0-9.]*\tnot-loaded\tsuperpowers:writing-plans\t[^\t]*$' "$(tail -1 "$HARNESS_SKILL_CHECKS")"
+{ init '["superpowers:writing-plans"]' '["Read"]'; answer; } > "$FIX/ai/plan.jsonl"
+driver_ai_step 101 plan >/dev/null 2>&1
+want_in "a session with no Skill tool says so" 'had no Skill tool' "$(driver_state_get 101 park_note)"
+{ init '["superpowers:writing-plans"]' '["Read","Skill"]'; answer; } > "$FIX/ai/plan.jsonl"
+driver_ai_step 101 plan >/dev/null 2>&1
+want_in "a session that had it and skipped it says that" 'listed the skill and the model did not call it' "$(driver_state_get 101 park_note)"
+{ init '["superpowers:writing-plans"]' '["Read","Skill"]'
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"superpowers:writing-plans"}}]}}'
+  answer; } > "$FIX/ai/plan.jsonl"
+rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
+want    "a step that ran it passes" "0" "$rc"
+want_in "and is recorded ok" $'\tplan\tok\t2\\.1\\.300\t' "$(tail -1 "$HARNESS_SKILL_CHECKS")"
+want    "one record per check" "4" "$(wc -l < "$HARNESS_SKILL_CHECKS" | tr -d ' ')"
+unset HARNESS_SKILL_CHECKS
+
 echo "--- the AI asked a question instead of answering ---"
 fix_ai plan '{"question":"which table owns the org id?"}' superpowers:writing-plans
 out=$(driver_ai_step 101 plan 2>&1); rc=$?
