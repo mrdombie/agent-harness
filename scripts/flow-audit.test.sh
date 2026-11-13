@@ -177,6 +177,21 @@ out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed ui:new 2>&1); rc=$?
 out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed screen:new 2>&1); rc=$?
 [ "$rc" -eq 1 ] && ok "screen:new is not owed once the project replaces the labels" || bad "custom screen:new: exit $rc, want 1: $out"
 
+echo "--- owed: a match is never turned into 'not owed' by a closed pipe ---"
+# The default config must outlive other commands: a process-substitution fd closes once the
+# shell reaps an external command (bash 5 does it at random), and jq then reads nothing.
+REAP="$REPO/reap.env"; printf "set -T\ntrap '/usr/bin/true' DEBUG\n" > "$REAP"
+out=$(BASH_ENV="$REAP" HARNESS_CFG="$REPO/absent.json" bash "$SUT" owed screen:new 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "no cfg is owed while other commands run between" || bad "no cfg under reaping: exit $rc, want 0: $out"
+out=$(BASH_ENV="$REAP" HARNESS_CFG="$REPO/absent.json" bash "$SUT" owed type:feature 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "no cfg still holds type:feature not owed" || bad "no cfg type:feature: exit $rc, want 1: $out"
+reds=0
+for _ in $(seq 1 20); do
+  out=$(HARNESS_CFG="$REPO/absent.json" bash "$SUT" owed screen:new 2>&1); rc=$?
+  { [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qiE 'broken pipe|write error'; } || { reds=$((reds+1)); last="exit $rc: $out"; }
+done
+[ "$reds" -eq 0 ] && ok "no cfg: 20 of 20 runs owed, no pipe error" || bad "no cfg: $reds of 20 runs wrong, last $last"
+
 echo "--- the report template counts every taxonomy axis and has a picture leg ---"
 TPL="$KIT/skills/flows/REPORT-TEMPLATE.md"
 cov=$(awk '/^## Coverage/{f=1;next} f&&/^## /{exit} f' "$TPL")
