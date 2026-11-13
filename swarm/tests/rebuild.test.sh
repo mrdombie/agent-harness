@@ -342,7 +342,17 @@ fresh; printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"
 pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
 printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
 age 61; pass
-want "  closed"                                  "1" "$(closes 71)"
+want "  closed once"                             "1" "$(closes 71)"
+want_in "  queued with a Rebuild: brief"         '^add 101 --class new --first --note Rebuild: PR #71 could not merge within 60 min' "$(cat "$QLOG")"
+want "  queued once"                             "1" "$(adds 101)"
+echo "  no self-hosted runners (total_count 0): rebuilt as before"
+fresh; printf '{"total_count":0,"runners":[]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  closed once"                             "1" "$(closes 71)"
+want_in "  queued with a Rebuild: brief"         '^add 101 --class new --first --note Rebuild: PR #71 could not merge within 60 min' "$(cat "$QLOG")"
+want "  queued once"                             "1" "$(adds 101)"
 rm -f "$RUNNERS"
 
 echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
