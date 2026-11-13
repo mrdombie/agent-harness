@@ -37,6 +37,14 @@ for j in "fix apps/web/page.tsx" "tidy page.tsx" "see https://example.com/x" "ch
   [ "$rc" -eq 2 ] && ok "exit 2 for: $j" || bad "exit $rc, want 2 for: $j"
   printf '%s' "$out" | grep -qF '## Axis' && bad "refusal still printed the brief for: $j" || ok "no brief for: $j"
 done
+for j in "edit ./queue" "open ~/queue" "see apps/web/src" "fix /queue"; do
+  out=$(bash "$SUT" brief cartographer --job "$j" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && ok "path-shaped slash word refused: $j" || bad "exit $rc, want 2 for: $j"
+done
+for j in "Sign in/out and approve" "Approve and/or reject the claim"; do
+  out=$(bash "$SUT" brief cartographer --job "$j" 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && ok "a plain slash word is a job, not code: $j" || bad "exit $rc, want 0 for: $j — $out"
+done
 out=$(bash "$SUT" brief cartographer --job "fix apps/web/page.tsx" 2>&1)
 printf '%s' "$out" | grep -qF 'apps/web/page.tsx' && ok "the refusal names the path" || bad "refusal does not name the path: $out"
 out=$(bash "$SUT" brief cartographer 2>&1); rc=$?
