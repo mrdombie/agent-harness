@@ -10,6 +10,7 @@
 # Each case below grows the thing a loop walks — the queue, the waits, the
 # clashing PRs, the claimed tickets — and asserts the calls do not grow with it.
 # Run: bash "$0"
+#      GH_CALLS_ONLY=reconcile bash "$0"   just the reconciler cases
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
@@ -55,6 +56,7 @@ queue_n() { # <class> <count> — that many ready tickets queued, from 501 up
 }
 tick_calls() { : > "$GH_LOG"; bash "$T" >/dev/null 2>&1; calls; }
 
+if [ "${GH_CALLS_ONLY:-}" != reconcile ]; then
 echo "--- a tick's reads do not grow with the queue ---"
 fresh; queue_n new 5;  small=$(tick_calls)
 fresh; queue_n new 45; big=$(tick_calls)
@@ -121,6 +123,8 @@ want_not_in "no label list on a refresh"           '^label list' "$(cat "$GH_LOG
 want_not_in "no member list per scope"             '^issue list .*--label project:' "$(cat "$GH_LOG")"
 want "and the scope still decides what is queued"  "901 902" "$(jq -r '[.tickets[].n] | sort | map(tostring) | join(" ")' "$C/queue.json")"
 
+fi
+
 echo "--- the reconciler reads labels and PRs once a pass, not once a claimed ticket ---"
 ORIGIN="$FIX/origin.git"; git init -q --bare "$ORIGIN"
 git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
@@ -166,6 +170,7 @@ want_not_in "no ticket's labels are read on their own" '^issue view' "$(cat "$GH
 want "every one is still judged in review"          "20" "$(grep -c 'IN-REVIEW  #' "$FIX/recon.out" | tr -d ' ')"
 want_not_in "and none is edited or commented"       '^issue (edit|comment)' "$(cat "$GH_LOG")"
 
+if [ "${GH_CALLS_ONLY:-}" != reconcile ]; then
 echo "--- a refused token: back off, and work from the last good read ---"
 fresh; queue_n new 2
 bash "$T" >/dev/null 2>&1   # a good tick, in shadow so the queue stays: the snapshot
@@ -340,5 +345,7 @@ pl_sweep_calls() { # <lists> — calls one sweep makes when no item on any list 
 small=$(pl_sweep_calls 2); big=$(pl_sweep_calls 15)
 want "15 polish lists cost what 2 do"              "$small" "$big"
 want_not_in "no list is read on its own"           '^issue view' "$(cat "$GH_LOG")"
+
+fi
 
 suite_end "$FAILED"
