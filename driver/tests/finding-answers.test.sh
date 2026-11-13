@@ -86,6 +86,7 @@ printf '{"verdict":"BLOCKED","findings":[%s,%s]}\n' "$M1" "$M2" > "$S/review.jso
 _driver_review_defer $T "$S/review.json" 2 >/dev/null
 want "outside the change: closed to the sweep" "closed outside this change's files: to the nightly sweep" "$(row $T "$M1" | jq -r '"\(.answer) \(.reason)"')"
 want "inside the change: closed as dropped, with its grade and round" "closed graded minor in round 2, below its blocking set: dropped" "$(row $T "$M2" | jq -r '"\(.answer) \(.reason)"')"
+want "both are written as deferred" "true true" "$(row $T "$M1" | jq -s 'all(.deferred == true)') $(row $T "$M2" | jq -s 'all(.deferred == true)')"
 
 echo "--- merge first's deferral in the fix step closes what it drops ---"
 T=602; driver_state_init $T; S="$(driver_state_dir $T)/steps"; mkdir -p "$S"
