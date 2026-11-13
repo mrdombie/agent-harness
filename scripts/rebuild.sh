@@ -59,6 +59,7 @@
 #     a person's label put on since the tick's read is left exactly as it is.
 #
 # WHAT IS NEVER REBUILT.
+#   - anything, while every CI runner is offline or the runner list cannot be read (ci-runners.sh).
 #   - a person owns it: the hold label, do-not-merge, a person's own draft (person-stop.sh),
 #     or a ticket waiting on a person (needs-human, owner or PM decision, parked, blocked,
 #     gated, batched). It is left exactly as it is, clock and all.
@@ -83,6 +84,7 @@ _REBUILD_SH=1
 : "${FINDING_CLASS:=$KIT_ROOT/scripts/finding-class.sh}"
 declare -F say >/dev/null || say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work.sh" || return 1
+declare -F ci_runners_state >/dev/null || . "$KIT_ROOT/scripts/ci-runners.sh" || return 1
 
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
@@ -659,6 +661,11 @@ rebuild_fix() {
 rebuild_pass() {
   local pj pr t st why kind since age lab metas rows tickets now n
   [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || { say "rebuild: the open PRs are a snapshot this tick — no clock moves"; return 0; }
+  # No runner to run a check: a red, a cancel or a never-run is not the PR's, so nothing is sent or closed.
+  case "$(ci_runners_state)" in
+    offline) say "rebuild: every CI runner is offline — no PR is closed, rebuilt or sent back to its builder this tick"; return 0 ;;
+    unread)  say "rebuild: the CI runner list could not be read — no PR is closed, rebuilt or sent back to its builder this tick"; return 0 ;;
+  esac
   rows=$(printf '%s' "$PRS" | jq -c --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     sort_by(.number) | .[] | (.headRefName | branch_ticket($pre)) as $t | select($t != "") | {t: $t, pr: .}' 2>/dev/null)
   # Only the PRs open now keep a clock.
