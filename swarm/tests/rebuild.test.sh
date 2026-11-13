@@ -336,6 +336,7 @@ age 61; pass
 want "  not closed"                              "0" "$(closes 71)"
 want "  nothing queued"                          "" "$(cat "$QLOG")"
 want_in "  it says the list could not be read"   'rebuild: the CI runner list could not be read' "$OUT"
+want_in "  it names the repo whose read failed"  'runner list of acme/widgets could not be read' "$OUT"
 rm -f "$FIX/gh/runners-unread"
 echo "  one runner online: rebuilt as before"
 fresh; printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"status":"online"}]}\n' > "$RUNNERS"
