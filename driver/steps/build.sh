@@ -738,21 +738,31 @@ driver_prove_trunk_merge() {
     git -C "$repo" merge-base --is-ancestor "$p2" "$r" 2>/dev/null && { ontrunk=1; break; }
   done
   [ -n "$ontrunk" ] || { printf "%s merges %s, which is not on the trunk (%s)\n" "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "${INTEGRATION_BRANCH:-develop}"; return 1; }
-  # The merge git makes by itself: line 1 its tree, then each conflicted file up to a blank line.
-  mt=$(git -C "$repo" merge-tree --write-tree --name-only "$p1" "$p2" 2>/dev/null) || mrc=$?
-  tree=$(printf '%s\n' "$mt" | head -1)
+  # The merge git makes by itself: its tree, then each conflicted file up to an empty record.
+  # Paths are read NUL-separated throughout: a quoted name matches no file.
+  mt=$(mktemp) || { printf 'the clean merge of %s could not be computed here (no temp file)\n' "$s8"; return 3; }
+  git -C "$repo" merge-tree -z --write-tree --name-only "$p1" "$p2" > "$mt" 2>/dev/null || mrc=$?
+  local rec first=1 nl=""
+  while IFS= read -r -d '' rec; do
+    if [ -n "$first" ]; then tree=$rec; first=""; continue; fi
+    [ -n "$rec" ] || break
+    case $rec in *$'\n'*) nl=1 ;; esac
+    conflicted+="$rec"$'\n'
+  done < "$mt"
+  rm -f "$mt"
+  [ -z "$nl" ] || { printf 'a file %s conflicts on has a newline in its name, which cannot be checked here\n' "$s8"; return 3; }
+  conflicted=$(printf '%s' "$conflicted" | sort -u)
   if { [ "$mrc" -ne 0 ] && [ "$mrc" -ne 1 ]; } || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
     printf 'the clean merge of %s could not be computed here (git merge-tree exit %s)\n' "$s8" "$mrc"; return 3
   fi
   got=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}" 2>/dev/null)
   if [ "$mrc" -eq 1 ]; then
-    conflicted=$(printf '%s\n' "$mt" | sed -n '2,$p' | sed '/^$/q' | sed '/^$/d' | sort -u)
     [ -n "$conflicted" ] || { printf 'git merge-tree reported conflicts in %s and named no file\n' "$s8"; return 3; }
-    extra=$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | grep -vxF -- "$conflicted")
+    extra=$(git -C "$repo" diff -z --name-only "$tree" "$got" 2>/dev/null | tr '\0' '\n' | grep -vxF -- "$conflicted")
     if [ -n "$extra" ]; then
       local mb sides untouched=""
       mb=$(git -C "$repo" merge-base "$p1" "$p2" 2>/dev/null)
-      sides=$( { git -C "$repo" diff --name-only "$mb" "$p1"; git -C "$repo" diff --name-only "$mb" "$p2"; } 2>/dev/null | sort -u)
+      sides=$( { git -C "$repo" diff -z --name-only "$mb" "$p1"; git -C "$repo" diff -z --name-only "$mb" "$p2"; } 2>/dev/null | tr '\0' '\n' | sort -u)
       while IFS= read -r f; do
         printf '%s\n' "$sides" | grep -qxF -- "$f" || { untouched=$f; break; }
       done <<<"$extra"
@@ -767,14 +777,16 @@ driver_prove_trunk_merge() {
     # Only the conflicted files: the rest equal git's merge, and a repo may keep markers in fixtures.
     # The whole of a conflicted file counts as its resolution, not only its conflict hunks.
     local hit=""
-    hit=$(printf '%s\n' "$conflicted" | tr '\n' '\0' | xargs -0 git -C "$repo" grep -nE '^(<{7}|>{7})( |$)|^={7}$' "$sha" -- 2>/dev/null | head -1)
+    hit=$(printf '%s\n' "$conflicted" | tr '\n' '\0' \
+      | xargs -0 git -C "$repo" --literal-pathspecs grep -z -nE '^(<{7}|>{7})( |$)|^={7}$' "$sha" -- 2>/dev/null \
+      | tr '\0' '\n' | head -2)
     if [ -n "$hit" ]; then
-      hit=${hit#"$sha":}
-      printf '%s leaves a conflict marker in %s (line %s)\n' "$s8" "${hit%%:*}" "$(printf '%s' "$hit" | cut -d: -f2)"; return 1
+      f=$(printf '%s\n' "$hit" | head -1); f=${f#"$sha":}
+      printf '%s leaves a conflict marker in %s (line %s)\n' "$s8" "$f" "$(printf '%s\n' "$hit" | sed -n 2p)"; return 1
     fi
   elif [ "$got" != "$tree" ]; then
     printf '%s is a trunk merge that carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
-      "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      "$s8" "$(git -C "$repo" diff -z --name-only "$tree" "$got" 2>/dev/null | tr '\0' '\n' | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 1
   fi
   # The task made it: a merge already on the branch when the task started proves nothing done.
@@ -791,7 +803,7 @@ driver_prove_trunk_merge() {
   fi
   if ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
     printf 'the task left uncommitted edits beside the trunk merge %s (%s)\n' "$s8" \
-      "$(git -C "$repo" diff --name-only HEAD -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      "$(git -C "$repo" diff -z --name-only HEAD -- 2>/dev/null | tr '\0' '\n' | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 2
   fi
   if [ -z "$conflicted" ]; then
