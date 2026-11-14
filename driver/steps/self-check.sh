@@ -363,8 +363,9 @@ _driver_gate_secs() {
 # back, wait until the machine is quiet, take a slot again. Sets DRIVER_GATE_RETRY_SECS
 # to the second try's limit: twice the base at least, scaled by the load then.
 _driver_gate_quiet_retry() {
-  local label="$1" secs="$2" s2
-  driver_say "⏳ self-check: $label did not return within ${secs}s (load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for a quieter moment, then running it once more. A timeout is not a red gate."
+  local label="$1" secs="$2" s2 mem
+  mem=$(_driver_gate_mem_tight) && mem=", with the machine out of memory ($mem)"
+  driver_say "⏳ self-check: $label did not return within ${secs}s (load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores${mem}) — waiting for a quieter moment, then running it once more. A timeout is not a red gate."
   machine_gate_release
   machine_gate_wait_load 0 || return $?
   machine_gate_acquire 0 "self-check #${DRIVER_TICKET:-?}" || return $?
@@ -385,11 +386,24 @@ _driver_selfcheck_moot() {
   return "$DRIVER_E_REQUEUE"
 }
 
+# _driver_gate_mem_tight — the machine gate's memory reason when memory is tight now.
+_driver_gate_mem_tight() {
+  type swarm_mem_tight >/dev/null 2>&1 || return 1
+  machine_gate_init
+  swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"
+}
+
 # _driver_gate_timed_out <label> <secs> <cmd> <loaded> — the second try ran out too.
-# On a loaded machine that is the machine, not the change: the run goes back on the
-# queue (DRIVER_E_BUSY). On a quiet one it is a command that does not return: a park.
+# On a loaded or out-of-memory machine that is the machine, not the change: the run
+# goes back on the queue (DRIVER_E_BUSY). On a quiet one it is a command that does
+# not return: a park.
 _driver_gate_timed_out() {
-  local label="$1" secs="$2" cmd="$3" loaded="$4"
+  local label="$1" secs="$2" cmd="$3" loaded="$4" mem
+  if mem=$(_driver_gate_mem_tight); then
+    driver_say "⏳ self-check: $label did not return within ${secs}s on the second try either: the machine was out of memory ($mem) — back on the queue, not parked."
+    driver_state_set "$DRIVER_TICKET" park_note "the '$label' gate did not return within ${secs}s twice: the machine was out of memory ($mem): $cmd"
+    return "$DRIVER_E_BUSY"
+  fi
   if [ "$loaded" -eq 1 ]; then
     driver_say "⏳ self-check: $label did not return within ${secs}s on the second try either, with the machine loaded — back on the queue for a quieter machine, not parked."
     driver_state_set "$DRIVER_TICKET" park_note "the '$label' gate did not return within ${secs}s twice while the machine was loaded: $cmd"

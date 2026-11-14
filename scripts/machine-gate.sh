@@ -21,13 +21,18 @@
 #
 # IT NEVER FAILS THE TICKET. When busy it prints
 #   machine busy (cpu idle N%, floor F%), waiting     or
-#   machine busy (load N, limit M), waiting
+#   machine busy (load N, limit M), waiting           or
+#   machine busy (free memory N%, floor F%), waiting  or
+#   machine busy (swap N% used, limit M%), waiting
 # and re-checks every MACHINE_GATE_POLL seconds. --max bounds one call's wait so
 # it fits inside a tool call's timeout: when it runs out the exit is 75 and
 # NOTHING RAN — call it again, never proceed and never give up.
 #
 #   SWARM_MIN_CPU_IDLE   the idle floor in percent (else harness.json swarm.minCpuIdle, else 15)
 #   SWARM_MAX_LOAD       the runaway guard (else harness.json swarm.maxLoad, else 20 x cores)
+#   SWARM_MIN_FREE_MEM_PCT  the free-memory floor (else swarm.minFreeMemPct, else 10)
+#   SWARM_MAX_SWAP_PCT   the swap-used limit, counted only while free memory is under 25%
+#                        (else swarm.maxSwapPct, else 90)
 #   HARNESS_GATE_SLOTS   gate runs at once, machine-wide (else swarm.gateSlots, else 2)
 #   HARNESS_GATE_SLOT_DIR  where the slots live (default ~/.cache/agent-harness/gate-slots:
 #                        one per MACHINE, not per project — the cores are shared)
@@ -66,6 +71,8 @@ _mg_cfg() { # <jq path> — an optional fact from harness.json, or nothing
 machine_gate_init() {
   MG_MIN_IDLE="${SWARM_MIN_CPU_IDLE:-$(_mg_cfg .swarm.minCpuIdle)}"; MG_MIN_IDLE="${MG_MIN_IDLE:-15}"
   MG_MAX_LOAD="${SWARM_MAX_LOAD:-$(_mg_cfg .swarm.maxLoad)}"; MG_MAX_LOAD="${MG_MAX_LOAD:-$(swarm_default_max_load)}"
+  MG_MIN_FREE_MEM="${SWARM_MIN_FREE_MEM_PCT:-$(_mg_cfg .swarm.minFreeMemPct)}"; MG_MIN_FREE_MEM="${MG_MIN_FREE_MEM:-10}"
+  MG_MAX_SWAP="${SWARM_MAX_SWAP_PCT:-$(_mg_cfg .swarm.maxSwapPct)}"; MG_MAX_SWAP="${MG_MAX_SWAP:-90}"
   SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(_mg_cfg .swarm.idleSamples)}"
   SWARM_IDLE_MAX_AGE="${SWARM_IDLE_MAX_AGE:-$(_mg_cfg .swarm.idleMaxAgeSec)}"
   MG_SLOTS="${HARNESS_GATE_SLOTS:-$(_mg_cfg .swarm.gateSlots)}"; MG_SLOTS="${MG_SLOTS:-2}"
@@ -88,10 +95,12 @@ _mg_time_left() { [ "${2:-0}" -le 0 ] && return 0; [ $(( $(date +%s) - $1 )) -lt
 # Wait until the machine is not busy. 0 when clear, 75 when --max ran out, 76 when moot.
 machine_gate_wait_load() { # [max-seconds]
   machine_gate_init
-  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why said=""
+  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why mem said=""
   start=$(date +%s)
   while :; do
-    if ! why=$(swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD"); then
+    if why=$(swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD"); then :
+    elif mem=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then why="$mem"
+    else
       [ -n "$said" ] && echo "machine clear ($why), going ahead" >&2
       return 0
     fi
@@ -215,12 +224,14 @@ _mg_main() {
       return "$rc" ;;
     status)
       machine_gate_init
-      local idle="" n=0 sm load verdict=clear
-      sm=$(swarm_cpu_idle_smoothed); load=$(swarm_load)
+      local idle="" n=0 sm load verdict=clear free swap
+      sm=$(swarm_cpu_idle_smoothed); load=$(swarm_load); free=$(swarm_free_mem_pct); swap=$(swarm_swap_pct)
       [ -n "$sm" ] && read -r idle n <<< "$sm"
       SWARM_IDLE="$idle" SWARM_LOAD="$load" SWARM_IDLE_FILE="" SWARM_LOAD_FILE="" SWARM_IDLE_HISTORY="" \
         swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD" >/dev/null && verdict=busy
-      echo "$verdict · $([ -n "$idle" ] && swarm_idle_label "$idle" "$n" || echo 'cpu idle unread') (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
+      SWARM_FREE_MEM_PCT="$free" SWARM_SWAP_PCT="$swap" SWARM_FREE_MEM_PCT_FILE="" SWARM_SWAP_PCT_FILE="" SWARM_MEM_OS=none \
+        swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP" >/dev/null && verdict=busy
+      echo "$verdict · $([ -n "$idle" ] && swarm_idle_label "$idle" "$n" || echo 'cpu idle unread') (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · free memory ${free:-unread}% (floor $MG_MIN_FREE_MEM%) · swap ${swap:-unread}% (limit $MG_MAX_SWAP%) · held: $(machine_gate_holders)" ;;
     *)
       sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 2 ;;
   esac
