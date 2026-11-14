@@ -13,6 +13,8 @@ for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
+# No live claim: the unblocker reads claims before it releases a wait.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/claims"; chmod +x "$BIN/claims"; export UNBLOCK_CLAIMS="$BIN/claims"
 J="$HERE/coordinator-judge.sh"
 C="$STATE/coordinator"
 
@@ -94,6 +96,7 @@ fix_issue_list status:blocked "$(jq -c '[.]' "$FIX/gh/issue-701.json")"
 out=$(SWARM_GH="$BIN/gh-pm" bash "$HERE/unblock-waiting.sh" --dry-run 2>&1)
 want_in "still open: the child"                    'waits: #701 — still open: #999' "$out"
 jq '.state = "CLOSED" | .stateReason = "COMPLETED"' "$FIX/gh/issue-999.json" > "$FIX/c.json" && mv "$FIX/c.json" "$FIX/gh/issue-999.json"
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_issues_701_timeline_per_page_100.json"   # no person's hold on #701
 out=$(SWARM_GH="$BIN/gh-pm" bash "$HERE/unblock-waiting.sh" --dry-run 2>&1)
 want_in "the child landed: released"               'would unblock #701' "$out"
 
