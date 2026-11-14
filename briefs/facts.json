@@ -6,7 +6,8 @@
     "superpowers:test-driven-development": "red before green, inside every task",
     "superpowers:verification-before-completion": "observation before any claim of done",
     "code-review": "Claude Code's own reviewer on the finished change, run by the review step's one hunter in one context with no subagents; a separate check then judges each finding it raised",
-    "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement"
+    "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement",
+    "simplify": "Claude Code's own clean-up of the finished change (reuse, simplification, efficiency), run once per change in the builder's session before review"
   },
   "notInvoked": {
     "superpowers:brainstorming": "it waits on a person, so an unattended step cannot invoke it. The approved spec stands in for it.",
@@ -52,6 +53,15 @@
         "APPROVED": "what was approved, and where that approval is recorded",
         "RENDERS": "the renders taken from the real route in this run: name, file, theme",
         "ROUTE": "the route the renders were taken from, and how to reach it authed"
+      }
+    },
+    "simplify": {
+      "brief": "simplify.md",
+      "schema": "schemas/simplify.json",
+      "skills": ["simplify"],
+      "tools": ["Bash", "Read", "Edit", "Write", "Grep", "Glob", "Skill", "Agent"],
+      "facts": {
+        "TARGET": "the ref the change is diffed against: the trunk it will merge into"
       }
     },
     "review": {

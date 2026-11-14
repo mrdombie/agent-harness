@@ -47,6 +47,8 @@ chmod +x "$HOOKS/pre-push"; : > "$FIX/lo-hook.log"
 fix_brief plan   superpowers:writing-plans
 fix_brief build  superpowers:subagent-driven-development
 fix_brief review superpowers:requesting-code-review
+fix_brief simplify simplify
+fix_ai simplify '{"step":"simplify","skills":["simplify"],"changes":[]}' simplify
 fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[]}' \
   superpowers:requesting-code-review
 

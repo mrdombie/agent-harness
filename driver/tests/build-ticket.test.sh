@@ -55,7 +55,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start size plan build fix compare self-check review record ship quick; do fake_step "$s" 0; done
+  for s in start size plan build fix compare self-check simplify review record ship quick; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -65,13 +65,13 @@ echo "--- every step runs, in the declared order ---"
 reset_fakes
 out=$(bt 101); rc=$?
 want "it finishes"        "0" "$rc"
-want "all ten ran once" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "all ten ran once" "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and it says so"  'shipped|finished|done' "$out"
 
 echo "--- and each one is recorded as finished ---"
 export HARNESS_STATE_DIR="$STATE"
 . "$HERE/../state.sh" || exit 1
-want "the record lists them in order" "start,size,plan,build,fix,compare,self-check,review,record,ship" \
+want "the record lists them in order" "start,size,plan,build,fix,compare,self-check,simplify,review,record,ship" \
   "$(driver_state_get 101 'done|join(",")')"
 
 echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---"
@@ -95,7 +95,7 @@ want "start and size are recorded finished" "start,size" "$(driver_state_get 102
 out=$(bt 102); rc=$?
 want "the second run finishes"    "0" "$rc"
 want_in "start ran again — it is the re-entry check" '^start$' "$(cat "$RAN")"
-want "and nothing else was repeated" "start plan build fix compare self-check review record ship" \
+want "and nothing else was repeated" "start plan build fix compare self-check simplify review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan ran in the resumed run" "1" "$(grep -c '^plan$' "$RAN")"
 # Only size was skipped in that run, and the line counts it alone: start re-ran as the
@@ -116,7 +116,7 @@ echo "--- --restart runs the lot again ---"
 : > "$RAN"
 out=$(bt 102 --restart); rc=$?
 want "it finishes"            "0" "$rc"
-want "every step ran again"   "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "every step ran again"   "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 echo "--- a refusal parks, with the reason, and does not fall through ---"
 reset_fakes "self-check:24"
@@ -227,7 +227,7 @@ reset_fakes "review:30 0"
 out=$(bt 106); rc=$?
 want "it finishes"  "0" "$rc"
 want "the rework repeats fix, compare, the gates and review" \
-  "start size plan build fix compare self-check review fix compare self-check review record ship" \
+  "start size plan build fix compare self-check simplify review fix compare self-check simplify review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan was not repeated"  "1" "$(grep -c '^plan$' "$RAN")"
 want "nor was build — the plan task is already built" "1" "$(grep -c '^build$' "$RAN")"
@@ -252,7 +252,7 @@ reset_fakes "self-check:30 0"
 out=$(bt 123); rc=$?
 want "it finishes"  "0" "$rc"
 want "fix, then the gates again" \
-  "start size plan build fix compare self-check fix compare self-check review record ship" \
+  "start size plan build fix compare self-check fix compare self-check simplify review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "it says it went back to fix" 'back to fix' "$out"
 
@@ -466,7 +466,7 @@ want "the real seven finish"        "0" "$rc"
 want "start kept the branch it was given" "tkt-$TICKET/work" "$(driver_state_get "$TICKET" branch)"
 want "and recorded the ticket's subject for the PR title" "Ticket $TICKET" "$(driver_state_get "$TICKET" title)"
 want_in "which is what the pull request is titled with" "Ticket $TICKET" "$(cat "$GH_LOG")"
-want "every one is recorded"        "start,size,plan,build,fix,compare,self-check,review,record,ship" \
+want "every one is recorded"        "start,size,plan,build,fix,compare,self-check,simplify,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 want_in "the plan named its Skill and the log showed it" 'superpowers:writing-plans ran' "$out"
 want_in "the build proved red before green" 'red .*then green' "$out"
@@ -503,7 +503,7 @@ rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"
 : > "$GH_LOG"
 fix_issue 203 OPEN "status:ready,needs:human-approval"
 driver_state_init 203 --worktree "$WT" --branch "tkt-$TICKET/work"
-for st in start plan build fix compare self-check review record; do driver_state_done 203 "$st"; done
+for st in start plan build fix compare self-check simplify review record; do driver_state_done 203 "$st"; done
 out=$(HARNESS_STATE_DIR="$STATE" bash "$BT" 203 2>&1); rc=$?
 want "it stops"                         "20" "$rc"
 want_in "because a person owns it"      'needs:human-approval' "$out"
@@ -541,20 +541,20 @@ out=$(bt 130 --restart --steps plan); rc=$?
 want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 : > "$RAN"
 out=$(bt 130); rc=$?
-want "and the second carries on from compare" "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and the second carries on from compare" "start compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 echo "--- --brief: a build with the note, PR or no PR; there is no repair route ---"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
 printf 'The owner answered q2: keep the old copy.\n' > "$FIX/brief-g.md"
 bt 423 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
 want "with no PR it finishes"                "0" "$rc"
-want "as a build, every step of it"          "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "as a build, every step of it"          "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the record says build"                 "build" "$(driver_state_get 423 mode)"
 want "and keeps the note for every step"     "The owner answered q2: keep the old copy." "$(cat "$(driver_state_get 423 run_brief)" 2>/dev/null)"
 reset_fakes
 jq -n '[{number:64, headRefName:"tkt-422/work", headRefOid:"b1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
 bt 422 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
-want "with an open PR it is still the build order (start finds the PR)" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "with an open PR it is still the build order (start finds the PR)" "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 printf '[]\n' > "$FIX/gh/prs.json"
 for f in --repair --repair-class --adopt; do
   rc=0; bt 425 "$f" "$FIX/brief-g.md" >/dev/null || rc=$?
@@ -588,7 +588,7 @@ want "an ordinary brief on a shipped ticket: only start re-checks" "start" "$(tr
 printf 'Coordinator note (new): Fix: PR #66 — required check(s) failed: unit\n\nFix only what those checks report.\n' > "$FIX/brief-fix.md"
 : > "$RAN"; out=$(bt 427 --brief "$FIX/brief-fix.md"); rc=$?
 want "a Fix: brief: it finishes"             "0" "$rc"
-want "  every step runs again"               "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  every step runs again"               "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "  the shipped record is kept aside"    "1" "$(ls -d "$STATE/driver"/427.set-aside-* 2>/dev/null | grep -c .)"
 want_in "  and it says so"                   "fix: #427's shipped record moved to" "$out"
 echo "  a fix run stopped part-way resumes its own record, never set aside"
@@ -596,7 +596,7 @@ reset_fakes "compare:20 0"; printf '[]\n' > "$FIX/gh/prs.json"
 bt 428 --brief "$FIX/brief-fix.md" >/dev/null
 jq -n '[{number:66, headRefName:"tkt-428/work", headRefOid:"c1", isDraft:true, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
 : > "$RAN"; bt 428 --brief "$FIX/brief-fix.md" >/dev/null
-want "  it resumes where it stopped"         "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  it resumes where it stopped"         "start compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "  nothing was set aside"               "0" "$(ls -d "$STATE/driver"/428.set-aside-* 2>/dev/null | grep -c .)"
 printf '[]\n' > "$FIX/gh/prs.json"
 
@@ -614,7 +614,7 @@ echo "--- an answered BUILD park resumes the build, PR or no PR (agent-harness#6
 # brief. Routed on the PR it once ran a repair order and skipped compare (only a person
 # sanctions a deviation) and the build's own proof, then readied and armed the PR. The
 # record decides.
-BUILD_TAIL="start compare self-check review record ship"
+BUILD_TAIL="start compare self-check simplify review record ship"
 park_at_compare() { # <ticket> — a build parked at compare, with the draft PR its park opened
   reset_fakes "compare:20 0"
   bt "$1" >/dev/null
@@ -646,7 +646,7 @@ echo "--- a stale record does not outrank the live PR: it is set aside and the o
 park_at_compare 511
 jq -n '[{number:73, headRefName:"tkt-511/work", headRefOid:"d1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
 out=$(bt 511 --brief "$FIX/brief-k.md"); rc=$?
-want "a PR made ready since: a fresh walk, not the old build's tail" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "a PR made ready since: a fresh walk, not the old build's tail" "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and it says the record is stale"      'record is stale.*ready' "$out"
 want "the old record is kept aside"            "1" "$(ls -d "$STATE/driver/511.stale-"* 2>/dev/null | wc -l | tr -d ' ')"
 park_at_compare 512
@@ -707,7 +707,7 @@ want "the first walk parks after the plan" "start size plan build" "$(tr '\n' ' 
 : > "$RAN"
 body_issue 144 "the PM removed a task"
 out=$(bt 144); rc=$?
-want "an edited ticket is planned again" "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "an edited ticket is planned again" "start plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and the run says why" 'changed since it was planned' "$out"
 
 reset_fakes "build:24 0"
@@ -715,7 +715,7 @@ body_issue 145 "the same ticket"
 bt 145 >/dev/null
 : > "$RAN"
 out=$(bt 145); rc=$?
-want "an unchanged ticket keeps its plan" "start build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "an unchanged ticket keeps its plan" "start build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 echo "--- GitHub unreadable at start: the ticket is left ready, never parked ---"
 # 2026-10-19: the open-PR read 504'd every tick, start refused (24) and every ticket
@@ -876,12 +876,12 @@ echo "--- a record that says it shipped, with no open PR and none merged, is a f
 # and each run said "nothing left to do" and exited 0 in a minute — 22 times in a day.
 shipped_record() { # <ticket> — a whole order finished on this host, its worktree kept
   leftover "$1"
-  for s in size plan build fix compare self-check review record ship; do driver_state_done "$1" "$s"; done
+  for s in size plan build fix compare self-check simplify review record ship; do driver_state_done "$1" "$s"; done
 }
 reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; printf '[]\n' > "$FIX/gh/prs-merged.json"; shipped_record 450
 out=$(bt 450); rc=$?
 want_not_in "it never says there is nothing left to do" 'nothing left to do' "$out"
-want "the whole order runs again, from a fresh start" "start fresh=1 worktree= size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the whole order runs again, from a fresh start" "start fresh=1 worktree= size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the old record is set aside"             "1" "$(ls -d "$STATE/driver/450.set-aside-"* 2>/dev/null | grep -c .)"
 want "  and the old tree's commit is kept on origin" "$OLDSHA" "$(git -C "$REPO" ls-remote origin 'refs/stale/450/local-*' | cut -f1)"
 want_in "and the run says why"                 'no open pull request and none merged' "$out"
@@ -909,7 +909,7 @@ reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; shipped_record 453
 jq -n '[{number:93, headRefName:"tkt-453/old", body:"", mergedAt:"2026-11-07T06:00:00Z"}]' > "$FIX/gh/prs-merged.json"
 out=$(bt 453); rc=$?
 want_not_in "it never says there is nothing left to do" 'nothing left to do' "$out"
-want "the whole order runs again, ship included" "start fresh=1 worktree= size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the whole order runs again, ship included" "start fresh=1 worktree= size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the merged run's record is set aside"    "1" "$(ls -d "$STATE/driver/453.set-aside-"* 2>/dev/null | grep -c .)"
 want_in "and the run says why"                 'open again after #93' "$out"
 rm -f "$FIX/gh/issue-453.json"; reset_fakes; fresh_start; shipped_record 453

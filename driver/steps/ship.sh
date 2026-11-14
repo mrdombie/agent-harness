@@ -22,6 +22,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/finding-answers.sh" || exit 1
 # driver_step_self_check: the gates again, on a tree the merge from origin changed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
@@ -281,6 +282,13 @@ _driver_ship_tier_line() {
   printf '\n'
 }
 
+# _driver_ship_simplify_line <ticket> — the subagents simplify started on this change, for
+# the body; summed over the day's PRs it is the per-day cost. Never ran, nothing said.
+_driver_ship_simplify_line() {
+  local n; n=$(driver_state_get "$1" simplify_agents)
+  [ -z "$n" ] || printf 'Simplify: %s subagent(s) started on this change.\n' "$n"
+}
+
 # _driver_ship_deferred <ticket> — the "## Minor, deferred" section: what a review graded
 # outside its blocking set (review.sh _driver_review_defer). Each says where it went: the
 # nightly sweep, or dropped. A note that does not block; nothing deferred, nothing said.
@@ -294,6 +302,21 @@ _driver_ship_deferred() {
   fi
   jq -rs 'unique_by([.file, .line, .summary])[]
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(.grade // "") — \(if .list == "sweep" then "outside the files of this change: to the nightly sweep" else "dropped, not filed" end))"' "$f" 2>/dev/null
+}
+
+# _driver_ship_findings_sections <ticket> — the deferred section, then the answered one
+# without the deferrals the first already names: each finding once.
+_driver_ship_findings_sections() {
+  local deferred answered
+  deferred=$(_driver_ship_deferred "$1")
+  if [ -n "$deferred" ]; then
+    answered=$(driver_findings_answered_section "$1" --without-deferred)
+  else
+    answered=$(driver_findings_answered_section "$1")
+  fi
+  printf '%s' "$deferred${deferred:+${answered:+
+
+}}$answered"
 }
 
 # _driver_ship_drop_old_verdicts <ticket> <tree> <trunk> <key> <not-refs…> — every design
@@ -755,7 +778,8 @@ driver_step_ship() { # <ticket>
     [ "$(driver_screen_route "$t" | cut -f1)" = baseline ] || required=$(_driver_ship_required "$t")
   fi
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
-  deferred=$(_driver_ship_deferred "$t")
+  deferred=$(_driver_ship_findings_sections "$t")
+  local simplified; simplified=$(_driver_ship_simplify_line "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes ${ISSUE_REF:-}#$t
@@ -763,7 +787,8 @@ $closes ${ISSUE_REF:-}#$t
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
-$tierline
+$tierline${simplified:+
+$simplified}
 Claimed at: ${sha:-unknown}
 Head: $head
 
@@ -889,6 +914,13 @@ $polish"
       driver_state_set "$t" park_note "${nblock} blocking finding(s) from the review to clear: $blist"
       _driver_ship_findings_to_fix "$t" && return "$DRIVER_E_REWORK"
     fi
+    return "$DRIVER_E_REFUSED"
+  fi
+  # EVERY POSTED FINDING ENDS FIXED OR CLOSED. One with neither was answered by nobody.
+  local open_f; open_f=$(driver_findings_unanswered_lines "$t" | paste -sd ';' - | sed 's/;/; /g')
+  if [ -n "$open_f" ]; then
+    driver_say "✋ ship: review finding(s) neither fixed nor closed — $open_f"
+    driver_state_set "$t" park_note "review finding(s) with no answer (fixed by a commit, or closed with a reason): $open_f"
     return "$DRIVER_E_REFUSED"
   fi
 

@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "simplify answer",
+  "description": "What /simplify changed in the finished change, one entry per clean-up, or none. The driver keeps the commits only while the fast gates pass.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "changes"
+  ],
+  "properties": {
+    "step": {
+      "const": "simplify"
+    },
+    "skills": {
+      "description": "Every skill invoked in this step. The driver cross-checks it against the Skill calls in the run log.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "changes": {
+      "description": "One per clean-up committed; empty when it found nothing to change.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "what"
+        ],
+        "properties": {
+          "file": {
+            "description": "The repo-relative path it changed.",
+            "type": "string",
+            "minLength": 1
+          },
+          "what": {
+            "description": "One line: what it removed or simplified there.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

@@ -301,7 +301,7 @@ fakes() { # <size-route> [step:codes…]
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; rm -f "$FIX"/n.*
   printf '#!/usr/bin/env bash\ndriver_park() { printf "PARK %%s\\n" "$2" >> "$FIX/park.log"; return 20; }\n' > "$FAKE/park.sh"
   local s p
-  for s in start plan build fix compare self-check review record ship quick; do fake "$s" 0; done
+  for s in start plan build fix compare self-check simplify review record ship quick; do fake "$s" 0; done
   fake size 0 "$1"; shift
   for p in "$@"; do fake "${p%%:*}" "${p#*:}"; done
 }
@@ -312,15 +312,15 @@ want "a quick ticket walks the quick order" "start size quick review ship" "$(ra
 want "and finishes" 0 "$rc"
 fakes full
 rm -rf "$STATE/driver/1002"; DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1002 >/dev/null 2>&1
-want "a full ticket walks the full order" "start size plan build fix compare self-check review record ship" "$(ran)"
+want "a full ticket walks the full order" "start size plan build fix compare self-check simplify review record ship" "$(ran)"
 fakes quick "quick:$DRIVER_E_UPSIZE"
 rm -rf "$STATE/driver/1003"; out=$(DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1003 2>&1); rc=$?
-want "a quick step that upsizes goes on from plan" "start size quick plan build fix compare self-check review record ship" "$(ran)"
+want "a quick step that upsizes goes on from plan" "start size quick plan build fix compare self-check simplify review record ship" "$(ran)"
 want "and finishes" 0 "$rc"
 want "on the full route" full "$(driver_state_get 1003 route)"
 fakes quick "review:$DRIVER_E_REWORK 0"
 rm -rf "$STATE/driver/1004"; out=$(DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1004 2>&1); rc=$?
-want "a review that blocks a quick change goes to the full route's fix" "start size quick review fix compare self-check review record ship" "$(ran)"
+want "a review that blocks a quick change goes to the full route's fix" "start size quick review fix compare self-check simplify review record ship" "$(ran)"
 want "and finishes" 0 "$rc"
 fakes quick "quick:$DRIVER_E_REQUEUE 0"
 rm -rf "$STATE/driver/1005"; DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1005 >/dev/null 2>&1; : > "$RAN"

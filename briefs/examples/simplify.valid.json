@@ -1,0 +1,10 @@
+{
+  "step": "simplify",
+  "skills": ["simplify"],
+  "changes": [
+    {
+      "file": "driver/steps/ship.sh",
+      "what": "replaced a hand-written trunk lookup with the shared helper"
+    }
+  ]
+}

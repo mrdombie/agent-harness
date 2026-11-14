@@ -144,7 +144,7 @@ fakes() { # <size-route> [step:codes…]
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; rm -f "$FIX"/n.*; : > "$FIX/queue.log"
   printf '#!/usr/bin/env bash\ndriver_park() { printf "PARK %%s\\n" "$2" >> "$FIX/park.log"; return 20; }\n' > "$FAKE/park.sh"
   local s p
-  for s in start plan build fix compare self-check review record ship quick; do fake "$s" 0; done
+  for s in start plan build fix compare self-check simplify review record ship quick; do fake "$s" 0; done
   fake size 0 "$1"; shift
   for p in "$@"; do fake "${p%%:*}" "${p#*:}"; done
 }
@@ -169,7 +169,7 @@ want "requeued"                           "$DRIVER_E_REQUEUE" "$rc"
 want_in "and says so"                     'waits behind the open-work cap' "$out"
 want "the slip is kept"                   "bh-1008" "$(cut -f1 "$STATE/size-cache/1008.slip" 2>/dev/null)"
 : > "$RAN"; out=$(DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1008 2>&1); rc=$?
-want "the next run, under the cap, goes on from plan" "start plan build fix compare self-check review record ship" "$(ran)"
+want "the next run, under the cap, goes on from plan" "start plan build fix compare self-check simplify review record ship" "$(ran)"
 want "and finishes"                       0 "$rc"
 
 fakes quick
@@ -182,7 +182,7 @@ want "with no slip"                       "" "$(cat "$STATE/size-cache/1009.slip
 fakes quick "quick:$DRIVER_E_UPSIZE"
 rm -rf "$STATE/driver/1010"
 DRIVER_STEPS_DIR="$FAKE" bash "$BT" 1010 >/dev/null 2>&1; rc=$?
-want "under the cap an upsize still goes on from plan" "start size quick plan build fix compare self-check review record ship" "$(ran)"
+want "under the cap an upsize still goes on from plan" "start size quick plan build fix compare self-check simplify review record ship" "$(ran)"
 
 echo "--- the slip ledger ---"
 driver_size_slip_put 77 bh-a "why"
