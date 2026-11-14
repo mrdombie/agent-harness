@@ -480,9 +480,10 @@ _driver_ship_person_stop() {
     0) return 0 ;;
     1) driver_say "✋ ship: a person has stopped this${pr:+ (PR #$pr)}, and a person's stop wins over the machine — nothing is readied, armed or pushed onto it:"
        printf '%s\n' "$out" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
-       # A hold label parks on the hold: its removal resumes the run, which a PM marker would not.
+       # A hold label alone parks on the hold: its removal resumes the run, which a PM marker would not.
+       # Beside another stop it parks for the PM, so the note keeps every reason.
        local held; held=$(printf '%s\n' "$out" | grep -E '^[^ ]+ put on by .+ at ' | head -1)
-       if [ -n "$held" ]; then
+       if [ -n "$held" ] && [ "$(printf '%s\n' "$out" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ]; then
          driver_state_set "$t" park_note "$held"
          driver_state_set "$t" park_cause hold
          return "$DRIVER_E_REFUSED"
