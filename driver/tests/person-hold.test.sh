@@ -97,7 +97,12 @@ spawnable() { bash -c '. "$1/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9; swar
 spawnable 804 >/dev/null 2>&1; want "held, it is not spawnable" "1" "$?"
 jq '.labels = [{name:"status:ready"}]' "$FIX/gh/issue-804.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-804.json"
 rm -f "$FIX/hold-after-plan" "$FIX/person-hold".{rc,out}; : > "$CLAUDE_LOG"
-spawnable 804 >/dev/null 2>&1; want "the hold off, it is spawnable" "0" "$?"
+# The park drafted the run's PR but left it open: the swarm's open-PR probe sees it.
+printf '[{"number":42,"headRefName":"tkt-804/work","isDraft":true}]\n' > "$FIX/gh/prs.json"
+spawnable 804 >/dev/null 2>&1; want "the hold off, its open draft PR does not stop the spawn" "0" "$?"
+mv "$STATE/driver/804/state.json" "$FIX/state-804.json"
+spawnable 804 >/dev/null 2>&1; want "an open PR with no hold on the record still stops it" "1" "$?"
+mv "$FIX/state-804.json" "$STATE/driver/804/state.json"
 out=$(DRIVER_STEPS_DIR="$FAKE" DRIVER_QUICK_STEPS="start size build" bash "$BT" 804 --steps "start size plan build" 2>&1); rc=$?
 want "the rerun finishes" "0" "$rc"
 want "start re-checks, size and plan are skipped, build runs" "start build" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
