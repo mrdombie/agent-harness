@@ -50,7 +50,13 @@
 # why three of them were running a version nobody could name. They are written
 # from this file now, and `status` reads back what is actually loaded.
 set -uo pipefail
+# Read before swarm-env: it resolves HARNESS_CFG to a TMPDIR snapshot that a timer would pin forever.
+INSTALL_CFG_PIN="${HARNESS_CFG_PATH:-}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-env.sh" || exit 1
+_pin_tmp="${TMPDIR:-/tmp}"; _pin_tmp="${_pin_tmp%/}/"
+case "$INSTALL_CFG_PIN" in "$_pin_tmp"*) INSTALL_CFG_PIN="" ;; esac
+[ -n "$INSTALL_CFG_PIN" ] && [ -f "$INSTALL_CFG_PIN" ] || INSTALL_CFG_PIN=""
+unset _pin_tmp
 
 SWARM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
@@ -189,7 +195,7 @@ $(runner_args "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HARNESS_MAIN_REPO</key><string>$(printf '%s' "$MAIN_REPO" | xml_escape)</string>
     <key>HARNESS_STATE_DIR</key><string>$(printf '%s' "$STATE_DIR" | xml_escape)</string>
-    <key>HARNESS_CFG_PATH</key><string>$(printf '%s' "$HARNESS_CFG" | xml_escape)</string>
+$([ -z "$INSTALL_CFG_PIN" ] || printf '    <key>HARNESS_CFG_PATH</key><string>%s</string>' "$(printf '%s' "$INSTALL_CFG_PIN" | xml_escape)")
     <key>KIT_ROOT</key><string>$(printf '%s' "$KIT_ROOT" | xml_escape)</string>
 $(coordinator_env "$job")
   </dict>
@@ -207,12 +213,13 @@ XML
 # Every command handed to a timer goes through the launcher, so a plugin update
 # reaches the next run with no reinstall. Never a path inside one kit version.
 job_cmd() { # <job> — env assignments, then the launcher and the job's kit path
-  local vars a args=""
+  local vars a args="" pin=""
   vars=$(shadow_vars "$1" | tr '\n' ' ')
   for a in $(script_for "$1"); do args="$args $(printf '%q' "$a")"; done
+  [ -z "$INSTALL_CFG_PIN" ] || pin=$(printf 'HARNESS_CFG_PATH=%q ' "$INSTALL_CFG_PIN")
   # A timer's own PATH finds neither claude nor gh: carry the installer's.
-  printf 'PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q%s' \
-    "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$vars" "$RUNNER" "$args"
+  printf 'PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q %sKIT_ROOT=%q %s/bin/bash %q%s' \
+    "$PATH" "$MAIN_REPO" "$STATE_DIR" "$pin" "$KIT_ROOT" "$vars" "$RUNNER" "$args"
 }
 
 need_launchd() {
@@ -328,8 +335,9 @@ win_write_wrapper() {
   {
     echo '#!/usr/bin/env bash'
     echo '# Written by swarm/install.sh. Re-run it after a kit update: this names one copy.'
-    printf 'export HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q\n' \
-      "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT"
+    printf 'export HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q KIT_ROOT=%q\n' \
+      "$MAIN_REPO" "$STATE_DIR" "$KIT_ROOT"
+    [ -z "$INSTALL_CFG_PIN" ] || printf 'export HARNESS_CFG_PATH=%q\n' "$INSTALL_CFG_PIN"
     printf 'export PATH=%q\n' "$PATH"
     local v; for v in SWARM_PROGRAMMES SWARM_REPAIR_ONLY SWARM_CAP SWARM_BUDGET_USD; do
       [ -n "${!v:-}" ] && printf 'export %s=%q\n' "$v" "${!v}"
