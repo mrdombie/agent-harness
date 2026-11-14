@@ -61,6 +61,8 @@ its command, the item as written. Never tick one: it is ticked when the PR merge
 If you remove, reword or skip an `it(`/`test(` case, list its file in
 `replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
 a bare path to the test that now pins it, or `removedBecause`.
+Deleting a whole test file counts too. A file without a row stops ship for one
+extra round that asks you to account for it.
 
 **Git your permission mode refuses** (a reset, dropping commits origin already has,
 finishing a merge) is never run and never a question: list it in `gitActions`, and

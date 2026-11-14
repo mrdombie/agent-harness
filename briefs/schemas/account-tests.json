@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "account-tests answer",
+  "description": "One row per test file the deleted-tests check refused at ship: the test that now pins its behaviour, or why the behaviour is gone. The driver appends the rows to the run's record, rebuilds the pull request's '## Deleted tests' section from it and runs the check again; a file still without a row parks the ticket.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "replacedTests"
+  ],
+  "properties": {
+    "step": {
+      "const": "account-tests"
+    },
+    "skills": {
+      "description": "Every skill invoked in this step: none, so always empty. The driver cross-checks it against the Skill calls in the run log.",
+      "type": "array",
+      "maxItems": 0,
+      "items": {
+        "type": "string"
+      }
+    },
+    "replacedTests": {
+      "description": "One row per listed file, by the repo-relative path the check names. Exactly one of `coveredBy` — a bare repo-relative path to a test file at head with a live case that now pins the same behaviour — or `removedBecause`, one line on why the behaviour is gone.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "coveredBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "removedBecause": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "coveredBy"
+            ]
+          },
+          {
+            "required": [
+              "removedBecause"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

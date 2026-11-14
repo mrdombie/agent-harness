@@ -37,6 +37,50 @@ _driver_ship_replaced() {
       else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
 }
 
+# _driver_ship_account_tests <ticket> <tree> <trunk> <check output> — the one accounting
+# round: step account-tests (Read Grep Glob only) is handed each file the deleted-tests
+# check refused and the test diff, and its rows join steps/replaced.jsonl. Once per HEAD;
+# non-zero when it was already asked at this HEAD or did not answer, and nothing was added.
+_driver_ship_account_tests() {
+  local t="$1" wt="$2" trunk="$3" dt="$4" d head mb pats f p tfiles="" rc=0 note_was ans
+  d="$(driver_state_dir "$t")/steps"
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+  [ "$(driver_state_get "$t" deleted_tests_asked)" != "$head" ] || return 1
+  driver_state_set "$t" deleted_tests_asked "$head"
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 1
+  # The checker's own patterns, read off its control line, so the two never disagree.
+  pats=$(printf '%s\n' "$dt" | sed -n 's/.*(patterns: \(.*\))$/\1/p' | head -1)
+  [ -n "$pats" ] || pats="*.test.ts *.test.tsx *.spec.ts"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    set -f; for p in $pats; do
+      # shellcheck disable=SC2254
+      case "$f" in $p) tfiles="$tfiles$f"$'\n'; break ;; esac
+    done; set +f
+  done < <(git -C "$wt" diff --name-only "$mb" HEAD 2>/dev/null)
+  rm -rf "$d/account-tests.facts"; rm -f "$d/account-tests.json"
+  driver_fact_put "$t" account-tests FILES "$dt"
+  driver_fact_put "$t" account-tests DIFF "$(git -C "$wt" diff --stat "$mb" HEAD 2>/dev/null
+    [ -z "$tfiles" ] || printf '%s' "$tfiles" | tr '\n' '\0' | xargs -0 git -C "$wt" diff "$mb" HEAD -- 2>/dev/null)"
+  note_was=$(driver_state_get "$t" park_note)
+  driver_ai_step "$t" account-tests || rc=$?
+  ans="$d/account-tests.json"
+  # A question or a broken answer is "did not account", never a question surfaced.
+  if [ "$rc" -ne 0 ] || [ ! -s "$ans" ] || ! jq -e '(.replacedTests // []) | length > 0' "$ans" >/dev/null 2>&1; then
+    driver_state_set "$t" park_note "$note_was"
+    driver_say "   ship: the accounting round answered nothing usable (exit $rc)"
+    return 1
+  fi
+  jq -c '(.replacedTests // [])[]' "$ans" >> "$d/replaced.jsonl" 2>/dev/null || return 1
+}
+
+# _driver_ship_body_replaced <body> <section lines> — the body with its "## Deleted tests"
+# section, if any, replaced by one holding the given lines at its end.
+_driver_ship_body_replaced() {
+  printf '%s\n' "$1" | awk '/^## Deleted tests[[:space:]]*$/ { skip = 1; next } skip && /^## / { skip = 0 } !skip'
+  printf '\n## Deleted tests\n%s\n' "$2"
+}
+
 # _driver_ship_reserve <ticket> <pr> — reserves on the polish lists every item this
 # run's builder took (polish-list.sh take), for this PR: other runs skip them, and
 # the coordinator's housekeeping ticks them when the PR merges. An item another PR
@@ -859,6 +903,19 @@ $polish"
   local dt dtrc=0
   dt=$(printf '%s\n' "$body" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
          --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || dtrc=$?
+  # One short round asks the builder why; the body is rebuilt and judged again, never re-pushed.
+  if [ "$dtrc" -ne 0 ] && _driver_ship_account_tests "$t" "$wt" "$trunk" "$dt"; then
+    driver_say "   ship: the builder accounted for the deleted tests; the body is rebuilt and checked again"
+    body=$(_driver_ship_body_replaced "$body" "$(_driver_ship_replaced "$t")")
+    dtrc=0
+    dt=$(printf '%s\n' "$body" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
+           --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || dtrc=$?
+    if [ "$dtrc" -eq 0 ] && ! swarm_gh pr edit "${open_pr:-$pr_n}" --repo "$REPO_SLUG" --body "$body" >/dev/null 2>&1; then
+      driver_say "✋ ship: the pull request's body could not be rewritten with its '## Deleted tests' section, so it stays a draft."
+      driver_state_set "$t" park_note "the accounted '## Deleted tests' section could not be written to the pull request body"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
   if [ "$dtrc" -ne 0 ]; then
     driver_say "✋ ship: this branch deletes tests the pull request does not account for, so it stays a draft."
     printf '%s\n' "$dt" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done

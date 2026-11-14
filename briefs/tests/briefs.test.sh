@@ -118,6 +118,7 @@ want "the review step is given no Agent tool" "" "$(jq -r '.steps.review.tools /
 # The check reads and judges; it runs nothing and starts nothing.
 want "the review check is given Read, Grep and Glob only" "Read Grep Glob" "$(jq -r '.steps["review-check"].tools // ["(unset: every tool)"] | join(" ")' "$FACTS")"
 want "the review check declares no skill" "" "$(jq -r '.steps["review-check"].skills | join(" ")' "$FACTS")"
+want "the accounting round is given Read, Grep and Glob only" "Read Grep Glob" "$(jq -r '.steps["account-tests"].tools // ["(unset: every tool)"] | join(" ")' "$FACTS")"
 
 # --- the copy probe ------------------------------------------------------------
 # A real measurement of copying: the longest run of words a brief shares with a

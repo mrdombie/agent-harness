@@ -1,0 +1,14 @@
+{
+  "step": "account-tests",
+  "skills": [],
+  "replacedTests": [
+    {
+      "file": "src/compose/pinned.test.ts",
+      "removedBecause": "posting for a teammate was retired with the old composer"
+    },
+    {
+      "file": "src/compose/old-draft.test.ts",
+      "coveredBy": "src/compose/draft.test.ts"
+    }
+  ]
+}
