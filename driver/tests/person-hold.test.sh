@@ -34,7 +34,7 @@ claimed() { git -C "$REPO" ls-remote origin "refs/claims/$1" | grep -c . ; }
 
 # The steps stand in for the agent runner: each writes its name to CLAUDE_LOG. The real park runs.
 FAKE="$FIX/fakesteps"; mkdir -p "$FAKE"
-for s in start plan build; do
+for s in start size plan build; do
   printf 'driver_step_%s() { printf "%%s\\n" %s >> "$CLAUDE_LOG"; [ %s != plan ] || [ ! -f "$FIX/hold-after-plan" ] || plant_hold "$1"; return 0; }\n' "$s" "$s" "$s" > "$FAKE/$s.sh"
 done
 printf '. %q\n' "$HERE/../steps/park.sh" > "$FAKE/park.sh"
@@ -88,5 +88,19 @@ want_in "it is back on the queue" '^add 803 ' "$(cat "$FIX/queue.log" 2>/dev/nul
 want "no park note" "" "$(grep '^issue comment 803' "$GH_LOG" || true)"
 want "no status write" "" "$(edits)"
 want "no draft" "" "$(cat "$FIX/draft.log" 2>/dev/null)"
+
+echo "--- the hold comes off: the next run resumes at build, not from the start ---"
+reset_case 804; : > "$FIX/hold-after-plan"
+first=$(DRIVER_STEPS_DIR="$FAKE" DRIVER_QUICK_STEPS="start size build" bash "$BT" 804 --steps "start size plan build" 2>&1); echo "$first" | tail -5
+want "the first run parked on the hold" "start size plan" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+spawnable() { bash -c '. "$1/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9; swarm_spawnable "$2"' _ "$HERE/../.." "$1"; }
+spawnable 804 >/dev/null 2>&1; want "held, it is not spawnable" "1" "$?"
+jq '.labels = [{name:"status:ready"}]' "$FIX/gh/issue-804.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-804.json"
+rm -f "$FIX/hold-after-plan" "$FIX/person-hold".{rc,out}; : > "$CLAUDE_LOG"
+spawnable 804 >/dev/null 2>&1; want "the hold off, it is spawnable" "0" "$?"
+out=$(DRIVER_STEPS_DIR="$FAKE" DRIVER_QUICK_STEPS="start size build" bash "$BT" 804 --steps "start size plan build" 2>&1); rc=$?
+want "the rerun finishes" "0" "$rc"
+want "start re-checks, size and plan are skipped, build runs" "start build" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "the run log says it resumed after the hold was cleared" 'resumed after the hold was cleared: status:blocked, put on by dom' "$(cat "$STATE/driver/804/log")"
 
 suite_end "$FAILED"
