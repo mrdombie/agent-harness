@@ -38,8 +38,8 @@
 # A PERSON'S HOLD IS THEIRS TO LIFT (#20022 was released when #19700 landed, though a person
 # had put status:blocked on an hour after its wait line). A ticket is left held when its
 # blocked label went on more than UNBLOCK_LABEL_GRACE_SEC (300) after its newest wait line (a
-# body line reads as the issue's filing time), when it wears another person-hold label, or
-# when a live claim holds it.
+# body line reads as the issue's filing time) by a login that is not a bot or in
+# driver.accounts, when it wears another person-hold label, or when a live claim holds it.
 # Exit: 0 done · 1 a read failed (nothing is released on a read that failed).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +59,9 @@ done
 GH="${SWARM_GH:-gh}"
 QUEUE="${UNBLOCK_QUEUE:-$SELF_DIR/coordinator-queue.sh}"
 GRACE="${UNBLOCK_LABEL_GRACE_SEC:-300}"; case "$GRACE" in ""|*[!0-9]*) GRACE=300 ;; esac
+# The machine's logins: a block one of them put on is the machine's, however late.
+DRIVERS=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "${HARNESS_CFG:-/dev/null}" 2>/dev/null) || DRIVERS='[]'
+[ -n "$DRIVERS" ] || DRIVERS='[]'
 PERSON_HOLDS="${UNBLOCK_HOLD_LABELS:-$(toolkit_cfg labels.ownerDecision 2>/dev/null || echo needs:owner-decision) ${LBL_NEEDS_HUMAN:-} needs:data-model ${HOLD_LABEL:-}}"
 NOTIFY="${UNBLOCK_NOTIFY:-$SELF_DIR/coordinator-notify.sh}"
 tell_pm() { # <key> <line> — the PM's channel; once a key, and never on a dry run
@@ -183,9 +186,11 @@ person_held() {
   grep -qx "$n" <<<"$CLAIMS" && { echo "a live claim holds it"; return 0; }
   case ",$labs," in *",$LBL_BLOCKED,"*) ;; *) return 1 ;; esac
   tl=$("$GH" api "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$n/timeline?per_page=100" --paginate 2>/dev/null) || return 2
-  ev=$(jq -rs --arg l "$LBL_BLOCKED" --arg at "$at" --argjson g "$GRACE" '
+  ev=$(jq -rs --arg l "$LBL_BLOCKED" --arg at "$at" --argjson g "$GRACE" --argjson drivers "$DRIVERS" '
         [add[]? | select(.event == "labeled" and .label.name == $l)] | last
         | if . == null then empty
+          elif (.actor.type // "") == "Bot" or ((.actor.login // "") | endswith("[bot]"))
+               or ((.actor.login // "") as $u | $drivers | index([$u]) != null) then empty
           elif $at == "" or ((.created_at | fromdateiso8601) - ($at | fromdateiso8601)) > $g
           then "@\(.actor.login // "someone") put \($l) on at \(.created_at), after its wait line (theirs to lift)"
           else empty end' <<<"$tl" 2>/dev/null) || return 2
