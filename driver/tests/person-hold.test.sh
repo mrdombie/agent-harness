@@ -41,12 +41,13 @@ printf '. %q\n' "$HERE/../steps/park.sh" > "$FAKE/park.sh"
 cat >> "$FAKE/plan.sh" <<'SH'
 # A person labels the ticket while the run plans: GitHub now carries it, the snapshot does not.
 plant_hold() {
-  jq '.labels += [{name:"status:blocked"}]' "$FIX/gh/issue-$1.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-$1.json"
-  printf 'status:blocked put on by dom at 2026-11-14T10:00:00Z\n' > "$FIX/person-hold.out"; echo 1 > "$FIX/person-hold.rc"
+  local h; h=$(cat "$FIX/hold-label" 2>/dev/null || echo status:blocked)
+  jq --arg h "$h" '.labels += [{name:$h}]' "$FIX/gh/issue-$1.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-$1.json"
+  printf '%s put on by dom at 2026-11-14T10:00:00Z\n' "$h" > "$FIX/person-hold.out"; echo 1 > "$FIX/person-hold.rc"
 }
 SH
 reset_case() { # <ticket>
-  rm -f "$FIX/queue.log" "$FIX/draft.log" "$FIX/person-hold".{rc,out,log} "$FIX/hold-after-plan"
+  rm -f "$FIX/queue.log" "$FIX/draft.log" "$FIX/person-hold".{rc,out,log} "$FIX/hold-after-plan" "$FIX/hold-label" "$FIX/gh/prs.json"
   : > "$GH_LOG"; : > "$CLAUDE_LOG"; fix_gh_ok
   rm -rf "$STATE/driver/$1"
   fix_issue "$1" OPEN "status:claimed"
@@ -70,6 +71,28 @@ want_not_in "no parked status, no PM marker, no owner hold" 'status:parked|statu
 want_in "the open PR is drafted and disarmed" '^park 42$' "$(cat "$FIX/draft.log" 2>/dev/null)"
 want "the claim is released" "0" "$(claimed 801)"
 want_in "the run says why it stopped" 'parked \(hold\)' "$out"
+
+echo "--- a hold that is itself a status (needs-human, external-blocked): the park keeps it, no respawn ---"
+spawnable() { bash -c '. "$1/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9; swarm_spawnable "$2"' _ "$HERE/../.." "$1"; }
+labels_of() { jq -r '[.labels[].name] | sort | join(",")' "$FIX/gh/issue-$1.json"; }
+apply_edits() { # <ticket> — the fake gh logs edits; carry them onto its labels as GitHub would
+  local rm add
+  rm=$(edits | grep -oE -- '--remove-label [^ ]+' | awk '{print $2}' | jq -R . | jq -sc .)
+  add=$(edits | grep -oE -- '--add-label [^ ]+' | awk '{print $2}' | jq -R . | jq -sc .)
+  jq --argjson rm "$rm" --argjson add "$add" '.labels = ([.labels[].name | select(IN($rm[]) | not)] + $add | unique | map({name:.}))' \
+    "$FIX/gh/issue-$1.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-$1.json"
+}
+for c in "805 status:needs-human" "806 status:external-blocked"; do
+  t=${c%% *}; h=${c#* }
+  reset_case "$t"; : > "$FIX/hold-after-plan"; echo "$h" > "$FIX/hold-label"
+  out=$(bt "$t"); rc=$?
+  want "$h: it parks" "20" "$rc"
+  want_not_in "$h: the park's status write keeps it on" "--remove-label $h" "$(edits)"
+  apply_edits "$t"
+  want "$h: the ticket wears the hold beside ready" "$h,status:ready" "$(labels_of "$t")"
+  printf '[{"number":42,"headRefName":"tkt-%s/work","isDraft":true}]\n' "$t" > "$FIX/gh/prs.json"
+  spawnable "$t" >/dev/null 2>&1; want "$h: still held, it is not spawnable" "1" "$?"
+done
 
 echo "--- no hold: every step runs, as before ---"
 reset_case 802

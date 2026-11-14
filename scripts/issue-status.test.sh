@@ -50,6 +50,17 @@ bash "$IS" set 514 status:ready --drop status:blocked
 want "one edit" 1 "$(grep -c '^issue edit 514 ' "$GH_LOG")"
 want "--drop lifts it in the same edit" "status:ready" "$(after 514)"
 
+echo "--- set: needs-human and external-blocked are a person's holds too ---"
+: > "$GH_LOG"; fix_issue 515 OPEN "status:claimed,status:needs-human"
+bash "$IS" set 515 status:ready
+want "needs-human kept beside ready" "status:needs-human,status:ready" "$(after 515)"
+: > "$GH_LOG"; fix_issue 516 OPEN "status:claimed,status:external-blocked"
+bash "$IS" set 516 status:ready
+want "external-blocked kept beside ready" "status:external-blocked,status:ready" "$(after 516)"
+: > "$GH_LOG"; fix_issue 517 OPEN "status:parked,status:needs-human"
+bash "$IS" set 517 status:ready --drop status:needs-human
+want "--drop lifts needs-human" "status:ready" "$(after 517)"
+
 echo "--- set: already exactly right — no edit at all ---"
 : > "$GH_LOG"; fix_issue 503 OPEN "status:ready,P2"
 bash "$IS" set 503 status:ready
