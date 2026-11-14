@@ -83,6 +83,16 @@ for hold in needs:owner-decision needs:human-approval; do
   want_not_in "no PM marker: the label's removal resumes it" 'add-label (status:pm-decision|status:parked)' "$(log)"
 done
 
+echo "--- a hold beside another stop: the park note keeps both, and it parks for the PM ---"
+reach_ship 920 needs:owner-decision
+jq '.labels = [{"name":"do-not-merge"}]' "$FIX/gh/api-repos_acme_widgets_pulls_42.json" > "$FIX/pj" && mv "$FIX/pj" "$FIX/gh/api-repos_acme_widgets_pulls_42.json"
+out=$(bt 920); rc=$?
+want "it parks" "20" "$rc"
+want_in "the note names the hold" "needs:owner-decision put on by dom at 2026-11-14T10:00:00Z" "$(log)"
+want_in "and the do-not-merge stop beside it" 'carries the `do-not-merge` label' "$(log)"
+want_in "the park is the PM's: the hold coming off alone would not clear the other stop" 'add-label status:pm-decision' "$(log)"
+want "and it is not recorded as a hold park" "" "$(driver_state_get 920 held_by)"
+
 echo "--- a ticket with neither label ships as before: ready and armed ---"
 reach_ship 910 ""
 jq '.draft = true | .auto_merge = null' "$FIX/gh/api-repos_acme_widgets_pulls_42.json" > "$FIX/pj" && mv "$FIX/pj" "$FIX/gh/api-repos_acme_widgets_pulls_42.json"
