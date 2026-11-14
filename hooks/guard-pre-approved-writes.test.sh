@@ -222,7 +222,7 @@ add dbracket allow "$(bashp "[[ -f .claude/harness.json ]] && echo yes")"
 add declsub block "$(bashp "export X=\"\$(cp $TDIR/wide.json .claude/harness.json)\"")"
 add declsub block "$(bashp "export X=\"\`cp $TDIR/wide.json .claude/harness.json\`\"")"
 add declopen block "$(bashp "export X='\$(cp $TDIR/wide.json .claude/harness.json'")"
-add pattern allow "$(bashp "case x in widen.s?) echo y;; esac")"
+add pattern allow "$(bashp "case x in ''|widen.s?) echo y;; esac")"
 for w in $WFORMS; do add shell block "$(bashp "bash w-$w.sh")"; done
 add -      allow "$(bashp "bash $KIT/scripts/builder-install.sh")"
 
@@ -374,7 +374,7 @@ allowed_by(){ # id, old, new: every allow case of that id is refused once the ru
 }
 allowed_by declare  "DECLARE = {'local', 'export', 'declare', 'typeset', 'readonly'}" "DECLARE = set()"
 allowed_by pattern  "        pattern = '/' not in args[0] and any(c in args[0] for c in '*?[')" "        pattern = False"
-allowed_by dbracket"'source', '.', 'bash', 'sh', 'zsh', '[['}" "'source', '.', 'bash', 'sh', 'zsh'}"
+allowed_by dbracket "'source', '.', 'bash', 'sh', 'zsh', '[['}" "'source', '.', 'bash', 'sh', 'zsh'}"
 
 # 3b. A refusal inside a script names the script and the line it could not pass.
 for w in $WFORMS; do
