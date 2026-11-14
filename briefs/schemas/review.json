@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "review step answer",
-  "description": "A verdict, and every finding behind it, each carrying the grade that decides what it costs. Critical, Major and Minor send the work back and are fixed in this change; from review round 2 the driver drops each Minor (or sends it to the nightly sweep when it is outside the files this change touched) instead; a Nit is dropped. A finding tagged pre-existing is in code this change did not introduce: it never blocks and never goes back to the builder; the driver hands it to the nightly sweep. The verdict is read off the grades, never typed beside them: SHIP with a Critical, Major or Minor that is not pre-existing, and BLOCKED with none, are both refused.",
+  "description": "A verdict, and every finding behind it, each carrying the grade that decides what it costs. Critical, Major and Minor send the work back and are fixed in this change; from review round 2 the driver drops each Minor (or sends it to the nightly sweep when it is outside the files this change touched) instead; a Nit is dropped. A finding tagged pre-existing is in code this change did not introduce: it never blocks and never goes back to the builder; the driver hands it to the nightly sweep.  A finding of kind breaks-rule or stale-rule cites the written rule as file:line; a stale-rule finding never blocks and goes to the pull request as a rule to update. The verdict is read off the grades, never typed beside them: SHIP with a Critical, Major or Minor that is not pre-existing, and BLOCKED with none, are both refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -125,6 +125,19 @@
             "type": "string",
             "minLength": 1
           },
+          "kind": {
+            "description": "defect: the code is wrong. breaks-rule: the code breaks a rule written in RULES (CLAUDE.md, AGENTS.md or an instruction file beside the changed files); graded and acted on as any finding. stale-rule: the change shows a written rule is out of date; it never blocks and never goes back to the builder, and the driver lists it in the pull request as a rule to update. Either rule kind cites the rule in `rule`.",
+            "enum": [
+              "defect",
+              "breaks-rule",
+              "stale-rule"
+            ]
+          },
+          "rule": {
+            "description": "The written rule a breaks-rule or stale-rule finding cites, as <file>:<line> exactly as RULES numbers it. A file RULES did not carry is refused.",
+            "type": "string",
+            "pattern": "^[^:\\s]+:[1-9][0-9]*$"
+          },
           "instances": {
             "description": "Every place the class occurs, as file:line, this finding's own place included.",
             "type": "array",
@@ -165,6 +178,26 @@
                   "const": "nit"
                 }
               }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "breaks-rule",
+                    "stale-rule"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "rule"
+              ]
             }
           }
         ]

@@ -315,6 +315,14 @@ even when inherited. A push still refused falls back to a bundle under
   sign-off refusal: that is the owner's call, never a finding. The trial skips while
   a configured gate is red, runs `gates.prePushOwed` while a verdict is owed, and
   carries `SIGNOFF_GUARD_DRYRUN=1`.
+- **The review reads the written rules.** The hunter is handed `RULES`: the root
+  `CLAUDE.md` and `AGENTS.md` and the instruction file nearest each changed file,
+  every line numbered, cut at `review.rulesMaxBytes` (default 40000) with the cut
+  said. A `breaks-rule` finding cites its rule as `file:line` and is graded as any
+  finding; a `stale-rule` finding never blocks and is listed in the PR under
+  "Rules to update". A rule finding with no citation, or one citing a file `RULES`
+  did not carry, is refused. Cost: no extra agents; up to `review.rulesMaxBytes`
+  (40000 bytes, ~10k tokens) more prompt per review, ~85 reviews a day.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
   and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or

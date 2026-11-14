@@ -276,6 +276,55 @@ $claims"
   printf '%s' "$out"
 }
 
+# driver_rule_files <tree> [changed file…] — the instruction files a change is held to, one
+# path a line: the root CLAUDE.md and AGENTS.md, then for each changed file the instruction
+# files in the nearest folder above it that has one. A folder the change did not touch is
+# never read: the root files alone are ~58KB on the largest repo this runs on.
+driver_rule_files() {
+  local wt="$1" f d n out=""
+  shift
+  _driver_rule_add() { case $'\n'"$out"$'\n' in *$'\n'"$1"$'\n'*) ;; *) out="${out:+$out
+}$1" ;; esac; }
+  for n in CLAUDE.md AGENTS.md; do [ -f "$wt/$n" ] && _driver_rule_add "$n"; done
+  for f in "$@"; do
+    d=$(dirname "$f")
+    while [ "$d" != . ] && [ "$d" != / ] && [ -n "$d" ]; do
+      if [ -f "$wt/$d/CLAUDE.md" ] || [ -f "$wt/$d/AGENTS.md" ]; then
+        for n in CLAUDE.md AGENTS.md; do [ -f "$wt/$d/$n" ] && _driver_rule_add "$d/$n"; done
+        break
+      fi
+      d=$(dirname "$d")
+    done
+  done
+  unset -f _driver_rule_add
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+# driver_fact_rules <tree> [changed file…] — the RULES fact: every file driver_rule_files
+# names, each line as `<file>:<n>: <text>` so a finding cites it as file:line. Cut at
+# review.rulesMaxBytes (default 40000), and the cut said.
+driver_fact_rules() {
+  local wt="$1" files f body cap bytes
+  shift
+  files=$(driver_rule_files "$wt" "$@")
+  [ -n "$files" ] || { _driver_fact_none "no CLAUDE.md, AGENTS.md or instruction file at the root or beside the changed files, so no written rule applies to this change"; return 0; }
+  body=$(while IFS= read -r f; do
+    printf '### %s\n' "$f"
+    awk -v p="$f" '{ printf "%s:%d: %s\n", p, NR, $0 }' "$wt/$f"
+    printf '\n'
+  done <<<"$files")
+  cap=$(driver_opt review.rulesMaxBytes 40000)
+  case "$cap" in ''|*[!0-9]*|0) cap=40000 ;; esac
+  bytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d ' ')
+  if [ "${bytes:-0}" -gt "$cap" ]; then
+    LC_ALL=C printf '%s' "$body" | LC_ALL=C head -c "$cap"
+    printf '\n\n[RULES CUT at %s bytes of %s (review.rulesMaxBytes). The files, in full: %s. Read the rest in the worktree before saying no written rule applies.]' \
+      "$cap" "$bytes" "$(printf '%s' "$files" | paste -sd, - | sed 's/,/, /g')"
+  else
+    printf '%s' "$body"
+  fi
+}
+
 # The standard a change is held to, and the screen rules. Both are project facts
 # and both are optional: a backend-only project has no screen rules, and saying so
 # is different from leaving the placeholder in the prompt.

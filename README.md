@@ -376,9 +376,27 @@ whether the mistake came back.
   the others' there; a notice is posted there too, so no host tells the PM twice that week.
   `findingClasses.share: false` keeps it to one host.
 - **The count**: `finding-class.sh weekly [--weeks N]` prints review classes, thrown-away
-  checks and tests, and red checks (`develop-red.sh count`) in one table by ISO week, most first. `finding-class.sh fixed <key> "<what>"`
+  checks and tests, red checks (`develop-red.sh count`) and escapes per layer in one table by ISO week, most first. `finding-class.sh fixed <key> "<what>"`
   records a source fix; from then on a class whose count has not fallen reads
   `NOT FALLING`, and the fix is reworked.
+
+### Escapes: the layer that missed a bad merge
+
+A merged change that is then reverted (a merged PR titled Revert naming it), or that a
+person marks broken on UAT (an issue labelled `labels.escaped`, default `broken-on-uat`,
+citing it), is an escape. Each housekeeping pass `scripts/escape-record.sh scan` judges
+at most `escapes.perPass` (default 3) new ones: one low-effort, read-only model call
+(`briefs/escape.md`) on what the merged PR had — compare on or off, proof shots, reviews,
+checks run — names the one layer that should have caught it: picture, guideline, review,
+test or CI. One line goes on `<stateDir>/swarm/escapes.jsonl`, and one issue labelled
+`labels.escapedLayer` (default `escaped-layer`) asks for that layer's check to be fixed,
+not the screen. A layer outside the five, or a fix naming only screen files, is recorded
+`unjudged` and files nothing. A PR is judged once; a machine's own issue and a commit
+revert never count; shadow writes nothing. Both labels are made at the start of each live
+pass, so `broken-on-uat` exists before anyone needs it.
+
+Cost: no extra agents. At most `escapes.perPass` (3) low-effort calls a pass, and a PR is
+judged once, so a day costs one call per escape — never more than the day's merges (~85).
 
 ## Building one ticket
 
