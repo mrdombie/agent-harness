@@ -62,9 +62,9 @@ under `gates.localOnly`), commit the lowered baseline and keep the improvement. 
 
 ## A test you reword or remove is accounted for
 
-If you remove, reword or skip an `it(`/`test(` case, list its file in
-`replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
-a bare path to the test that now pins it, or `removedBecause`.
+If you delete a test file, or remove, reword or skip a case, list its repo-relative path in
+`replacedTests` with exactly one of `coveredBy`, a bare path to the test that now
+pins it, or `removedBecause`.
 
 **Git your permission mode refuses** (a reset, dropping commits origin already has,
 finishing a merge) is never run and never a question: list it in `gitActions`, and
