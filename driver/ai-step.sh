@@ -828,6 +828,20 @@ EOC
         driver_say "   $step: $moved left-out entr$([ "$moved" = 1 ] && printf y || printf ies) named no ticket item id — kept as a note, not asked again"
       else rm -f "$ans.norm"; fi
     fi
+    # With no feature list a task's `item` names nothing, so one off the contract is dropped.
+    local itre dropped
+    itre=$(jq -r '.properties.tasks.items.properties.item.pattern // empty' "$DRIVER_SCHEMAS/$step.json" 2>/dev/null)
+    if [ -n "$itre" ]; then
+      dropped=$(jq -r --arg re "$itre" '
+        if ((.features // []) | length) > 0 then 0
+        else [(.tasks | arrays)[] | select(type == "object" and ((.item | type) == "string") and (.item | test($re) | not))] | length end' "$ans" 2>/dev/null)
+      if [ "${dropped:-0}" -gt 0 ] 2>/dev/null && jq --arg re "$itre" '
+          .tasks |= map(if type == "object" and ((.item | type) == "string") and (.item | test($re) | not) then del(.item) else . end)' \
+          "$ans" > "$ans.items" 2>/dev/null && [ -s "$ans.items" ]; then
+        mv "$ans.items" "$ans"
+        driver_say "   $step: $dropped task item$([ "$dropped" = 1 ] || printf s) matched no feature list item and the plan has none — dropped, not asked again"
+      else rm -f "$ans.items"; fi
+    fi
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash
     # read as "the answer was never checked" and parked finished work.
