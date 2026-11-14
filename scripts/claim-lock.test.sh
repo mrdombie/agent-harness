@@ -208,6 +208,33 @@ ls "$SB/state/runs" 2>/dev/null | grep -q 781 \
   || ok "a claim taken outside a spawned run writes no run note"
 gh_run -- release 781 --force
 
+# --- 8. A refused push with nobody holding the claim is no lost race ----------
+# 2026-11-04: start parked tickets ten requeues running on "a peer took the claim
+# first" while `show` said "not claimed". Any `[remote rejected]` push was read as
+# the compare-and-swap lost. Origin's hook here refuses the ref with no holder.
+mkdir -p "$SB/origin.git/hooks"
+cat > "$SB/origin.git/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+while read -r _ _ ref; do [ "$ref" = refs/claims/888 ] && { echo "declined"; exit 1; }; done
+exit 0
+HOOK
+chmod +x "$SB/origin.git/hooks/pre-receive"
+gh_run -- acquire 888 --branch tkt-888/x --worktree "$SB/wt11" --pid $$
+if [ "$RC" -ne 0 ] && [ "$RC" -ne 10 ] && ! grep -q 'lost the race' "$SB/out"; then
+  ok "a push origin refuses, with no holder, fails as a push (rc $RC), not a lost race"
+else
+  bad "a push origin refuses, with no holder, is reported as a lost race (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+fi
+rm -f "$SB/origin.git/hooks/pre-receive"
+
+# Control: a claim a peer really holds still loses the race with rc 10.
+git -C "$SB/work" push -q origin "$(git -C "$SB/work" commit-tree "$(git -C "$SB/work" hash-object -t tree /dev/null)" \
+  -m '{"issue":889,"agent":"peer@elsewhere","pid":1,"branch":"tkt-889/x","worktree":"","host":"elsewhere","claimed_at":"2026-11-04T00:00:00Z"}'):refs/claims/889"
+gh_run -- acquire 889 --branch tkt-889/x --worktree "$SB/wt12" --pid $$
+[ "$RC" -eq 10 ] && grep -q 'held by: .*peer@elsewhere' "$SB/out" \
+  && ok "a claim a peer holds still loses the race (rc 10), naming the holder" \
+  || bad "a claim a peer holds still loses the race (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"

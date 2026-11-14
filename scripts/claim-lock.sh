@@ -263,9 +263,12 @@ cmd_acquire() {
     sync_cache
     local holder
     holder=$(read_claim "$CACHE/$issue" 2>/dev/null || true)
-    printf 'lost the race for #%s\n' "$issue" >&2
-    [ -n "$holder" ] && printf 'held by: %s\n' "$holder" >&2
-    return 10
+    # A refusal with no holder is origin refusing the push, never a lost race.
+    if [ -n "$holder" ]; then
+      printf 'lost the race for #%s\n' "$issue" >&2
+      printf 'held by: %s\n' "$holder" >&2
+      return 10
+    fi
   fi
 
   printf '%s\n' "$out" >&2
