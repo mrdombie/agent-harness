@@ -73,8 +73,17 @@ type driver_record_usage >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]
 # DRIVER_OWED_OUT. Returns its exit code: 0 not owed (or attested), 124 a hang,
 # anything else owed. `{{SHA}}` and `{{BASE}}` are filled as in `record`.
 _driver_owed() {
-  local t="$1" name="$2" owed="$3" wt="$4" trunk="$5" cmd f rc=0
+  local t="$1" name="$2" owed="$3" wt="$4" trunk="$5" cmd f rc=0 missing said
   f="$(driver_state_dir "$t")/steps/owed-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
+  DRIVER_OWED_FAULT=""
+  if missing=$(_driver_owed_missing_script "$owed" "$wt"); then
+    printf "'%s' owed check ('%s') names npm script %s, which package.json does not have — a settings fault in .claude/harness.json%s, not owed\n" \
+      "$name" "$owed" "$missing" "${HARNESS_CFG_FROM:+ (read from $HARNESS_CFG_FROM)}" > "$f"
+    DRIVER_OWED_OUT="$f"; DRIVER_OWED_FAULT=1
+    said="$f.said-$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+    [ -e "$said" ] || { driver_say "✋ push-requires: $(cat "$f")"; : > "$said"; }
+    return 0
+  fi
   cmd=$(printf '%s' "$owed" | sed -e "s|{{SHA}}|$(git -C "$wt" rev-parse HEAD 2>/dev/null)|g" -e "s|{{BASE}}|$trunk|g")
   ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$f" 2>&1 || rc=$?
   DRIVER_OWED_OUT="$f"
@@ -88,11 +97,14 @@ _driver_owed() {
 # _driver_owed_missing_script <owed-cmd> <tree> — 0, printing the name, when <owed-cmd>
 # is `npm run <name>` and <tree>/package.json has no such script. npm exits 1 for it,
 # which reads as "owed" and sends a reviewer to earn a verdict no check can ever read.
+# Only the plain `npm run [-s|--silent] <name>` form: any other flag or a quoted name is
+# not read, and a package.json that does not parse is not a missing script.
 _driver_owed_missing_script() {
-  local owed="$1" tree="$2" name
-  [ -f "$tree/package.json" ] || return 1
-  name=$(printf '%s' "$owed" | sed -n -E 's/^[[:space:]]*npm[[:space:]]+run(-script)?([[:space:]]+(-s|--silent))*[[:space:]]+([^[:space:];&|]+).*/\4/p')
-  [ -n "$name" ] || return 1
+  local owed="$1" tree="$2" name re='^[[:space:]]*npm[[:space:]]+run(-script)?[[:space:]]+((-s|--silent)[[:space:]]+)*([A-Za-z0-9_@/.+][^[:space:];&|"'"'"'\\]*)([[:space:];&|]|$)'
+  [ -f "$tree/package.json" ] && command -v jq >/dev/null 2>&1 || return 1
+  [[ "$owed" =~ $re ]] || return 1
+  name="${BASH_REMATCH[4]}"
+  jq -e '(.scripts // {}) | type == "object"' "$tree/package.json" >/dev/null 2>&1 || return 1
   jq -e --arg n "$name" '(.scripts // {}) | has($n)' "$tree/package.json" >/dev/null 2>&1 && return 1
   printf '%s' "$name"
 }
@@ -404,12 +416,8 @@ driver_push_requires() { # <ticket>
     fi
 
     if [ -n "$owed" ]; then
-      local missing
-      if missing=$(_driver_owed_missing_script "$owed" "$wt"); then
-        driver_say "✋ push-requires: '$name' owed check ('$owed') names npm script $missing, which package.json does not have — a settings fault in $(basename "$HARNESS_CFG"), not owed"
-        continue
-      fi
       orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
+      [ "$orc" -ne 0 ] || [ -z "$DRIVER_OWED_FAULT" ] || continue
       case "$orc" in
         0)  driver_say "   push-requires: '$name' is not owed on this diff — $(_driver_first_line "$DRIVER_OWED_OUT")"
             continue ;;
