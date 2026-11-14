@@ -743,7 +743,7 @@ export LBL_POLISH_LIST LBL_SCREEN_PREFIX
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "${LBL_EXTERNAL_BLOCKED:-}" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 
