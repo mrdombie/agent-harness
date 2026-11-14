@@ -166,7 +166,7 @@ $(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
     printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-a person to say how to proceed}" "$HOLD_LABEL"
   elif [ "$cause" = "hold" ]; then
-    printf 'Held by a person: %s.\n**Resume:** once that label comes off, the ticket is ready and the driver picks up from the last finished step.' \
+    printf 'Held by a person: %s.\n**Resume:** once that label comes off, the ticket is ready and the driver picks up from the last finished step.\n<!-- driver-park: hold -->' \
       "$(printf '%s' "$question" | sed 's/ put on by /, put on by /')"
   elif [ "$cause" = "pm" ]; then
     printf '**Needs (PM):** %s\n**Resume:** answer that on this ticket, clear `%s`, then run the driver again — it picks up from the last finished step.' \

@@ -752,9 +752,12 @@ swarm_blocking_labels() {
 # "The issue is open" is true of every ticket until its PR MERGES, which is why
 # the open-PR probe is here: on 2026-09-19 a version without it re-spawned three
 # tickets whose PRs were already open and waiting on a person.
-swarm_hold_parked() { # <ticket> — its run record says a person's hold parked it
+swarm_hold_parked() { # <ticket> — its run record, or on another host its newest park comment, says a person's hold parked it
   local f="${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json"
-  [ -f "$f" ] && jq -e '(.held_by // "") != ""' "$f" >/dev/null 2>&1
+  [ -f "$f" ] && jq -e '(.held_by // "") != ""' "$f" >/dev/null 2>&1 && return 0
+  swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments \
+    -q '[.comments[]? | .body // "" | select(startswith("**Parked —"))] | last // "" | contains("<!-- driver-park: hold -->")' 2>/dev/null \
+    | grep -qx true
 }
 swarm_spawnable() { # <ticket>
   local t="$1" meta st lab l openpr
