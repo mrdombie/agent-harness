@@ -19,6 +19,13 @@ for a in "${@:2}"; do
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in -X|-f|-F|-H|-q|--jq|--method|--input) skip=1 ;; -*) ;; *) [ -n "$ep" ] || ep="$a" ;; esac
 done
+# `issue view` answers the ticket's labels from $FIX/gh/issue-<n>.json; $FIX/issue-fail refuses it.
+if [ "$1 $2" = "issue view" ]; then
+  [ ! -f "$FIX/issue-fail" ] || { echo "gh: refused (induced)" >&2; exit 1; }
+  q=""; prev=""; for a in "$@"; do case "$prev" in -q|--jq) q="$a" ;; esac; prev="$a"; done
+  f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 0
+  if [ -n "$q" ]; then jq -r "$q" "$f"; else cat "$f"; fi; exit
+fi
 [ "$1" = api ] || exit 0
 f="$FIX/gh/api-$(printf '%s' "$ep" | tr '/?&=' '____').json"
 [ -f "$f" ] || exit 1
@@ -186,6 +193,21 @@ echo "--- the ticket alone, with no pull request yet ---"
 world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body":"Critical: lost data."}]' '[]' '[]' "$READY"
 run "$T"
 want "a Critical on the ticket stops it"        "1" "$rc"
+
+echo "--- a person's hold label on the ticket stops it, naming the label, who and when ---"
+world "[$HANDOFF]" '[]' '[]' "$READY"
+printf '{"number":5,"labels":[{"name":"status:claimed"},{"name":"needs:owner-decision"}]}\n' > "$FIX/gh/issue-5.json"
+api "repos/$R/issues/$T/timeline?per_page=100" '[{"event":"labeled","label":{"name":"needs:owner-decision"},"actor":{"login":"dom"},"created_at":"2026-11-14T10:00:00Z"}]'
+run "$T"
+want "held, with no pull request"               "1" "$rc"
+want_in "it names the label, who and when"      '^needs:owner-decision put on by dom at 2026-11-14T10:00:00Z$' "$out"
+printf '{"number":5,"labels":[{"name":"status:claimed"}]}\n' > "$FIX/gh/issue-5.json"
+run "$T"
+want "nothing held"                             "0" "$rc"
+: > "$FIX/issue-fail"
+run "$T"
+want "a hold that cannot be read is no clear"   "2" "$rc"
+rm -f "$FIX/issue-fail" "$FIX/gh/issue-5.json"
 
 echo "--- drafted: the draft stop alone, from one timeline read ---"
 dr() { out=$(bash "$P" drafted "$@" 2>&1); rc=$?; }
