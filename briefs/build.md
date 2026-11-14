@@ -150,7 +150,9 @@ fail, removes it, and requires the test to pass.
 is refused.
 
 **When the task only merges the trunk**, return `trunkMerge` with its `commit`.
-Any edit beyond the clean merge is refused.
+A conflict you resolve by hand is accepted when no marker remains, only the
+conflicted files differ from the clean merge, and the project's gates pass on it.
+Any other edit beyond the merge is refused.
 
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both

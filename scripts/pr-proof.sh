@@ -40,7 +40,7 @@ compose() {
     esac
   done
   [ -n "$steps" ] || usage
-  local f ntests=0 tfiles="" ngates=0 gnames="" nfix=0 row
+  local f ntests=0 tfiles="" ngates=0 gnames="" nfix=0 nmerges=0 row
   echo "## Proof"
   echo "The commands this run ran, and what they printed. The driver ran each one itself and read its exit code; none of this is the builder's own report."
   for f in "$steps"/build-task-*.proved; do
@@ -52,6 +52,13 @@ compose() {
       continue
     fi
     jq -e '.proof | type == "object"' "$f" >/dev/null 2>&1 || continue
+    # A trunk merge resolved by hand has no red: the gates the driver ran on it are its record.
+    if jq -e '.proof.kind == "trunk-merge-gates"' "$f" >/dev/null 2>&1; then
+      nmerges=$((nmerges + 1))
+      echo
+      echo "**$(jq -r '.title // "a task"' "$f" | tr '\n' ' ')** — a trunk merge resolved by hand at $(jq -r '.commits[0] // "?"' "$f" | cut -c1-8); the driver ran the gates on it: $(jq -r '[.proof.gates[] | "`\(.cmd)` exit \(.exit)"] | join(", ")' "$f")"
+      continue
+    fi
     ntests=$((ntests + 1))
     tfiles="$tfiles${tfiles:+, }$(jq -r '.proof.testFile // "?"' "$f")"
     echo
@@ -79,7 +86,7 @@ compose() {
       echo '```text'; jq -r '.output // ""' <<<"$row" | _unfence; echo '```'
     done < "$steps/self-check.gates.jsonl"
   fi
-  [ "$ntests$ngates" != 00 ] || { echo; echo "(none — this run kept no command it ran)"; }
+  [ "$ntests$ngates$nmerges" != 000 ] || { echo; echo "(none — this run kept no command it ran)"; }
   local screens=""
   if [ "$tier" = screen ]; then
     screens="screens: CI's shots of this head"
@@ -89,6 +96,7 @@ compose() {
 
   local tested=""
   [ "$ntests" -eq 0 ] || tested="$ntests test$([ "$ntests" -eq 1 ] || echo s) the driver ran red without the change and green with it ($tfiles)"
+  [ "$nmerges" -eq 0 ] || tested="$tested${tested:+; }$nmerges trunk merge$([ "$nmerges" -eq 1 ] || echo s) resolved by hand, its gates green on the merge"
   [ "${nfix:-0}" -eq 0 ] || tested="$tested${tested:+; }$nfix review finding fix$([ "$nfix" -eq 1 ] || echo es) proved the same way"
   [ "$ngates" -eq 0 ] || tested="$tested${tested:+; }$ngates gate$([ "$ngates" -eq 1 ] || echo s) green on this branch ($gnames)"
   [ -z "$screens" ] || tested="$tested${tested:+; }$screens"

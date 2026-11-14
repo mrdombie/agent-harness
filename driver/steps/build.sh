@@ -713,17 +713,20 @@ driver_prove_no_code() {
   return 0
 }
 
-# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit>
+# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit> [<gates-out>]
 #
 # THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
 # were proved where they landed, so there is no red to show: what is checked is that
-# the commit is that merge and nothing more.
+# the commit is that merge and nothing more. A conflict resolved by hand is accepted
+# when no marker remains, only the conflicted files differ from git's own merge, and
+# the project's gates pass on the merge; each gate's exit is written to <gates-out>.
 #
-# 0 a clean trunk merge, made by this task and its only commit · 1 not a merge of the
-# trunk, or its tree is not the clean merge result · 2 the merge predates the task, or
-# the task changed something besides it · 3 the claim cannot be checked
+# 0 a trunk merge, made by this task and its only commit · 1 not a merge of the trunk,
+# its tree carries edits beyond the merge, or a gate failed on its resolution · 2 the
+# merge predates the task, or the task changed something besides it · 3 the claim
+# cannot be checked
 driver_prove_trunk_merge() {
-  local repo="$1" before="$2" after="$3" m="$4" sha p1 p2 r ontrunk="" tree mrc=0 got s8
+  local repo="$1" before="$2" after="$3" m="$4" gout="${5:-}" sha p1 p2 r ontrunk="" tree mrc=0 got s8 mt conflicted="" extra f
   sha=$(git -C "$repo" rev-parse --verify -q "$m^{commit}" 2>/dev/null) || { printf "trunkMerge.commit '%s' is not a commit here\n" "$m"; return 3; }
   s8=$(printf '%s' "$sha" | cut -c1-8)
   [ -n "$before" ] && [ -n "$after" ] || { printf 'the head around this task was not recorded, so its commits could not be measured\n'; return 3; }
@@ -735,17 +738,28 @@ driver_prove_trunk_merge() {
     git -C "$repo" merge-base --is-ancestor "$p2" "$r" 2>/dev/null && { ontrunk=1; break; }
   done
   [ -n "$ontrunk" ] || { printf "%s merges %s, which is not on the trunk (%s)\n" "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "${INTEGRATION_BRANCH:-develop}"; return 1; }
-  # The merge git makes by itself, with no hand: a conflict or any other tree is an edit.
-  tree=$(git -C "$repo" merge-tree --write-tree "$p1" "$p2" 2>/dev/null) || mrc=$?
-  tree=$(printf '%s\n' "$tree" | head -1)
-  if [ "$mrc" -eq 1 ]; then
-    printf '%s merged the trunk with conflicts, so its resolution is a change by hand — prove it with testFirst or testOnly\n' "$s8"; return 1
-  fi
-  if [ "$mrc" -ne 0 ] || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
+  # The merge git makes by itself: line 1 its tree, then each conflicted file up to a blank line.
+  mt=$(git -C "$repo" merge-tree --write-tree --name-only "$p1" "$p2" 2>/dev/null) || mrc=$?
+  tree=$(printf '%s\n' "$mt" | head -1)
+  if { [ "$mrc" -ne 0 ] && [ "$mrc" -ne 1 ]; } || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
     printf 'the clean merge of %s could not be computed here (git merge-tree exit %s)\n' "$s8" "$mrc"; return 3
   fi
   got=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}" 2>/dev/null)
-  if [ "$got" != "$tree" ]; then
+  if [ "$mrc" -eq 1 ]; then
+    conflicted=$(printf '%s\n' "$mt" | sed -n '2,$p' | sed '/^$/q' | sed '/^$/d' | sort -u)
+    [ -n "$conflicted" ] || { printf 'git merge-tree reported conflicts in %s and named no file\n' "$s8"; return 3; }
+    extra=$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | grep -vxF -- "$conflicted")
+    if [ -n "$extra" ]; then
+      printf '%s resolves its conflicts and carries edits beyond them (%s) — prove them with testFirst or testOnly\n' \
+        "$s8" "$(printf '%s\n' "$extra" | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      return 1
+    fi
+    while IFS= read -r f; do
+      if git -C "$repo" show "$sha:$f" 2>/dev/null | grep -qE '^(<{7}|>{7})( |$)'; then
+        printf '%s still holds conflict markers in %s\n' "$s8" "$f"; return 1
+      fi
+    done <<<"$conflicted"
+  elif [ "$got" != "$tree" ]; then
     printf '%s is a trunk merge that carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
       "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 1
@@ -767,7 +781,34 @@ driver_prove_trunk_merge() {
       "$(git -C "$repo" diff --name-only HEAD -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 2
   fi
-  printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+  if [ -z "$conflicted" ]; then
+    printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+    return 0
+  fi
+  # A resolution by hand is held to the project's gates, run on the merge itself (HEAD, clean).
+  local rows row name cmd grc said="" failed="" jl=""
+  rows=$(driver_gate_rows 2>/dev/null) || rows=""
+  [ -n "$rows" ] || { printf '%s resolves its conflicts by hand and the project names no gate to judge the resolution\n' "$s8"; return 3; }
+  _driver_proof_gate || { printf 'the machine gate could not be waited for, so no gate ran on the resolution in %s\n' "$s8"; return 3; }
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    name=${row%%	*}; cmd=${row#*	}
+    case "$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" in ''|null|'#'*) continue ;; esac
+    grc=0; ( cd "$repo" && driver_run_project "${DRIVER_CMD_TIMEOUT:-1800}" "$cmd" ) >/dev/null 2>&1 || grc=$?
+    said="$said${said:+, }$name exit $grc"
+    [ "$grc" -eq 0 ] || failed="$failed${failed:+, }$name"
+    jl="$jl$(jq -nc --arg n "$name" --arg c "$cmd" --argjson e "$grc" '{name: $n, cmd: $c, exit: $e}')"$'\n'
+  done <<<"$rows"
+  machine_gate_release 2>/dev/null || true
+  [ -n "$said" ] || { printf '%s resolves its conflicts by hand and every gate the project names is empty\n' "$s8"; return 3; }
+  [ -z "$gout" ] || printf '%s' "$jl" | jq -sc '{kind: "trunk-merge-gates", gates: .}' > "$gout" 2>/dev/null
+  f=$(printf '%s\n' "$conflicted" | head -5 | tr '\n' ' ' | sed 's/ $//')
+  if [ -n "$failed" ]; then
+    printf '%s resolves its conflicts by hand (%s) and its gates fail: %s (%s)\n' "$s8" "$f" "$failed" "$said"
+    return 1
+  fi
+  printf '%s merges %s and resolves its conflicts by hand (%s); the gates pass on it: %s\n' \
+    "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "$f" "$said"
   return 0
 }
 
@@ -934,10 +975,13 @@ driver_step_build() { # <ticket>
     # A TASK THAT ONLY MERGES THE TRUNK changes nothing of its own: the commit is checked, not a test.
     if jq -e '.trunkMerge | type == "object"' "$ans" >/dev/null 2>&1; then
       why=""; prc=0
-      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")") || prc=$?
+      rm -f "$proved.gates"
+      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")" "$proved.gates") || prc=$?
       if [ "$prc" -eq 0 ]; then
         tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
         rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
+        # A resolution by hand carries its gates as the proof; a clean merge carries none.
+        [ ! -s "$proved.gates" ] || mv -f "$proved.gates" "$proved.proof"
         _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
         nmerge=$((nmerge+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
