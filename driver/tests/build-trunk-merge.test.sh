@@ -35,13 +35,19 @@ branch() {
   printf 'own\n' > "$wt/own-$1.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm "feat: $1"
 }
 
-printf 'one\n' > "$REPO/shared.txt"; printf 'base\n' > "$REPO/base.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
-for b in clean edited conflict side more notmerge asked single found resolve marker neither redgate foundres; do branch "$b"; done
+printf 'one\n' > "$REPO/shared.txt"; printf 'base\n' > "$REPO/base.txt"
+# Names git quotes unless asked not to: a non-ASCII one, and one with quotes and a backslash.
+mkdir -p "$REPO/docs"; printf 'one\n' > "$REPO/docs/café.md"; printf 'one\n' > "$REPO/docs/say \"hi\" \\.md"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm base
+for b in clean edited conflict side more notmerge asked single found resolve marker neither redgate foundres quoted quotedok; do branch "$b"; done
 # The conflict branches and the trunk all change the same line.
 for b in conflict resolve marker neither redgate foundres; do
   printf 'branch\n' > "$FIX/$b/shared.txt"; git -C "$FIX/$b" commit -qam "feat: the branch's line"
 done
+printf 'branch\n' > "$FIX/quoted/docs/café.md"; git -C "$FIX/quoted" add -A; git -C "$FIX/quoted" commit -qm "docs: the branch's line"
+printf 'branch\n' > "$FIX/quotedok/docs/say \"hi\" \\.md"; git -C "$FIX/quotedok" add -A; git -C "$FIX/quotedok" commit -qm "docs: the branch's line"
 printf 'trunk\n' > "$REPO/shared.txt"; printf 'new\n' > "$REPO/trunk.txt"
+printf 'trunk\n' > "$REPO/docs/café.md"; printf 'trunk\n' > "$REPO/docs/say \"hi\" \\.md"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: the trunk moved"
 
 # session <tree> — the next build session merges the trunk into <tree> before it answers.
@@ -178,6 +184,26 @@ K_M=$(git -C "$WT" rev-parse HEAD)
 out=$(driver_prove_trunk_merge "$WT" "$K_P1" "$K_M" "$K_M" 2>&1); rc=$?
 want "it is refused"                   "1" "$rc"
 want_in "naming the file"              'conflict marker in shared\.txt' "$out"
+
+echo "--- a marker left in a file git quotes the name of is still found ---"
+WT="$FIX/quoted"
+Q_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf '<<<<<<< HEAD\nresolved\n' > "$WT/docs/café.md"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+Q_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$Q_P1" "$Q_M" "$Q_M" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming the file as it is"     'conflict marker in docs/café\.md \(line 1\)' "$out"
+
+echo "--- a clean resolution of a file with quotes in its name is accepted and named as it is ---"
+WT="$FIX/quotedok"
+QO_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/docs/say \"hi\" \\.md"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+QO_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$QO_P1" "$QO_M" "$QO_M" "$FIX/qo-res.json" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want "the proof names the file verbatim" 'docs/say "hi" \.md' "$(jq -r '.files | join(",")' "$FIX/qo-res.json" 2>/dev/null)"
 
 echo "--- a resolution that edits a file neither side changed is refused ---"
 WT="$FIX/neither"
