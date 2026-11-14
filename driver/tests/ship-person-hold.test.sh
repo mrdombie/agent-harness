@@ -90,7 +90,7 @@ out=$(bt 920); rc=$?
 want "it parks" "20" "$rc"
 want_in "the note names the hold" "needs:owner-decision put on by dom at 2026-11-14T10:00:00Z" "$(log)"
 want_in "and the do-not-merge stop beside it" 'carries the `do-not-merge` label' "$(log)"
-want_in "the park is the PM's: the hold coming off alone would not clear the other stop" 'add-label status:pm-decision' "$(log)"
+want_in "the park is the PM's: the hold coming off alone would not clear the other stop" '\*\*Needs \(PM\):\*\* Needs the person who stopped it' "$(log)"
 want "and it is not recorded as a hold park" "" "$(driver_state_get 920 held_by)"
 
 echo "--- a ticket with neither label ships as before: ready and armed ---"
