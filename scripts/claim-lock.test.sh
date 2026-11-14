@@ -235,6 +235,27 @@ gh_run -- acquire 889 --branch tkt-889/x --worktree "$SB/wt12" --pid $$
   && ok "a claim a peer holds still loses the race (rc 10), naming the holder" \
   || bad "a claim a peer holds still loses the race (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
 
+# --- 9. A refusal origin gives once, with no holder, does not cost the claim --
+# 2026-11-14: each live refusal cleared on the next run, minutes later. Origin's
+# hook here refuses the first push of the ref, then lets it through.
+cat > "$SB/origin.git/hooks/pre-receive" <<HOOK
+#!/usr/bin/env bash
+while read -r _ _ ref; do
+  if [ "\$ref" = refs/claims/890 ] && [ ! -e "$SB/refused-890" ]; then
+    : > "$SB/refused-890"; echo "declined"; exit 1
+  fi
+done
+exit 0
+HOOK
+chmod +x "$SB/origin.git/hooks/pre-receive"
+gh_run CLAIM_RETRY_DELAY=0 -- acquire 890 --branch tkt-890/x --worktree "$SB/wt13" --pid $$
+if [ "$RC" -eq 0 ] && [ -e "$SB/refused-890" ] && git -C "$SB/origin.git" rev-parse -q --verify refs/claims/890 >/dev/null; then
+  ok "a free ticket origin refuses once still takes the claim"
+else
+  bad "a free ticket origin refuses once gets no claim (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+fi
+rm -f "$SB/origin.git/hooks/pre-receive"
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"
