@@ -189,6 +189,8 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.idleMaxAgeSec` | 1800 | The oldest sample that still counts (`SWARM_IDLE_MAX_AGE`): fifteen coordinator ticks at the default 120s |
 | `swarm.maxLoad` | 20 x cores | Runaway guard only, never the busy test: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 and 119-140 on 2026-10-16, once 140 at 41% CPU idle |
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
+| `swarm.minFreeMemPct` | 10 | `scripts/machine-gate.sh` holds below this share of RAM available (`SWARM_MIN_FREE_MEM_PCT`; `kern.memorystatus_level` on macOS, `MemAvailable` on Linux). An unread reading is clear |
+| `swarm.maxSwapPct` | 90 | The machine gate also holds above this share of swap in use (`SWARM_MAX_SWAP_PCT`), but only while free memory is under 25%: macOS leaves swap parked, 11.5 GB of it at 71% available on 2026-10-19 |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.ownerName` | — | Who a finished row's "Waiting on …" names; unset reads "the owner" |
 | `swarm.progressSince` | 2026-10-13 | The day "Progress to launch" counts done tickets from (local midnight) |

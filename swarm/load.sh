@@ -19,6 +19,12 @@
 #   gate) reads that as idle 100 / load 0 / 4 cores; the coordinator as no room.
 #   swarm_free_mem_gb                 available memory in whole GB, less swap in use
 #                                     only while memory is tight; empty when unread
+#   swarm_free_mem_pct / swarm_swap_pct  available RAM / swap in use, in percent
+#   swarm_mem_tight <min-free> <max-swap>  0 and the reason when memory is tight;
+#                                     the machine gate's memory test, an unread reading is clear
+#
+#   SWARM_FREE_MEM_PCT / _FILE     a fixed free-memory percent / a file holding it
+#   SWARM_SWAP_PCT / _FILE         a fixed swap-used percent / a file holding it
 #
 # Seams, each read on EVERY call so a test can move them while a waiter polls:
 #   SWARM_LOAD / SWARM_LOAD_FILE   a fixed load / a file holding it
@@ -202,6 +208,61 @@ swarm_free_mem_gb() {
   fi
   case "$v" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$v"
+}
+
+# _swarm_seam <file-var> <fixed-var> — a seam's reading, or 1 when neither is set.
+_swarm_seam() {
+  local file="${!1:-}" fixed="${!2:-}" f
+  if [ -n "$file" ] && [ -f "$file" ]; then f=$(head -1 "$file" 2>/dev/null); printf '%s' "${f%%.*}"; return 0; fi
+  if [ -n "$fixed" ]; then printf '%s' "${fixed%%.*}"; return 0; fi
+  return 1
+}
+
+# The available share of RAM in percent, or nothing when unread.
+swarm_free_mem_pct() {
+  _swarm_seam SWARM_FREE_MEM_PCT_FILE SWARM_FREE_MEM_PCT && return
+  local v="" os sc="${SWARM_SYSCTL:-/usr/sbin/sysctl}" mi="${SWARM_MEMINFO:-/proc/meminfo}"
+  os="${SWARM_MEM_OS:-$(uname -s 2>/dev/null)}"
+  if [ "$os" = Darwin ]; then v=$($sc -n kern.memorystatus_level 2>/dev/null)
+  elif [ "$os" = Linux ] && [ -r "$mi" ]; then
+    v=$(awk '/^MemAvailable:/{a=$2} /^MemTotal:/{m=$2} END{ if (a == "" || m + 0 <= 0) exit 1; printf "%d", a * 100 / m }' "$mi" 2>/dev/null)
+  fi
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+# Swap in use as a percent of the swap total, 0 with no swap; nothing when unread.
+swarm_swap_pct() {
+  _swarm_seam SWARM_SWAP_PCT_FILE SWARM_SWAP_PCT && return
+  local v="" os sc="${SWARM_SYSCTL:-/usr/sbin/sysctl}" mi="${SWARM_MEMINFO:-/proc/meminfo}"
+  os="${SWARM_MEM_OS:-$(uname -s 2>/dev/null)}"
+  if [ "$os" = Darwin ]; then
+    v=$($sc -n vm.swapusage 2>/dev/null | awk '
+      function b(x,  m) { m = 1; if (x ~ /G$/) m = 1073741824; else if (x ~ /M$/) m = 1048576; else if (x ~ /K$/) m = 1024
+                          sub(/[KMG]$/, "", x); return x * m }
+      { for (i = 1; i <= NF; i++) { if ($i == "total") t = b($(i+2)); if ($i == "used") u = b($(i+2)) } }
+      END { if (t == "" || u == "") exit 1; if (t <= 0) { print 0; exit } printf "%d", u * 100 / t }')
+  elif [ "$os" = Linux ] && [ -r "$mi" ]; then
+    v=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{ if (t == "" || f == "") exit 1; if (t + 0 <= 0) { print 0; exit } printf "%d", (t - f) * 100 / t }' "$mi" 2>/dev/null)
+  fi
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+# swarm_mem_tight <min-free-pct> <max-swap-pct> — 0 and the reason when memory is tight.
+# Swap counts only while free is under SWARM_SWAP_COUNTS_BELOW: macOS grows swap on
+# demand and leaves it parked, so swap alone would hold the gate for ever.
+#   tight: "free memory 5%, floor 10%"  or  "swap 97% used, limit 90%"
+swarm_mem_tight() {
+  local min="${1:-10}" max="${2:-90}" free swap below="${SWARM_SWAP_COUNTS_BELOW:-25}"
+  case "$below" in ''|*[!0-9]*) below=25 ;; esac
+  free=$(swarm_free_mem_pct); swap=$(swarm_swap_pct)
+  [ -n "$free" ] || return 1
+  if [ "$free" -lt "$min" ]; then printf 'free memory %s%%, floor %s%%' "$free" "$min"; return 0; fi
+  if [ -n "$swap" ] && [ "$free" -lt "$below" ] && [ "$swap" -gt "$max" ]; then
+    printf 'swap %s%% used, limit %s%%' "$swap" "$max"; return 0
+  fi
+  return 1
 }
 
 # The default runaway guard: 20 load per core. Not a busy test — the idle floor is.
