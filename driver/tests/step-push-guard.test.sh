@@ -5,8 +5,11 @@
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
+# A hook's GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE would aim every git call below at its repo.
+for _gv in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_gv"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
+want "no GIT_* variable reaches the case" "0" "$(env | grep -c '^GIT_')"
 driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../ai-step.sh" || exit 1
 
@@ -17,7 +20,6 @@ for _d in "${_dirs[@]}"; do
   case "$_d" in *.driver-shim*) continue ;; esac
   [ -x "$_d/git" ] && { REAL_GIT="$_d/git"; break; }
 done
-want "no GIT_* variable reaches the case" "0" "$(env | grep -c '^GIT_')"
 
 SCR=$(mktemp -d); BARE=""; CLONE=""
 on_exit_keep_status 'rm -rf "$FIX" "$SCR" ${BARE:+"$BARE"} ${CLONE:+"$CLONE"}'
