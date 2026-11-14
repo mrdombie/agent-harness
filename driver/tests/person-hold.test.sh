@@ -123,8 +123,15 @@ rm -f "$FIX/hold-after-plan" "$FIX/person-hold".{rc,out}; : > "$CLAUDE_LOG"
 # The park drafted the run's PR but left it open: the swarm's open-PR probe sees it.
 printf '[{"number":42,"headRefName":"tkt-804/work","isDraft":true}]\n' > "$FIX/gh/prs.json"
 spawnable 804 >/dev/null 2>&1; want "the hold off, its open draft PR does not stop the spawn" "0" "$?"
+want_in "the hold park's comment carries the marker every host reads" '<!-- driver-park: hold -->' "$(cat "$GH_LOG")"
+# Another host: no run record of 804, only what the ticket says.
 mv "$STATE/driver/804/state.json" "$FIX/state-804.json"
-spawnable 804 >/dev/null 2>&1; want "an open PR with no hold on the record still stops it" "1" "$?"
+spawnable 804 >/dev/null 2>&1; want "an open PR with no hold park on the record or the ticket still stops it" "1" "$?"
+jq '.comments = [{body:"**Parked — held.**\n\nHeld by a person: status:blocked.\n<!-- driver-park: hold -->"}]' "$FIX/gh/issue-804.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-804.json"
+spawnable 804 >/dev/null 2>&1; want "on another host, the ticket's hold park comment lets it spawn past its draft PR" "0" "$?"
+jq '.comments += [{body:"**Parked — a gate failed.**\n\n**Needs:** nothing from you."}]' "$FIX/gh/issue-804.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-804.json"
+spawnable 804 >/dev/null 2>&1; want "a newer park that is not a hold's stops it again" "1" "$?"
+jq '.comments = []' "$FIX/gh/issue-804.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-804.json"
 mv "$FIX/state-804.json" "$STATE/driver/804/state.json"
 out=$(DRIVER_STEPS_DIR="$FAKE" DRIVER_QUICK_STEPS="start size build" bash "$BT" 804 --steps "start size plan build" 2>&1); rc=$?
 want "the rerun finishes" "0" "$rc"
