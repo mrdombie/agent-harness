@@ -29,7 +29,10 @@ on_exit_keep_status cleanup
 # SWARM_IDLE=90 by default so the load tests below test the load alone.
 export HARNESS_GATE_SLOT_DIR="$T/slots" MACHINE_GATE_POLL=0 SWARM_MAX_LOAD=32 HARNESS_GATE_SLOTS=2
 export HARNESS_CFG_PATH="$T/none.json" SWARM_IDLE=90 SWARM_IDLE_CACHE="$T/idle-cache"
+# Memory to spare by default, so the CPU and load tests test those alone.
+export SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=0
 unset SWARM_LOAD SWARM_LOAD_FILE SWARM_IDLE_FILE SWARM_MIN_CPU_IDLE SWARM_CORES MACHINE_GATE_MAX_WAIT HARNESS_CFG CLAUDE_PLUGIN_ROOT 2>/dev/null
+unset SWARM_FREE_MEM_PCT_FILE SWARM_SWAP_PCT_FILE SWARM_MIN_FREE_MEM_PCT SWARM_MAX_SWAP_PCT SWARM_SWAP_COUNTS_BELOW SWARM_MEM_OS 2>/dev/null
 LOADSH="$KIT/swarm/load.sh"
 TOPFIX="$KIT/swarm/tests/fixtures/top-macos.txt"
 
@@ -57,6 +60,53 @@ echo 60 > "$T/idle"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$T/idle.rc" ] && break; sleep 1; done
 [ -e "$T/ran" ] && ok "ran once idle rose" || fail "never ran: $(cat "$T/idle.out")"
 grep -q 'machine clear (cpu idle 60%, load 1), going ahead' "$T/idle.out" && ok "and said what it read" || fail "no clear line: $(cat "$T/idle.out")"
+
+echo "--- memory under the floor or swap nearly full holds a heavy command and says why; with memory to spare it runs ---"
+rm -f "$T/ran"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=5 SWARM_SWAP_PCT=20 bash "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 75 ] && [ ! -e "$T/ran" ] && ok "5% free memory holds the command (75, nothing ran)" || fail "5% free: rc $rc ran=$([ -e "$T/ran" ] && echo yes || echo no)"
+printf '%s' "$out" | grep -q 'machine busy (free memory 5%, floor 10%)' && ok "the busy line names free memory and its floor" || fail "free-memory line: $out"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=20 SWARM_SWAP_PCT=97 bash "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 75 ] && [ ! -e "$T/ran" ] && printf '%s' "$out" | grep -q 'swap 97% used, limit 90%' && ok "20% free with swap 97% holds and names the swap" || fail "swap 97%: rc $rc $out"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=10 bash "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -e "$T/ran" ] && ! printf '%s' "$out" | grep -q busy && ok "60% free, swap 10%: runs, no busy printed" || fail "60% free: rc $rc $out"
+rm -f "$T/ran"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_MEM_OS=none bash -c 'unset SWARM_FREE_MEM_PCT SWARM_SWAP_PCT; exec bash "$@"' _ "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -e "$T/ran" ] && ok "no memory reading at all counts as clear and runs" || fail "unread memory: rc $rc $out"
+echo 5 > "$T/mem-pct"; rm -f "$T/ran"
+printf '#!/usr/bin/env bash\necho 60 > "%s"\n' "$T/mem-pct" > "$T/mem-raise"; chmod +x "$T/mem-raise"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT_FILE="$T/mem-pct" SWARM_SWAP_PCT=0 MACHINE_GATE_ON_WAIT="$T/mem-raise" bash "$SUT" run --max 5 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -e "$T/ran" ] && printf '%s' "$out" | grep -q 'machine clear' && ok "memory back over the floor while it waits: it goes ahead and says clear" || fail "memory fall: rc $rc $out"
+mkdir -p "$T/mem"
+cat > "$T/mem/sysctl-pct" <<'SH'
+#!/usr/bin/env bash
+case "$2" in
+  kern.memorystatus_level) echo 7 ;;
+  vm.swapusage) echo "total = 2048.00M  used = 1536.00M  free = 512.00M  (encrypted)" ;;
+esac
+SH
+chmod +x "$T/mem/sysctl-pct"
+got=$(env -u SWARM_FREE_MEM_PCT -u SWARM_SWAP_PCT SWARM_MEM_OS=Darwin SWARM_SYSCTL="$T/mem/sysctl-pct" bash -c '. "$1"; printf "%s %s" "$(swarm_free_mem_pct)" "$(swarm_swap_pct)"' _ "$LOADSH")
+[ "$got" = "7 75" ] && ok "Darwin: memorystatus 7% free, 1.5 of 2 GB swap is 75%" || fail "Darwin pct read '$got'"
+printf 'MemTotal:       1000 kB\nMemAvailable:    80 kB\nSwapTotal:         0 kB\nSwapFree:          0 kB\n' > "$T/mem/meminfo-pct"
+got=$(env -u SWARM_FREE_MEM_PCT -u SWARM_SWAP_PCT SWARM_MEM_OS=Linux SWARM_MEMINFO="$T/mem/meminfo-pct" bash -c '. "$1"; printf "%s %s" "$(swarm_free_mem_pct)" "$(swarm_swap_pct)"' _ "$LOADSH")
+[ "$got" = "8 0" ] && ok "Linux: 80 of 1000 kB available is 8%, no swap total reads 0%" || fail "Linux pct read '$got'"
+
+echo "--- swap counts only while free memory is under 25% ---"
+rm -f "$T/ran"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=40 SWARM_SWAP_PCT=97 bash "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -e "$T/ran" ] && ok "40% free with 97% swap left from earlier runs" || fail "40% free, swap 97%: rc $rc $out"
+
+echo "--- the memory thresholds come from harness.json swarm.minFreeMemPct / swarm.maxSwapPct ---"
+printf '{"swarm":{"minFreeMemPct":30}}' > "$T/memcfg.json"
+rm -f "$T/ran"
+out=$(HARNESS_CFG_PATH="$T/memcfg.json" SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=25 SWARM_SWAP_PCT=0 bash "$SUT" run --max 1 -- touch "$T/ran" 2>&1); rc=$?
+[ "$rc" = 75 ] && [ ! -e "$T/ran" ] && printf '%s' "$out" | grep -q 'free memory 25%, floor 30%' && ok "swarm.minFreeMemPct 30 holds at 25% free" || fail "config floor: rc $rc $out"
+printf '{"swarm":{"maxSwapPct":50}}' > "$T/swapcfg.json"
+out=$(HARNESS_CFG_PATH="$T/swapcfg.json" SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=20 SWARM_SWAP_PCT=60 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'swap 60% used, limit 50%' && ok "swarm.maxSwapPct 50 holds at 60% swap" || fail "config swap: rc $rc $out"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=10 bash "$SUT" status 2>&1)
+printf '%s' "$out" | grep -q 'free memory 60% (floor 10%) · swap 10% (limit 90%)' && ok "status names free memory and swap with their limits" || fail "status: $out"
 
 echo "--- the load average is only a runaway guard, at 20 x cores ---"
 out=$(SWARM_IDLE=41 SWARM_LOAD=140 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
