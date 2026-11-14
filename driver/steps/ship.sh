@@ -593,6 +593,9 @@ driver_step_ship() { # <ticket>
   refused=$(driver_state_get "$t" deleted_tests_refused)
   if [ -n "$refused" ] && [ "$refused" = "$(_driver_ship_refusal_print "$t" "$wt")" ]; then
     driver_say "✋ ship: nothing has changed since the deleted-tests refusal: same HEAD, same $(driver_state_dir "$t")/steps/replaced.jsonl. Add the missing rows there, then retry."
+    # build-ticket clears the park note and cause after every refusal; a retry must write them again.
+    driver_state_set "$t" park_note "$(driver_state_get "$t" deleted_tests_note)"
+    driver_state_set "$t" park_cause pm
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -938,12 +941,13 @@ $polish"
     # The body is rebuilt from replaced.jsonl, so a note pointing at the body sends the fix where ship overwrites it.
     local dtfiles
     dtfiles=$(printf '%s\n' "$dt" | awk '/^  [^ ].* — /{sub(/^ +/, ""); sub(/ — .*/, ""); print}' | paste -sd, - | sed 's/,/, /g')
-    driver_state_set "$t" park_note "deleted tests not accounted for: ${dtfiles}. Write one JSON line per file to $(driver_state_dir "$t")/steps/replaced.jsonl, either {\"file\":\"<path>\",\"coveredBy\":\"<test at head>\"} or {\"file\":\"<path>\",\"removedBecause\":\"<why>\"}, e.g. {\"file\":\"${dtfiles%%, *}\",\"removedBecause\":\"<why>\"}. This goes in the record, not the PR body: ship rebuilds the body from that file."
+    driver_state_set "$t" deleted_tests_note "deleted tests not accounted for: ${dtfiles}. Write one JSON line per file to $(driver_state_dir "$t")/steps/replaced.jsonl, either {\"file\":\"<path>\",\"coveredBy\":\"<test at head>\"} or {\"file\":\"<path>\",\"removedBecause\":\"<why>\"}, e.g. {\"file\":\"${dtfiles%%, *}\",\"removedBecause\":\"<why>\"}. This goes in the record, not the PR body: ship rebuilds the body from that file."
+    driver_state_set "$t" park_note "$(driver_state_get "$t" deleted_tests_note)"
     driver_state_set "$t" park_cause pm
     driver_state_set "$t" deleted_tests_refused "$(_driver_ship_refusal_print "$t" "$wt")"
     return "$DRIVER_E_REFUSED"
   fi
-  driver_state_set "$t" deleted_tests_refused ""
+  driver_state_set "$t" deleted_tests_refused ""; driver_state_set "$t" deleted_tests_note ""
 
   # Ready, and only then auto. A draft is the only state an automerge workflow
   # will not land, so the draft is what holds the pull request while the review
