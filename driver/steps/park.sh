@@ -234,6 +234,7 @@ BRIEF
   elif [ "$cause" = "hold" ]; then
     # Ready beside the person's label, which every status write keeps: its removal resumes the run.
     issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || true
+    driver_state_set "$t" held_by "$question"
   elif [ "$cause" = "pm" ]; then
     # The PM's question is a marker beside the parked status, kept until answered.
     issue_status_set "$t" "$LBL_PARKED" --also "$DRIVER_PM_LABEL" >/dev/null 2>&1 || true

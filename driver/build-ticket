@@ -565,6 +565,11 @@ while [ "$i" -lt "$N" ]; do
     driver_requeue "$TICKET" "#$TICKET's hold labels could not be read before $step" "$_keep"
     exit "$DRIVER_E_UNREAD"
   fi
+  held_by=$(driver_state_get "$TICKET" held_by)
+  if [ -n "$held_by" ]; then
+    driver_say "▶ $step: resumed after the hold was cleared: $(printf '%s' "$held_by" | sed 's/ put on by /, put on by /')"
+    driver_state_set "$TICKET" held_by ""
+  fi
 
   # Its own command, and the exit code is the verdict. Never batched with
   # anything: a step batched with the next one reports on the shell reaching
