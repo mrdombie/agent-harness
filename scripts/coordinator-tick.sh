@@ -756,7 +756,8 @@ ticket_tooling() { # <ticket> — 0 when the tick's read holds it as tooling und
     | $i != null and any(($i.labels // [])[]; . as $l | $want | index($l) != null)' >/dev/null 2>&1 <<<"$ISSUES"
 }
 # The tooling runs live on every host: this host's runs, and the other hosts' claims.
-TOOLING_LIVE=0; TOOLING_LIVE_TICKETS=""
+TOOLING_LIVE=0; TOOLING_LIVE_TICKETS=""; LIVE_TOOLING=0
+for t in $LIVE_TICKETS; do ticket_tooling "$t" && LIVE_TOOLING=$((LIVE_TOOLING+1)); done
 while IFS= read -r t; do
   [ -n "$t" ] || continue
   ticket_tooling "$t" && { TOOLING_LIVE=$((TOOLING_LIVE+1)); TOOLING_LIVE_TICKETS="$TOOLING_LIVE_TICKETS #$t"; }
@@ -846,7 +847,7 @@ fi
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
+  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool placed=0
   local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
   local sk_rel="" sk_proc="" sk_pace="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
   local exempt exm exempt_said
@@ -916,7 +917,8 @@ candidates() {
     if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
     [ "$proc" = 1 ] || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
-    [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+    # Only a row that takes a free place spends tooling room: the next pick listed past them starts nothing.
+    [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
     [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:$([ "$exm" = fix ] && printf 'fix-round' || printf 'P%s' "$pri")"
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
@@ -943,7 +945,7 @@ candidates() {
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" new "$note"); then say "skip #$t (new, quick): $why"; continue; fi
       qn=$((qn+1)); capped=$((capped-1)); other=1
-      [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+      [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
       QUICK_OK="$QUICK_OK $t"
       rows="$rows$i"$'\t'"$t"$'\t'new$'\t'0$'\t'0$'\t'"$note"$'\n'
     done <<< "$qwait"
@@ -960,7 +962,7 @@ candidates() {
       [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): $why"; continue; fi
-      nn=$((nn+1)); [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+      nn=$((nn+1)); [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
       rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'0$'\t'"$note"$'\n'
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
@@ -973,7 +975,9 @@ candidates() {
   [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
   [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"
   [ -z "$sk_polish" ] || say "skip${sk_polish}: polish — rides along while other work can start"
-  [ -z "$sk_behind" ] || say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"
+  if [ -n "$sk_behind" ] && [ "$SLOTS" -le 0 ] && [ "$LIVE" -gt 0 ]; then
+    say "skip${sk_behind}: all $LIVE place(s) are held — $(( LIVE - LIVE_TOOLING )) by product work, $LIVE_TOOLING by tooling ($(printf '#%s ' $LIVE_TICKETS | sed 's/ $//'))"
+  elif [ -n "$sk_behind" ]; then say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"; fi
   coord_release_on && say "scope: release only — $(( $(jq -r '.release_held // 0' "$COORD_QUEUE" 2>/dev/null || echo 0) + rel_held )) new outside scope held back"
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
   [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP; the places go to product work"

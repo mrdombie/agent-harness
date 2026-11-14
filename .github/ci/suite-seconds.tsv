@@ -9,6 +9,7 @@
 6	driver/tests/park.test.sh
 5	driver/tests/plan.test.sh
 40	driver/tests/plan-outside-note.test.sh
+60	driver/tests/plan-kept-items.test.sh
 6	driver/tests/polish-list.test.sh
 0	driver/tests/push-gates.e2e.test.sh
 20	driver/tests/real-briefs.test.sh

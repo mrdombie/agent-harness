@@ -266,6 +266,31 @@ driver_ticket_answers() { # <ticket> <out>
     | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || { : > "$2"; return 1; }
 }
 
+_DRIVER_STEP_PUSH_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/step-push-guard.sh"
+
+# driver_step_git_shim <shim_dir> <worktree> <real_git> — write the step's git shim
+# and stamp the step's start; a push goes through step-push-guard.sh first.
+driver_step_git_shim() {
+  local dir=$1 wt=$2 real=$3 guard=$_DRIVER_STEP_PUSH_GUARD t ts
+  mkdir -p "$dir"
+  # Backdated 1s: mtime is whole seconds on some filesystems.
+  t=$(( $(date +%s) - 1 ))
+  ts=$(date -r "$t" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$t" +%Y%m%d%H%M.%S)
+  touch -t "$ts" "$dir/.step-start"
+  cat > "$dir/git" <<SHIM
+#!/usr/bin/env bash
+a=("\$@"); i=0; sub=""
+while [ "\$i" -lt "\${#a[@]}" ]; do
+  case "\${a[\$i]}" in -C|-c|--git-dir|--work-tree|--namespace) i=\$((i+2)) ;; -*) i=\$((i+1)) ;; *) sub="\${a[\$i]}"; break ;; esac
+done
+if [ "\$sub" = push ]; then
+  bash $(printf '%q' "$guard") $(printf '%q' "$real") $(printf '%q' "$wt") $(printf '%q' "$dir/.step-start") "\$@" || exit \$?
+fi
+exec $(printf '%q' "$real") "\$@"
+SHIM
+  chmod +x "$dir/git"
+}
+
 driver_ai_step() { # <ticket> <step> [--as <slot>] [--resume-of <slot>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
   local slot="$step" resume_of=""
@@ -358,7 +383,8 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [--resume-of <slot>] [context
   # "push, keep auto-merge armed, hand off", and a step has Bash: a push from inside a
   # step lands through auto-merge before self-check, review and ship have run. Two
   # guards, and only the second is the guarantee:
-  #   - git and gh on the step's PATH refuse push, pr ready, pr merge and pr create;
+  #   - git and gh on the step's PATH refuse push (bar temp-to-temp, step-push-guard.sh),
+  #     pr ready, pr merge and pr create;
   #   - origin's head for the branch is read before and after the step, and a step
   #     it moved under refuses, whatever path it used to get there.
   # One shim per slot: the review's voters write theirs at the same moment.
@@ -366,17 +392,7 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [--resume-of <slot>] [context
   [ "$slot" = "$step" ] || shim="$shim-$slot"
   real_git=$(command -v git); real_gh=$(command -v gh 2>/dev/null || true)
   mkdir -p "$shim"
-  cat > "$shim/git" <<SHIM
-#!/usr/bin/env bash
-a=("\$@"); i=0; sub=""
-while [ "\$i" -lt "\${#a[@]}" ]; do
-  case "\${a[\$i]}" in -C|-c|--git-dir|--work-tree|--namespace) i=\$((i+2)) ;; -*) i=\$((i+1)) ;; *) sub="\${a[\$i]}"; break ;; esac
-done
-if [ "\$sub" = push ]; then
-  echo "git push refused inside a driver step: the driver alone pushes, after the review (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1
-fi
-exec "$real_git" "\$@"
-SHIM
+  driver_step_git_shim "$shim" "$wt" "$real_git"
   # And no step writes the repo's settings: a build added a required check to the
   # live develop ruleset with `gh api` from inside a step (2026-10-20).
   local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
@@ -854,6 +870,20 @@ EOC
         mv "$ans.norm" "$ans"
         driver_say "   $step: $moved left-out entr$([ "$moved" = 1 ] && printf y || printf ies) named no ticket item id — kept as a note, not asked again"
       else rm -f "$ans.norm"; fi
+    fi
+    # With no feature list a task's `item` names nothing, so one off the contract is dropped.
+    local itre dropped
+    itre=$(jq -r '.properties.tasks.items.properties.item.pattern // empty' "$DRIVER_SCHEMAS/$step.json" 2>/dev/null)
+    if [ -n "$itre" ]; then
+      dropped=$(jq -r --arg re "$itre" '
+        if ((.features // []) | length) > 0 then 0
+        else [(.tasks | arrays)[] | select(type == "object" and ((.item | type) == "string") and (.item | test($re) | not))] | length end' "$ans" 2>/dev/null)
+      if [ "${dropped:-0}" -gt 0 ] 2>/dev/null && jq --arg re "$itre" '
+          .tasks |= map(if type == "object" and ((.item | type) == "string") and (.item | test($re) | not) then del(.item) else . end)' \
+          "$ans" > "$ans.items" 2>/dev/null && [ -s "$ans.items" ]; then
+        mv "$ans.items" "$ans"
+        driver_say "   $step: $dropped task item$([ "$dropped" = 1 ] || printf s) matched no feature list item and the plan has none — dropped, not asked again"
+      else rm -f "$ans.items"; fi
     fi
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash

@@ -247,11 +247,34 @@ Refs #%s' "$((i+1))" "$n" "$t" "$carried" "$recipe" "$(jq -r '.[0].title' <<<"$u
   driver_say "✂ plan: a mechanical change — fanned out into $n units ($kids), all ready at once; the parent closed as split"
 }
 
-# _driver_plan_resend <ticket> <why> <problems> — the plan answered once more with what is wrong.
+# _driver_plan_built <ticket> <plan.json> — which of the plan's items are already built
+# (feature_list_built), read from this run's record and the newest one set aside for it;
+# prints the file. 1 with no tree to read: every item then needs its task, as before.
+_driver_plan_built() {
+  local t="$1" d wt rb shipped="" br s n newest="" best=0
+  d=$(driver_state_dir "$t"); wt=$(driver_state_get "$t" worktree); rb=$(driver_state_get "$t" run_brief)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  if [ -n "$(driver_fix_brief_pr "$rb")" ]; then
+    br=$(driver_state_get "$t" branch); [ -z "$br" ] || shipped="origin/$br"
+  fi
+  for s in "$d".set-aside-*; do
+    [ -d "$s" ] || continue
+    n=${s##*.set-aside-}; case "$n" in ''|*[!0-9]*) continue ;; esac
+    [ "$n" -gt "$best" ] && { best="$n"; newest="$s"; }
+  done
+  mkdir -p "$d/steps"
+  feature_list_built "$2" "$wt" "$rb" "$shipped" "$d" "$newest" > "$d/steps/plan.built.json" 2>/dev/null \
+    && [ -s "$d/steps/plan.built.json" ] || return 1
+  printf '%s' "$d/steps/plan.built.json"
+}
+
+# _driver_plan_resend <ticket> <why> <problems> [kept] — the plan answered once more with what
+# is wrong, each line naming its item, file and remedy, and the items that need no task.
 _driver_plan_resend() {
   local note; note="$(driver_state_dir "$1")/steps/plan.split-note.md"
-  printf 'SENT BACK ONCE: %s\n\n%s\n\nGive the same answer again with these fixed. A feature list item is one behaviour a person sees or does, `F<n>`, with test steps run as a fast component or logic test in the required test run, and every task names the item it builds (`item`): F<n>, foundation or cleanup, never a layer.\n' \
-    "$2" "$(printf '%s\n' "$3" | sed 's/^/- /')" > "$note"
+  printf 'SENT BACK ONCE: %s\n\n%s%s\n\nGive the same answer again with these fixed. A feature list item is one behaviour a person sees or does, `F<n>`, with test steps run as a fast component or logic test in the required test run, and every task names the item it builds (`item`): F<n>, foundation or cleanup, never a layer.\n' \
+    "$2" "$(printf '%s\n' "$3" | sed 's/^/- /')" \
+    "$([ -z "${4:-}" ] || printf '\n\nAlready built, each needing no task (leave them as they are):\n%s' "$(printf '%s\n' "$4" | sed 's/^/- /')")" > "$note"
   driver_say "↩ plan: $2 — asked once more"
   driver_ai_step "$1" plan "$note"
 }
@@ -260,7 +283,7 @@ _driver_plan_resend() {
 # with how the plan builds its list, one a line. A part of a split checks only that its plan runs its
 # item's steps; any other plan checks its list, and a feature ticket must have one.
 _driver_plan_list_problems() {
-  local t="$1" ans="$2" labels="$3" title="$4" body="$5" item id test l
+  local t="$1" ans="$2" labels="$3" title="$4" body="$5" item id test l built
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
     item=$(printf '%s' "$body" | sed -nE 's/.*<!-- harness:feature-item parent=[0-9]+ id=(F[0-9]+) test=([^ ]+) -->.*/\1 \2/p' | tail -1)
     [ -n "$item" ] || return 0
@@ -269,7 +292,8 @@ _driver_plan_list_problems() {
       || printf '%s\n' "this part builds $id of its parent's feature list, whose steps run in $test, and no task of this plan runs it: $id passes only when those steps pass"
     return 0
   fi
-  feature_list_problems "$ans"
+  built=$(_driver_plan_built "$t" "$ans") || built=""
+  feature_list_problems "$ans" "$built"
   # Mapped here, where a miss costs one more answer, not a build and a park.
   local bf; bf=$(mktemp "${TMPDIR:-/tmp}/plan-body.XXXXXX") && {
     printf '%s\n' "$body" > "$bf"; feature_list_uncovered "$ans" "$bf"; rm -f "$bf"; }
@@ -282,10 +306,19 @@ _driver_plan_list_problems() {
   done <<<"$(driver_split_feature_labels)"
 }
 
+# _driver_plan_kept <ticket> <plan.json> — the items the check keeps as already built, one a line.
+_driver_plan_kept() {
+  local f; f="$(driver_state_dir "$1")/steps/plan.built.json"
+  [ -s "$f" ] || return 0
+  feature_list_kept "$2" "$f" | while IFS="$(printf '\t')" read -r id test; do
+    [ -n "$id" ] && printf '%s (%s exists and passes: %s)\n' "$id" "$test" "$(jq -r --arg k "$test" '.[$k].why' "$f")"
+  done
+}
+
 # _driver_plan_shape <ticket> <plan.json> — the list is checked (sent back once, then refused)
 # and kept in the driver state, where a later plan may not edit or remove an item's steps.
 _driver_plan_shape() {
-  local t="$1" ans="$2" meta title labels body probs rc tmp why
+  local t="$1" ans="$2" meta title labels body probs rc tmp why kept
   meta=$(driver_gh_read driver_ticket_view "$t" title,labels,body 2>/dev/null) || {
     driver_say "⏳ plan: #$t could not be read to tell a feature, a part of one or a mechanical change apart — back on the queue"
     return "$DRIVER_E_UNREAD"; }
@@ -293,7 +326,7 @@ _driver_plan_shape() {
   labels=$(jq -r '[.labels[]?.name] | join(",")' <<<"$meta")
   probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
   if [ -n "$probs" ]; then
-    rc=0; _driver_plan_resend "$t" "the plan does not build its list by behaviour" "$probs" || rc=$?
+    rc=0; _driver_plan_resend "$t" "the plan does not build its list by behaviour" "$probs" "$(_driver_plan_kept "$t" "$ans")" || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
     probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
     if [ -n "$probs" ]; then
@@ -306,6 +339,13 @@ _driver_plan_shape() {
   printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: ' && return 0
   tmp="$(driver_state_dir "$t")/steps/features.new.json"
   feature_list_of "$ans" "$t" > "$tmp" || return "$DRIVER_E_REFUSED"
+  # Kept items are marked in the list, so the build passes them on the record, not a task.
+  kept=$(_driver_plan_kept "$t" "$ans")
+  if [ -n "$kept" ]; then
+    driver_say "   plan: $(printf '%s\n' "$kept" | grep -c .) item(s) kept as already built, needing no task — $(printf '%s' "$kept" | paste -sd';' - | sed 's/;/; /g')"
+    jq --arg ids "$(printf '%s\n' "$kept" | sed 's/ .*//')" '($ids | split("\n")) as $k | .items |= map(if (.id as $i | $k | index($i)) then .kept = true else . end)' "$tmp" > "$tmp.k" \
+      && mv "$tmp.k" "$tmp" || return "$DRIVER_E_REFUSED"
+  fi
   if ! why=$(feature_list_store "$t" "$tmp"); then
     driver_say "✋ plan: the feature list kept for #$t would change — $(printf '%s' "$why" | paste -sd';' -). Editing or removing an item's steps is refused: only passes changes."
     driver_state_set "$t" park_note "the plan edits the feature list kept for #$t: $(printf '%s' "$why" | paste -sd';' -)"
@@ -346,7 +386,8 @@ _driver_plan_split_by_shape() {
     [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"
     return 0
   fi
-  if [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
+  if [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ] \
+     || jq -e 'any(.items[]?; .kept == true)' "$(driver_state_dir "$t")/features.json" >/dev/null 2>&1; then
     driver_say "   plan: already in flight — it builds here as planned, not split"
     # Built here, so the build keeps its list's passes, as a fresh plan's does.
     [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"

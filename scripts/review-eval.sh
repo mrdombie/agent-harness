@@ -99,10 +99,16 @@ re_cmd_needs() {
   re_needs "$repo" "$base" "$head"
 }
 
+re_live_body() { # <pr number> — the PR body as it is now; one bounded read
+  local gh="${RE_GH:-gh}"
+  if command -v timeout >/dev/null 2>&1; then timeout 30 "$gh" pr view "$1" --repo "${GITHUB_REPOSITORY:-}" --json body -q .body
+  else perl -e 'alarm shift; exec @ARGV' 30 "$gh" pr view "$1" --repo "${GITHUB_REPOSITORY:-}" --json body -q .body; fi # bounded: perl alarm
+}
+
 # guard: the CI seat. The comparison itself runs where the plan's login is (never on a
 # hosted runner); CI only refuses a review change that does not carry its result.
 re_cmd_guard() {
-  local repo="." base="" head="HEAD" bodyf="" body why rc line
+  local repo="." base="" head="HEAD" bodyf="" body why rc line num live
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) repo="$2"; shift 2 ;; --base) base="$2"; shift 2 ;; --head) head="$2"; shift 2 ;;
@@ -115,7 +121,14 @@ re_cmd_guard() {
   [ "$rc" -ne 2 ] || return 2
   if [ "$rc" -ne 0 ]; then echo "review-eval guard: no review change — no comparison owed"; return 0; fi
   if [ -n "$bodyf" ]; then body=$(cat "$bodyf" 2>/dev/null)
-  elif [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then body=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" 2>/dev/null)
+  elif [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+    body=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" 2>/dev/null)
+    # A re-run replays the event as it was pushed; the body may have been edited since.
+    num=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null)
+    if [ -n "$num" ]; then
+      if live=$(re_live_body "$num"); then body="$live"; echo "review-eval guard: judged the live PR body (#$num)"
+      else echo "review-eval guard: judged the event PR body — the live read of #$num failed"; fi
+    fi
   else body=""; fi
   line=$(printf '%s\n' "$body" | grep -E '^review-eval: compare ' | tail -1)
   if [ -z "$line" ]; then
