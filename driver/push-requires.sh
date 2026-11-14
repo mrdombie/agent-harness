@@ -85,6 +85,18 @@ _driver_owed() {
   return "$rc"
 }
 
+# _driver_owed_missing_script <owed-cmd> <tree> — 0, printing the name, when <owed-cmd>
+# is `npm run <name>` and <tree>/package.json has no such script. npm exits 1 for it,
+# which reads as "owed" and sends a reviewer to earn a verdict no check can ever read.
+_driver_owed_missing_script() {
+  local owed="$1" tree="$2" name
+  [ -f "$tree/package.json" ] || return 1
+  name=$(printf '%s' "$owed" | sed -n -E 's/^[[:space:]]*npm[[:space:]]+run(-script)?([[:space:]]+(-s|--silent))*[[:space:]]+([^[:space:];&|]+).*/\4/p')
+  [ -n "$name" ] || return 1
+  jq -e --arg n "$name" '(.scripts // {}) | has($n)' "$tree/package.json" >/dev/null 2>&1 && return 1
+  printf '%s' "$name"
+}
+
 # _driver_attest_agent <ticket> <name> <agent> <tree> <trunk> <out> — run a named
 # reviewer agent directly on this change, with the lean flags every step carries, and
 # leave its final answer — verbatim, nothing added — in <out> for the project's
@@ -392,6 +404,11 @@ driver_push_requires() { # <ticket>
     fi
 
     if [ -n "$owed" ]; then
+      local missing
+      if missing=$(_driver_owed_missing_script "$owed" "$wt"); then
+        driver_say "✋ push-requires: '$name' owed check ('$owed') names npm script $missing, which package.json does not have — a settings fault in $(basename "$HARNESS_CFG"), not owed"
+        continue
+      fi
       orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
       case "$orc" in
         0)  driver_say "   push-requires: '$name' is not owed on this diff — $(_driver_first_line "$DRIVER_OWED_OUT")"
