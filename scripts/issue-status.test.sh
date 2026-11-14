@@ -126,4 +126,20 @@ printf 'gh issue edit "$N" --repo "$R" --add-label "$HOLD_LABEL"\n' > "$P/skills
 printf 'gh issue edit 1 --add-label status:ready\n' > "$P/driver/tests/t.sh"
 out=$(bash "$CHECK" "$P" 2>&1); want "the helper, the hold label and test files pass" 0 "$?"
 
+echo "--- the documented lifters drop the holds a plain set now keeps ---"
+K="$HERE/.."
+rel=$(grep -E 'issue-status.sh" set .*LBL_READY' "$K/skills/release/SKILL.md")
+want "the release skill sets ready twice" 2 "$(printf '%s\n' "$rel" | grep -c .)"
+want "each release line drops needs-human" 2 "$(printf '%s\n' "$rel" | grep -c -- '--drop "\$LBL_NEEDS_HUMAN"')"
+want "each release line drops external-blocked" 2 "$(printf '%s\n' "$rel" | grep -c -- '--drop "\$LBL_EXTERNAL_BLOCKED"')"
+want_not_in "no release line says it takes every other status off" 'takes every other status off too' "$rel"
+for f in skills/release-stale/SKILL.md skills/claim/SKILL.md; do
+  want_in "$f: the flip back names the --drop of needs-human" '--drop "$LBL_NEEDS_HUMAN"' "$(cat "$K/$f")"
+done
+for f in README.md skills/finish/SKILL.md; do
+  for l in labels.needsHuman labels.externalBlocked; do
+    want_in "$f names $l as kept by set" "$l" "$(grep -E 'stays on|kept|keeps' "$K/$f" | grep -E 'labels.blocked|LBL_BLOCKED')"
+  done
+done
+
 suite_end "$FAILED"
