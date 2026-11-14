@@ -53,11 +53,12 @@ if suite_case "a temp-to-temp push lands by remote name"; then
   push_lands "remote name" scratch
 fi
 
+PUSH_PRE=() # global options put before -C <from> push
 # push_refused <title> <message> <from> <bare> <push args…> — refused, named, and the bare repo untouched.
 push_refused() {
   local title=$1 msg=$2 from=$3 bare=$4 rc=0 out before; shift 4
   before=$("$REAL_GIT" --git-dir="$bare" for-each-ref 2>/dev/null)
-  out=$(PATH="$SHIM:$PATH" git -C "$from" push -q "$@" 2>&1) || rc=$?
+  out=$(PATH="$SHIM:$PATH" git ${PUSH_PRE[@]+"${PUSH_PRE[@]}"} -C "$from" push -q "$@" 2>&1) || rc=$?
   want "$title: the push exits 1 (${out:-no output})" "1" "$rc"
   want_in "$title: the refusal says '$msg'" "$msg" "$out"
   want "$title: the bare repo's refs are unchanged" "$before" \
@@ -90,6 +91,39 @@ if suite_case "a push from the build worktree is refused"; then
 fi
 if suite_case "a push with no remote is refused"; then
   push_refused "bare push" "no remote named" "$CLONE" "$BARE"
+fi
+
+# A clone and a bare repo under a narrowed temp root, made in the step; $SCR/out-* sits outside it.
+in_root_pair() { # <name> — sets RC (clone) and RB (bare) under $ROOT2
+  RB="$ROOT2/$1.git"; RC="$ROOT2/$1"
+  "$REAL_GIT" init -q --bare "$RB"; "$REAL_GIT" clone -q "$RB" "$RC" 2>/dev/null
+  "$REAL_GIT" -C "$RC" -c user.email=t@example.invalid -c user.name=Tester commit -q --allow-empty -m one
+}
+ROOT2="$SCR/root2"; mkdir -p "$ROOT2"
+if suite_case "a push to a remote whose second pushurl is outside the temp dir is refused"; then
+  in_root_pair two; "$REAL_GIT" init -q --bare "$SCR/out-two"
+  "$REAL_GIT" -C "$RC" remote add two "$RB"
+  "$REAL_GIT" -C "$RC" config --add remote.two.pushurl "$RB"
+  "$REAL_GIT" -C "$RC" config --add remote.two.pushurl "$SCR/out-two"
+  HARNESS_STEP_TMP_ROOTS="$ROOT2" push_refused "second pushurl" "remote is not inside the temp dir" \
+    "$RC" "$SCR/out-two" two HEAD:refs/heads/main
+fi
+if suite_case "a push to a remote name shadowed by a temp directory is refused"; then
+  in_root_pair dup; "$REAL_GIT" init -q --bare "$SCR/out-dup"; "$REAL_GIT" init -q --bare "$RC/dup"
+  "$REAL_GIT" -C "$RC" remote add dup "$SCR/out-dup"
+  HARNESS_STEP_TMP_ROOTS="$ROOT2" push_refused "shadowed name" "remote is not inside the temp dir" \
+    "$RC" "$SCR/out-dup" dup HEAD:refs/heads/main
+fi
+if suite_case "a push a url rewrite sends outside the temp dir is refused"; then
+  in_root_pair rew; "$REAL_GIT" init -q --bare "$SCR/out-rew"
+  "$REAL_GIT" -C "$RC" config "url.$SCR/out-rew.pushInsteadOf" "$RB"
+  HARNESS_STEP_TMP_ROOTS="$ROOT2" push_refused "pushInsteadOf in config" "a url rewrite applies" \
+    "$RC" "$SCR/out-rew" "$RB" HEAD:refs/heads/main
+  "$REAL_GIT" -C "$RC" config --unset "url.$SCR/out-rew.pushInsteadOf"
+  PUSH_PRE=(-c "url.$SCR/out-rew.insteadOf=$RB")
+  HARNESS_STEP_TMP_ROOTS="$ROOT2" push_refused "insteadOf through -c" "a url rewrite applies" \
+    "$RC" "$SCR/out-rew" "$RB" HEAD:refs/heads/main
+  PUSH_PRE=()
 fi
 
 suite_end "$FAILED"
