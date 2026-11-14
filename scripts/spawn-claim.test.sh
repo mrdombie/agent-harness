@@ -672,6 +672,41 @@ for _ in $(seq 1 20); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
   && ok "swarm.builder=prose: a briefed run runs the prose claim, brief in its prompt" \
   || bad "swarm.builder=prose did not send the briefed run to prose: $(cat "$OUT/seen" 2>/dev/null | head -3)"
 
+# 12. an expired login: the spawner proves the login before any claim, and lets go of
+# the claim this host holds on the ticket it was asked to build. Its own kit, with
+# swarm/ beside scripts/, so the gate is reached; the claim lock is a stub this host owns #42 in.
+AK="$SB/authkit"; mkdir -p "$AK"
+cp -R "$SUT_DIR" "$AK/scripts"; cp -R "$SUT_DIR/../swarm" "$AK/swarm"; cp -R "$SB/shared" "$AK/shared"
+cat > "$AK/scripts/claim-lock.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SPAWN_TEST_CLAIMLOCK"
+case "$1" in
+  list) echo '[{"issue":42,"agent":"tester@here","mine":true}]'; exit 1 ;;
+  release) echo "released #$2"; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$AK/scripts/claim-lock.sh"
+jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:1, terminal_reason:"api_error",
+  result:"Failed to authenticate: OAuth session expired and could not be refreshed", usage:{input_tokens:0, output_tokens:0}}' > "$OUT/expired.jsonl"
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/claimlock" "$OUT/auth-hold"; rm -rf "$OUT/auth-logs"
+RC=0
+out=$(SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_CLAIMLOCK="$OUT/claimlock" SWARM_PLUGIN_REGISTRY="$SB/no-registry.json" \
+  PATH="$SB/bin:$PATH" HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
+  HARNESS_CFG_PATH="$STORE/.claude/harness.json" HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
+  SWARM_ACCOUNT=acct-test SWARM_LOGS="$OUT/auth-logs" SWARM_AUTH_HOLD_FILE="$OUT/auth-hold" SWARM_AUTH_PROBE_CMD="cat '$OUT/expired.jsonl'" \
+  SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" SPAWN_CLAIM_CANONICAL= TMPDIR="$SB" \
+  bash "$AK/scripts/spawn-claim.sh" 42 2>&1) || RC=$?
+[ "$RC" = 77 ] && ok "an expired login: spawn-claim 42 exits 77" || bad "an expired login: spawn-claim 42 exited $RC: $(printf '%s' "$out" | head -3)"
+printf '%s' "$out" | grep -q 'paused for auth' && printf '%s' "$out" | grep -q 'OAuth session expired' \
+  && ok "it says 'paused for auth' with the CLI's words" || bad "it said: $(printf '%s' "$out" | head -3)"
+grep -qx 'release 42' "$OUT/claimlock" 2>/dev/null && ok "the claim this host holds on #42 is released" \
+  || bad "claim-lock was called: $(tr '\n' ';' < "$OUT/claimlock" 2>/dev/null)"
+grep -q '^acquire' "$OUT/claimlock" 2>/dev/null && bad "it took a claim" || ok "it takes no claim"
+sleep 1
+[ ! -f "$OUT/seen" ] && [ ! -f "$OUT/driver-seen" ] && ok "no build session starts" || bad "a build session started"
+[ -f "$OUT/auth-hold" ] && ok "the auth hold is written" || bad "no auth hold was written"
+
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"
 suite_end "$fail"
