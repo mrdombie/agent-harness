@@ -35,10 +35,10 @@ branch() {
   printf 'own\n' > "$wt/own-$1.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm "feat: $1"
 }
 
-printf 'one\n' > "$REPO/shared.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
-for b in clean edited conflict side more notmerge asked single found resolve; do branch "$b"; done
+printf 'one\n' > "$REPO/shared.txt"; printf 'base\n' > "$REPO/base.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
+for b in clean edited conflict side more notmerge asked single found resolve marker neither redgate foundres; do branch "$b"; done
 # The conflict branches and the trunk all change the same line.
-for b in conflict resolve; do
+for b in conflict resolve marker neither redgate foundres; do
   printf 'branch\n' > "$FIX/$b/shared.txt"; git -C "$FIX/$b" commit -qam "feat: the branch's line"
 done
 printf 'trunk\n' > "$REPO/shared.txt"; printf 'new\n' > "$REPO/trunk.txt"
@@ -158,6 +158,48 @@ want "the step finishes"               "0" "$rc"
 want "it is recorded as proved, on the merge" "$R_M" "$(jq -r '.commits[0]' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
 want "with the gates as its proof"     "2" "$(jq -r '.proof.gates | length' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
 want "and nothing refused"             "no" "$([ -e "$(driver_state_dir 154)/steps/build-task-1.refused" ] && echo yes || echo no)"
+
+echo "--- a resolution that keeps a conflict marker is refused ---"
+WT="$FIX/marker"
+K_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf '<<<<<<< HEAD\nresolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+K_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$K_P1" "$K_M" "$K_M" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming the file"              'conflict marker in shared\.txt' "$out"
+
+echo "--- a resolution that edits a file neither side changed is refused ---"
+WT="$FIX/neither"
+B_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; printf 'slipped in\n' >> "$WT/base.txt"
+git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+B_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$B_P1" "$B_M" "$B_M" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming that file"             'base\.txt, which neither side changed' "$out"
+
+echo "--- a resolution with a red gate is refused ---"
+WT="$FIX/redgate"
+G2_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+G2_M=$(git -C "$WT" rev-parse HEAD)
+jq '.gates = {lint: "echo lint-ok", test: "false"}' "$HARNESS_CFG_PATH" > "$FIX/red-cfg.json"
+out=$(HARNESS_CFG="$FIX/red-cfg.json" driver_prove_trunk_merge "$WT" "$G2_P1" "$G2_M" "$G2_M" "$FIX/red-gates.json" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming the gate and its exit" 'test exit 1' "$out"
+want "and no gates file marks it proved" "no" "$([ -e "$FIX/red-gates.json" ] && echo yes || echo no)"
+
+echo "--- a resolved merge found on the branch before the task is still refused ---"
+WT="$FIX/foundres"
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+FR_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$FR_M" "$FR_M" "$FR_M" 2>&1); rc=$?
+want "it is refused"                   "2" "$rc"
+want_in "as found before the task"     'was on the branch before this task started' "$out"
 
 echo "--- a merge of something that is not the trunk is refused ---"
 WT="$FIX/side"
