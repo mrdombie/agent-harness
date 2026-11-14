@@ -76,6 +76,8 @@ case "$log" in *"pr ready"*|*"pr merge"*) want "nothing is readied or merged" "n
 
 echo "--- a retry with nothing changed refuses again without pushing, editing or asking ---"
 : > "$GH_LOG"
+# build-ticket reads and clears the park note and cause after every refusal.
+driver_state_set 113 park_note ""; driver_state_set 113 park_cause ""
 out=$(driver_step_ship 113 2>&1); rc=$?
 want "it refuses again" "24" "$rc"
 want_in "it says nothing has changed" 'nothing has changed since' "$out"
@@ -83,7 +85,10 @@ want_in "it names the record" "$(driver_state_dir 113)/steps/replaced.jsonl" "$o
 want "the builder is not asked again" "1" "$(grep -c . "$CALLS")"
 log=$(tr "\n" " " < "$GH_LOG" | cut -c1-100000)
 case "$log" in *"push"*|*"pr create"*|*"pr edit"*) want "no push, create or edit" "none" "$log" ;; *) want "no push, create or edit" "none" "none" ;; esac
-want_in "the park note is kept" 'not the PR body' "$(driver_state_get 113 park_note)"
+note=$(driver_state_get 113 park_note)
+want_in "the park note is written again" 'not the PR body' "$note"
+want_in "it still gives the line to write" '"file":"pinned.test.ts"' "$note"
+want "the park is still the PM's" "pm" "$(driver_state_get 113 park_cause)"
 
 echo "--- once the row is on the record, the next retry ships ---"
 : > "$GH_LOG"
