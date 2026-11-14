@@ -633,7 +633,7 @@ swarm_auth_hold_aside() {
 # swarm_auth_check [--now] — 1, printing the CLI's words, when one small probe call
 # (SWARM_AUTH_PROBE_CMD, bounded by swarm.authProbeTimeout, in an empty dir) reads as a lost
 # login, writing the auth hold; 0 otherwise: a probe that hangs or fails another way proves
-# nothing. Reused for swarm.authCheckMin (10) min unless --now; kept in logs/.auth-check
+# nothing. A pass is reused for swarm.authCheckMin (10) min unless --now; kept in logs/.auth-check
 # as `<epoch>\t<ok|failed>\t<text>`. The probe's log is deleted: it records no usage reading.
 # While the auth hold stands it is re-probed once per swarm.authProbeMin (5) min, timed from
 # the hold's last write: only a clean answer moves it aside; anything else keeps it.
@@ -654,7 +654,8 @@ swarm_auth_check() {
   if [ -z "$held" ] && [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
     case "$at" in ''|*[!0-9]*) at=0 ;; esac
     if [ $(( now - at )) -lt "$ttl" ]; then
-      case "$v" in ok) return 0 ;; failed) printf '%s' "$t"; return 1 ;; esac
+      # A failed verdict with no hold means someone cleared it by hand: probe again.
+      case "$v" in ok) return 0 ;; esac
     fi
   fi
   tmo="${SWARM_AUTH_PROBE_TIMEOUT:-$(swarm_opt swarm.authProbeTimeout 60)}"; case "$tmo" in ''|*[!0-9]*) tmo=60 ;; esac
