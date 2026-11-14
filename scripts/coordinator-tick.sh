@@ -721,6 +721,10 @@ say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 # A host whose builds cannot run their step's skill takes none, and says why on the sheet.
 COORD_CLI_VERSION=$(harness_claude_cli_version)
 SKILL_HOLD=$(coord_skill_hold "$COORD_CLI_VERSION" "$HARNESS_RUNNING") || SKILL_HOLD=""
+# A host whose Claude login is lost starts nothing: every build would die at its first call.
+swarm_auth_check >/dev/null || true
+AUTH_HOLD=$(swarm_auth_hold) && AUTH_HOLD=$(printf '%s' "$AUTH_HOLD" | cut -c1-240) || AUTH_HOLD=""
+AUTH_SINCE=$(swarm_usage_hold_field "${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" 1 2>/dev/null)
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -1051,6 +1055,12 @@ elif [ -n "$SKILL_HOLD" ]; then
   say "spawn: starting nothing new — $SKILL_HOLD"
   coord_act_log skill-hold - "$SKILL_HOLD"
   event "skill-hold:$COORD_HOST:${COORD_CLI_VERSION:-?}:$HARNESS_RUNNING" skill-hold false "" "" "$COORD_HOST takes no builds: $SKILL_HOLD" || true
+elif [ -n "$AUTH_HOLD" ]; then
+  say "spawn: paused for auth — $AUTH_HOLD; it takes work again once someone logs in on $COORD_HOST"
+  coord_act_log auth-hold - "$AUTH_HOLD"
+  if event "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" auth-hold false "" "" "$COORD_HOST is paused for auth: $AUTH_HOLD"; then
+    bash "$NOTIFY" --class owner "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" "$COORD_HOST lost its Claude login ($AUTH_HOLD) — it starts nothing until someone logs in there" || true
+  fi
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"

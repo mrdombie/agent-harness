@@ -534,6 +534,20 @@ driver_api_error() { swarm_api_error_log "$1"; }
 # skill check: a session that never ran called no Skill, and that is not a skipped Skill.
 driver_api_refusal() { swarm_api_refusal_log "$1"; }
 
+# driver_auth_lost <ticket> <step> <log> — 0 when this host's Claude login is gone
+# (swarm_api_auth_log): the host's, never the ticket's, so it is not retried or waited for.
+# The auth hold is written for the coordinator and the reason goes on the record; the
+# caller returns DRIVER_E_USAGE, so the ticket requeues with its claim released.
+driver_auth_lost() {
+  local err
+  err=$(swarm_api_auth_log "$3") || return 1
+  swarm_auth_hold_write "$err (#$1 $2)" \
+    || driver_say "   $2: the auth hold could not be written to ${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}"
+  driver_say "✋ $2: this host's Claude login is gone — $err. The host's, not the ticket's: $(swarm_host) is held for auth until someone logs in again."
+  driver_state_set "$1" park_note "the $2 step could not run: the Claude login on $(swarm_host) is gone ($err); the host is held for auth until someone logs in again"
+  return 0
+}
+
 # _driver_api_refusal_wait <prompt> <log> [session-id] — a refused session is a wait: the
 # call is made again DRIVER_API_REFUSAL_TRIES (4) times, after 1, 3, 5 and 7 times
 # DRIVER_API_REFUSAL_BASE_SEC (60). 0 once a call ran. Still refused: a 401 or 403 is the
@@ -543,6 +557,7 @@ _driver_api_refusal_wait() {
   local in="$1" out="$2" sid="${3:-}" why err n=0 wait until
   local tries="${DRIVER_API_REFUSAL_TRIES:-4}" base="${DRIVER_API_REFUSAL_BASE_SEC:-60}" hold="${DRIVER_API_REFUSAL_HOLD_SEC:-3600}"
   why=$(driver_api_refusal "$out") || return 0
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   case "$tries" in ''|*[!0-9]*) tries=4 ;; esac
   case "$base" in ''|*[!0-9]*) base=60 ;; esac
   case "$hold" in ''|0|*[!0-9]*) hold=3600 ;; esac
@@ -554,6 +569,7 @@ _driver_api_refusal_wait() {
     _driver_ai_run "$in" "$out" "$sid"
     driver_record_usage "$t" "$slot" "$out" "$in"
     driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+    driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
     if ! why=$(driver_api_refusal "$out"); then
       if err=$(driver_api_error "$out"); then
         driver_say "✋ $step: the API took the session on try $n and the call then failed — $err. A machine fault, not a question."
@@ -586,8 +602,8 @@ driver_question_silent_agent() {
     "(sub-?agent|reviewer|review agent|agent)[^.?!]*((had|has|have|did|was|is)( not|n't)( yet)? (report|return|finish|complet|answer|respond|come back)|still running|timed? ?out|never (report|return|finish|answer))|(timed? ?out|still running)[^.?!]*(sub-?agent|reviewer)"
 }
 
-# _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
-# wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
+# _driver_ai_call <prompt> <log> [session-id] — one model call, its spend, the usage
+# wall and a lost login (driver_auth_lost), from driver_ai_step's locals. A call that failed at the API is made ONCE more
 # after DRIVER_API_RETRY_SEC; failing again it is a machine fault, never a question.
 # No step chunks its diff, so a safeguards flag is retried whole. A session the API
 # refused outright is waited for instead (_driver_api_refusal_wait).
@@ -596,6 +612,7 @@ _driver_ai_call() {
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "↻ $step: the model call failed at the API — $err. Trying once more in ${DRIVER_API_RETRY_SEC:-30}s."
   cp "$out" "$out.apierr" 2>/dev/null
@@ -603,6 +620,7 @@ _driver_ai_call() {
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "✋ $step: the model call failed at the API twice — $err. A machine fault, not a question."
   driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API twice ($err). The next run tries again."
