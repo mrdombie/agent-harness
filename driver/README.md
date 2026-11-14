@@ -182,7 +182,7 @@ A question only a person can answer goes through `scripts/owner-question.sh`
 the queue as a brief the driver carries. The hold label goes on only when the
 question could not be asked. A driver-caused park asks nobody.
 
-**A requeue is not a park.** Four stops go back on the queue instead, because
+**A requeue is not a park.** These stops go back on the queue instead, because
 nobody has to answer them and a later run clears them:
 
 - **The plan's usage limit** (step exit 27, run exit 28). A step's transcript carries
@@ -196,6 +196,13 @@ nobody has to answer them and a later run clears them:
   it goes into the same hold file for `DRIVER_API_REFUSAL_HOLD_SEC` (3600), naming the
   status and code, the hold's own re-check clears it early, and the ticket requeues
   (step exit 27, run exit 28). Any other status parks as a machine fault (exit 33).
+- **A lost login** (the CLI's last result is an error naming `Failed to authenticate`,
+  an expired or revoked OAuth token or session, `authentication_error` or `run /login`,
+  or carrying status 401; `swarm_api_auth_log`). It is the host's, not the ticket's: no
+  call is retried or waited for. `$STATE_DIR/auth-hold` (`SWARM_AUTH_HOLD_FILE`) records
+  `<since>\t<error>\t<host>\t<account>`, keeping the first since, and holds until
+  someone logs in again and removes it — never by time. The ticket requeues with its
+  claim released and its requeue count untouched (step exit 27, run exit 28).
 - **A GitHub read that failed in `start` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
@@ -416,7 +423,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first fix round, goes back to `fix` |
 | 31 | start found an open pull request for the ticket that this run did not build: nothing is built beside it, no park, no requeue — it merges, or the coordinator rebuilds it fresh (`scripts/rebuild.sh`) |
 | 32 | a step found nothing owed (a ticket split before it built): the run exits 0, with no park |
-| 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
+| 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator. A lost login is never one: it is the host's auth hold and a requeue (exit 28) |
 | 35 | the quick change is bigger than its size (more files than `driver.quick.maxFiles`, a never-quick file, or red gates): the run goes on along the full route from `plan`, with the quick commits kept at `refs/driver/quick/<ticket>`. Never a run's exit; `build-ticket` handles it |
 | 36 | start read a `repo:<name>` label naming a repo this project does not build: nothing is claimed, no worktree is cut, no model is called, no park, no requeue — the ticket stays ready, and the coordinator starts it in a clone of `<name>` when this host has one |
 
