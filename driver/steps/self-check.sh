@@ -618,22 +618,11 @@ driver_step_self_check() { # <ticket>
     driver_state_set "$t" park_note "harness.json sets gates.localOnly with no non-empty gates.local list; self-check refuses rather than run gates.changed"
     return "$DRIVER_E_REFUSED"
   fi
-  local fromlocal=""
-  if [ -n "$localset" ]; then
-    fromlocal=1
-    names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
-  elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
-    names=$(jq -r '.gates.changed | to_entries[] | "changed \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
-  elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
-    fromlocal=1
-    names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
-  else
-    # A value that is not a string is NOT skipped: it falls through as an empty
-    # command, so the "every gate is empty, nothing ran" refusal counts it by name.
-    # Dropped here it would have left a key configured, unrun and unmentioned.
-    # prePush is the push verification below, not a gate of this list.
-    names=$(jq -r '.gates | del(.prePush, .ratchets, .localOnly) | to_entries[] |"\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null)
-  fi
+  # Run in this shell, not $( ), so DRIVER_GATE_ROWS_FROM survives the call.
+  local fromlocal="" rows_f; rows_f=$(mktemp "${TMPDIR:-/tmp}/gate-rows.XXXXXX")
+  driver_gate_rows > "$rows_f" || true
+  names=$(cat "$rows_f"); rm -f "$rows_f"
+  [ "${DRIVER_GATE_ROWS_FROM:-}" = local ] && fromlocal=1
   if [ -z "$names" ]; then
     driver_say "✋ self-check: harness.json configures no local 'gates' command. A check that never ran reports exactly like one that found nothing, so this refuses rather than passing."
     driver_state_set "$t" park_note "harness.json configures no gate command for self-check to run"
