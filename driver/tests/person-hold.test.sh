@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# person-hold.test.sh — a person's hold put on while a build runs stops it at the
+# next step boundary. The labels are read fresh before every step, the step never
+# runs, and the run parks with cause hold: left ready beside the person's label (so
+# its removal resumes it), no PM marker, the open PR drafted, the note naming whose
+# hold and since when, the claim released. A hold that cannot be read requeues.
+# Run: bash "$0"
+set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# A run inside a driver session inherits its state dir, kit and order: none of it is this suite's.
+for _v in $(env | sed -nE 's/^((DRIVER|HARNESS|SWARM|CLAIM)_[A-Z0-9_]*)=.*/\1/p'); do unset "$_v"; done; unset KIT_ROOT
+. "$HERE/fixture.sh"
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
+BT="$HERE/../build-ticket"
+. "$HERE/../driver-env.sh" || exit 1
+. "$HERE/../state.sh" || exit 1
+
+cat > "$FIX/queue-stub.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/queue.log"
+SH
+cat > "$BIN/draft" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/draft.log"
+echo "PR #$2 is back to draft with auto-merge off"
+SH
+chmod +x "$FIX/queue-stub.sh" "$BIN/draft"
+export DRIVER_QUEUE="$FIX/queue-stub.sh" DRIVER_DRAFT="$BIN/draft"
+# The claim is the real one: build-ticket takes claim-lock.sh from the kit, on a bare origin here.
+CL="$HERE/../../scripts/claim-lock.sh"
+git init -q --bare "$FIX/origin"; git -C "$REPO" remote add origin "$FIX/origin"; git -C "$REPO" push -q origin develop
+claimed() { git -C "$REPO" ls-remote origin "refs/claims/$1" | grep -c . ; }
+
+# The steps stand in for the agent runner: each writes its name to CLAUDE_LOG. The real park runs.
+FAKE="$FIX/fakesteps"; mkdir -p "$FAKE"
+for s in start plan build; do
+  printf 'driver_step_%s() { printf "%%s\\n" %s >> "$CLAUDE_LOG"; [ %s != plan ] || [ ! -f "$FIX/hold-after-plan" ] || plant_hold "$1"; return 0; }\n' "$s" "$s" "$s" > "$FAKE/$s.sh"
+done
+printf '. %q\n' "$HERE/../steps/park.sh" > "$FAKE/park.sh"
+cat >> "$FAKE/plan.sh" <<'SH'
+# A person labels the ticket while the run plans: GitHub now carries it, the snapshot does not.
+plant_hold() {
+  jq '.labels += [{name:"status:blocked"}]' "$FIX/gh/issue-$1.json" > "$FIX/issue.tmp" && mv "$FIX/issue.tmp" "$FIX/gh/issue-$1.json"
+  printf 'status:blocked put on by dom at 2026-11-14T10:00:00Z\n' > "$FIX/person-hold.out"; echo 1 > "$FIX/person-hold.rc"
+}
+SH
+reset_case() { # <ticket>
+  rm -f "$FIX/queue.log" "$FIX/draft.log" "$FIX/person-hold".{rc,out,log} "$FIX/hold-after-plan"
+  : > "$GH_LOG"; : > "$CLAUDE_LOG"; fix_gh_ok
+  rm -rf "$STATE/driver/$1"
+  fix_issue "$1" OPEN "status:claimed"
+  driver_state_init "$1" --worktree "$REPO"
+  driver_state_set "$1" pr 42
+  bash "$CL" acquire "$1" --branch "tkt-$1/work" >/dev/null 2>&1
+}
+bt() { DRIVER_STEPS_DIR="$FAKE" bash "$BT" "$@" --steps "start plan build" 2>&1; }
+edits() { grep -E '^issue edit ' "$GH_LOG" || true; }
+
+echo "--- status:blocked put on after plan: build never runs, the run parks on the hold ---"
+reset_case 801; : > "$FIX/hold-after-plan"
+out=$(bt 801); rc=$?
+want "it parks" "20" "$rc"
+want "start and plan ran; build never did" "start plan" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "the hold was read fresh before every step" "3" "$(grep -c '^check 801$' "$FIX/person-hold.log" 2>/dev/null)"
+want_in "the park note names the hold, who and when" 'Held by a person: status:blocked, put on by dom at 2026-11-14T10:00:00Z' "$(cat "$GH_LOG")"
+want_in "the park's status write adds status:ready" '--add-label status:ready' "$(edits)"
+want_not_in "and keeps status:blocked on" '--remove-label status:blocked' "$(edits)"
+want_not_in "no parked status, no PM marker, no owner hold" 'status:parked|status:pm-decision|needs:human-approval' "$(edits)"
+want_in "the open PR is drafted and disarmed" '^park 42$' "$(cat "$FIX/draft.log" 2>/dev/null)"
+want "the claim is released" "0" "$(claimed 801)"
+want_in "the run says why it stopped" 'parked \(hold\)' "$out"
+
+echo "--- no hold: every step runs, as before ---"
+reset_case 802
+out=$(bt 802); rc=$?
+want "it finishes" "0" "$rc"
+want "every step ran" "start plan build" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "no park note" "" "$(grep '^issue comment 802' "$GH_LOG" || true)"
+want "the claim is held still" "1" "$(claimed 802)"
+
+echo "--- the hold cannot be read: requeued, nothing parked, nothing run ---"
+reset_case 803; echo 2 > "$FIX/person-hold.rc"
+out=$(bt 803); rc=$?
+want "it ends unread" "26" "$rc"
+want "no step ran" "" "$(cat "$CLAUDE_LOG")"
+want_in "it is back on the queue" '^add 803 ' "$(cat "$FIX/queue.log" 2>/dev/null)"
+want "no park note" "" "$(grep '^issue comment 803' "$GH_LOG" || true)"
+want "no status write" "" "$(edits)"
+want "no draft" "" "$(cat "$FIX/draft.log" 2>/dev/null)"
+
+suite_end "$FAILED"

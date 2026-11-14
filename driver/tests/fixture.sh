@@ -214,6 +214,15 @@ exit "$(cat "$FIX/person-stop.rc" 2>/dev/null || echo 0)"
 PS
   chmod +x "$BIN/person-stop"
   export DRIVER_PERSON_STOP="$BIN/person-stop"
+  # A person's hold (scripts/person-hold.sh) answers the same way, from $FIX/person-hold.{rc,out}.
+  cat > "$BIN/person-hold" <<'PH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/person-hold.log"
+[ -f "$FIX/person-hold.out" ] && cat "$FIX/person-hold.out"
+exit "$(cat "$FIX/person-hold.rc" 2>/dev/null || echo 0)"
+PH
+  chmod +x "$BIN/person-hold"
+  export DRIVER_PERSON_HOLD="$BIN/person-hold"
   # Anything the OPERATOR'S shell exports that would let a suite be answered by
   # the real world instead of this one. CLAIM_REPO is the dangerous one: the claim
   # lock resolves it ahead of the working directory, so a session that happens to
