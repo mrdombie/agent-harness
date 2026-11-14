@@ -36,9 +36,11 @@ branch() {
 }
 
 printf 'one\n' > "$REPO/shared.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
-for b in clean edited conflict side more notmerge asked single found; do branch "$b"; done
-# The conflict branch and the trunk both change the same line.
-printf 'branch\n' > "$FIX/conflict/shared.txt"; git -C "$FIX/conflict" commit -qam "feat: the branch's line"
+for b in clean edited conflict side more notmerge asked single found resolve; do branch "$b"; done
+# The conflict branches and the trunk all change the same line.
+for b in conflict resolve; do
+  printf 'branch\n' > "$FIX/$b/shared.txt"; git -C "$FIX/$b" commit -qam "feat: the branch's line"
+done
 printf 'trunk\n' > "$REPO/shared.txt"; printf 'new\n' > "$REPO/trunk.txt"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: the trunk moved"
 
@@ -124,16 +126,38 @@ want_in "naming the edited file"       'carries edits beyond the clean merge \(o
 want_in "the next try is told why"     'beyond the clean merge' "$(cat "$(driver_state_dir 152)/steps/build-task-1.refused" 2>/dev/null)"
 want "and nothing is recorded as proved" "no" "$([ -e "$(driver_state_dir 152)/steps/build-task-1.proved" ] && echo yes || echo no)"
 
-echo "--- a conflict resolved by hand is a change ---"
+echo "--- a conflict resolved by hand with green gates is accepted ---"
 WT="$FIX/conflict"
 X_P1=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
 want "the merge did conflict" "UU shared.txt" "$(git -C "$WT" status --porcelain --untracked-files=no | grep shared)"
 printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
 X_M=$(git -C "$WT" rev-parse HEAD)
-out=$(driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" 2>&1); rc=$?
-want "it is refused"                   "1" "$rc"
-want_in "as a resolution by hand"      'with conflicts, so its resolution is a change by hand' "$out"
+out=$(driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" "$FIX/x-gates.json" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want_in "naming the files resolved"    'resolves its conflicts by hand \(shared\.txt\)' "$out"
+want_in "and the lint gate's exit"     'lint.*exit 0' "$out"
+want_in "and the test gate's exit"     'test.*exit 0' "$out"
+want "the gates are kept as the proof" "trunk-merge-gates 2 0 0" \
+  "$(jq -r '"\(.kind) \(.gates | length) \(.gates[0].exit) \(.gates[1].exit)"' "$FIX/x-gates.json" 2>/dev/null)"
+want "each gate with its command"      "echo lint-ok|echo test-ok" "$(jq -r '[.gates[].cmd] | join("|")' "$FIX/x-gates.json" 2>/dev/null)"
+
+# Through the step: the session merges, resolves the conflict and commits.
+WT="$FIX/resolve"
+R_P1=$(git -C "$WT" rev-parse HEAD)
+driver_state_init 154 --worktree "$WT" --repo "$REPO"
+fix_plan 154
+fix_ai build "$(fix_merge refs/heads/tkt-resolve)" superpowers:subagent-driven-development
+printf '#!/usr/bin/env bash\ngit -C "%s" merge -q --no-edit develop >/dev/null 2>&1\nprintf "resolved\\n" > "%s/shared.txt"; git -C "%s" add -A; git -C "%s" commit -qm "Merge branch develop" >/dev/null 2>&1\ncp "$FIX/claude.keep" "$BIN/claude"\nexec "$FIX/claude.keep" "$@"\n' \
+  "$WT" "$WT" "$WT" "$WT" > "$BIN/claude"
+chmod +x "$BIN/claude"
+rc=0; out=$(DRIVER_TICKET=154 driver_step_build 154 2>&1) || rc=$?
+R_M=$(git -C "$WT" rev-parse HEAD)
+want "the session made a merge commit" "2 $R_P1" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1, $2}')"
+want "the step finishes"               "0" "$rc"
+want "it is recorded as proved, on the merge" "$R_M" "$(jq -r '.commits[0]' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want "with the gates as its proof"     "2" "$(jq -r '.proof.gates | length' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want "and nothing refused"             "no" "$([ -e "$(driver_state_dir 154)/steps/build-task-1.refused" ] && echo yes || echo no)"
 
 echo "--- a merge of something that is not the trunk is refused ---"
 WT="$FIX/side"
