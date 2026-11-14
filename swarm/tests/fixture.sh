@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The runner's own swarm settings are no case's input: a driver session exports its live ones.
+for _v in $(compgen -e | grep -E '^(SWARM|COORDINATOR|MERGE_LANE)_'); do unset "$_v"; done; unset _v
 # No suite reads the real login: the account is unknown, and readings count as they did (swarm_account).
 export SWARM_CLAUDE_BIN=false
 # fixture.sh — the world every swarm test runs against: a throwaway repo with a
