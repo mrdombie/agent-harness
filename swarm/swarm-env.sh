@@ -623,12 +623,13 @@ swarm_auth_hold() {
 # swarm_auth_check [--now] — 1, printing the CLI's words, when one small probe call
 # (SWARM_AUTH_PROBE_CMD, bounded by swarm.authProbeTimeout, in an empty dir) reads as a lost
 # login, writing the auth hold; 0 otherwise: a probe that hangs or fails another way proves
-# nothing. Reused for SWARM_AUTH_CHECK_TTL (300) s unless --now; kept in logs/.auth-check
-# as `<epoch>\t<ok|failed>\t<text>`.
+# nothing. Reused for swarm.authCheckMin (10) min unless --now; kept in logs/.auth-check
+# as `<epoch>\t<ok|failed>\t<text>`. The probe's log is deleted: it records no usage reading.
 swarm_auth_check() {
   local f="$SWARM_LOGS/.auth-check" now at v t ttl tmo dir said cmd
   now=$(swarm_now)
-  ttl="${SWARM_AUTH_CHECK_TTL:-300}"; case "$ttl" in ''|*[!0-9]*) ttl=300 ;; esac
+  ttl=$(swarm_opt swarm.authCheckMin 10); case "$ttl" in ''|*[!0-9]*) ttl=10 ;; esac
+  ttl="${SWARM_AUTH_CHECK_TTL:-$(( ttl * 60 ))}"; case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
   if [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
     case "$at" in ''|*[!0-9]*) at=0 ;; esac
     if [ $(( now - at )) -lt "$ttl" ]; then
