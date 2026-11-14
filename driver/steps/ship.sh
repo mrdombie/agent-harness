@@ -919,7 +919,11 @@ $polish"
   if [ "$dtrc" -ne 0 ]; then
     driver_say "✋ ship: this branch deletes tests the pull request does not account for, so it stays a draft."
     printf '%s\n' "$dt" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
-    driver_state_set "$t" park_note "deleted tests to account for under '## Deleted tests' in the PR body: $(printf '%s\n' "$dt" | awk '/ — /{sub(/^ +/, ""); print}' | tr '\n' ';')"
+    # The body is rebuilt from replaced.jsonl, so a note pointing at the body sends the fix where ship overwrites it.
+    local dtfiles
+    dtfiles=$(printf '%s\n' "$dt" | awk '/^  [^ ].* — /{sub(/^ +/, ""); sub(/ — .*/, ""); print}' | paste -sd, - | sed 's/,/, /g')
+    driver_state_set "$t" park_note "deleted tests not accounted for: ${dtfiles}. Write one JSON line per file to $(driver_state_dir "$t")/steps/replaced.jsonl, either {\"file\":\"<path>\",\"coveredBy\":\"<test at head>\"} or {\"file\":\"<path>\",\"removedBecause\":\"<why>\"}, e.g. {\"file\":\"${dtfiles%%, *}\",\"removedBecause\":\"<why>\"}. This goes in the record, not the PR body: ship rebuilds the body from that file."
+    driver_state_set "$t" park_cause pm
     return "$DRIVER_E_REFUSED"
   fi
 
