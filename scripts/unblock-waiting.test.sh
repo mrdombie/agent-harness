@@ -254,4 +254,20 @@ out=$(HARNESS_CFG_PATH="$FIX/cfg-queue.json" run)
 want_not_in "the person's block in the queue's repo is not released" '^unblocked #20023$' "$out"
 want_in "  it names who put it on there" '^held: #20023 — @dom put status:blocked on at 2026-11-01T10:00:00Z' "$out"
 
+echo "--- the machine's own block, however late, is the machine's: its blocker landing lifts it ---"
+fresh
+waiting 20024 status:blocked "Blocked until #19700 merges."
+labeled 20024 harness-bot 2026-11-01T10:00:00Z
+listing status:blocked 20024; closed 19700
+jq '.driver.accounts = ["harness-bot"]' "$HARNESS_CFG_PATH" > "$FIX/cfg-accounts.json"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-accounts.json" run)
+want_in "a driver account's late block is released" '^unblocked #20024$' "$out"
+want_not_in "  never called theirs to lift" 'theirs to lift' "$out"
+labeled 20024 'renovate[bot]' 2026-11-01T10:00:00Z
+out=$(run)
+want_in "a bot's late block is released" '^unblocked #20024$' "$out"
+labeled 20024 dom 2026-11-01T10:00:00Z
+out=$(HARNESS_CFG_PATH="$FIX/cfg-accounts.json" run)
+want_not_in "a person's late block still is not" '^unblocked #20024$' "$out"
+
 suite_end "$FAILED"
