@@ -765,6 +765,7 @@ driver_prove_trunk_merge() {
       return 1
     fi
     # Only the conflicted files: the rest equal git's merge, and a repo may keep markers in fixtures.
+    # The whole of a conflicted file counts as its resolution, not only its conflict hunks.
     local hit=""
     hit=$(printf '%s\n' "$conflicted" | tr '\n' '\0' | xargs -0 git -C "$repo" grep -nE '^(<{7}|>{7})( |$)|^={7}$' "$sha" -- 2>/dev/null | head -1)
     if [ -n "$hit" ]; then
