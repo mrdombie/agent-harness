@@ -32,10 +32,23 @@ want "read fresh first" 1 "$(grep -c '^issue view 501 ' "$GH_LOG")"
 want "only claimed is left, other families kept" "P1,needs:human-approval,status:claimed" "$(after 501)"
 
 echo "--- set: the status it already wears, beside another — the other comes off ---"
+: > "$GH_LOG"; fix_issue 512 OPEN "status:ready,status:in-review"
+bash "$IS" set 512 status:ready
+want "in-review removed, ready kept" "status:ready" "$(after 512)"
+want_not_in "ready is not re-added" '--add-label status:ready' "$(cat "$GH_LOG")"
+
+echo "--- set: a person's status:blocked is a hold — only --drop takes it off ---"
 : > "$GH_LOG"; fix_issue 502 OPEN "status:ready,status:blocked"
 bash "$IS" set 502 status:ready
-want "blocked removed, ready kept" "status:ready" "$(after 502)"
-want_not_in "ready is not re-added" '--add-label status:ready' "$(cat "$GH_LOG")"
+want "blocked kept, ready kept" "status:blocked,status:ready" "$(after 502)"
+want "and no edit at all" 0 "$(grep -c '^issue edit 502 ' "$GH_LOG")"
+: > "$GH_LOG"; fix_issue 513 OPEN "status:claimed,status:blocked,P1"
+bash "$IS" set 513 status:claimed
+want "a claimed write keeps blocked" "P1,status:blocked,status:claimed" "$(after 513)"
+: > "$GH_LOG"; fix_issue 514 OPEN "status:claimed,status:blocked"
+bash "$IS" set 514 status:ready --drop status:blocked
+want "one edit" 1 "$(grep -c '^issue edit 514 ' "$GH_LOG")"
+want "--drop lifts it in the same edit" "status:ready" "$(after 514)"
 
 echo "--- set: already exactly right — no edit at all ---"
 : > "$GH_LOG"; fix_issue 503 OPEN "status:ready,P2"
