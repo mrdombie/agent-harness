@@ -134,7 +134,7 @@ want "each release line drops needs-human" 2 "$(printf '%s\n' "$rel" | grep -c -
 want "each release line drops external-blocked" 2 "$(printf '%s\n' "$rel" | grep -c -- '--drop "\$LBL_EXTERNAL_BLOCKED"')"
 want_not_in "no release line says it takes every other status off" 'takes every other status off too' "$rel"
 for f in skills/release-stale/SKILL.md skills/claim/SKILL.md; do
-  want_in "$f: the flip back names the --drop of needs-human" '--drop "$LBL_NEEDS_HUMAN"' "$(cat "$K/$f")"
+  want_in "$f: the flip back names the --drop of needs-human" '--drop "\$LBL_NEEDS_HUMAN"' "$(cat "$K/$f")"
 done
 for f in README.md skills/finish/SKILL.md; do
   for l in labels.needsHuman labels.externalBlocked; do
