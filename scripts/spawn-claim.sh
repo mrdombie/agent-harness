@@ -73,6 +73,23 @@ case " $* " in *" --fg "*) ;; *)
   fi ;;
 esac
 
+# A host whose Claude login is gone claims nothing, and lets go of its own claim on this ticket.
+if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/../swarm/swarm-env.sh" ] \
+   && ! _auth=$(bash -c '. "$1" >/dev/null 2>&1 || exit 0; swarm_auth_check' _ "$SCRIPT_DIR/../swarm/swarm-env.sh"); then
+  _t=""; for _a in "$@"; do case "$_a" in -*) ;; *) _t="$_a" ;; esac; done
+  case "$_t" in ''|*[!0-9]*) _t="" ;; esac
+  if [ -n "$_t" ]; then
+    _claims=$(perl -e 'alarm shift; exec @ARGV' 20 bash "$SCRIPT_DIR/claim-lock.sh" list --json 2>/dev/null)
+    if jq -e --argjson n "$_t" 'any(.[]?; .issue == $n and .mine == true)' <<<"${_claims:-[]}" >/dev/null 2>&1; then
+      bash "$SCRIPT_DIR/claim-lock.sh" release "$_t" >/dev/null 2>&1 \
+        && echo "spawn-claim: released this host's claim on #$_t" >&2 \
+        || echo "spawn-claim: could not release this host's claim on #$_t" >&2
+    fi
+  fi
+  echo "spawn-claim: paused for auth — ${_auth:-the login check failed} — not spawning" >&2
+  exit 77
+fi
+
 # A build fills ~1.5 GB before its first commit: under the disk guard's floor it never starts.
 if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/disk-guard.sh" ] \
    && ! _disk=$(bash "$SCRIPT_DIR/disk-guard.sh" check "a build"); then

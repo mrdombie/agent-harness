@@ -620,6 +620,38 @@ swarm_auth_hold() {
   printf '%s (since %s)' "$(swarm_usage_hold_field "$f" 2)" "$(swarm_iso "$since")"
 }
 
+# swarm_auth_check [--now] — 1, printing the CLI's words, when one small probe call
+# (SWARM_AUTH_PROBE_CMD, bounded by swarm.authProbeTimeout, in an empty dir) reads as a lost
+# login, writing the auth hold; 0 otherwise: a probe that hangs or fails another way proves
+# nothing. Reused for SWARM_AUTH_CHECK_TTL (300) s unless --now; kept in logs/.auth-check
+# as `<epoch>\t<ok|failed>\t<text>`.
+swarm_auth_check() {
+  local f="$SWARM_LOGS/.auth-check" now at v t ttl tmo dir said cmd
+  now=$(swarm_now)
+  ttl="${SWARM_AUTH_CHECK_TTL:-300}"; case "$ttl" in ''|*[!0-9]*) ttl=300 ;; esac
+  if [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
+    case "$at" in ''|*[!0-9]*) at=0 ;; esac
+    if [ $(( now - at )) -lt "$ttl" ]; then
+      case "$v" in ok) return 0 ;; failed) printf '%s' "$t"; return 1 ;; esac
+    fi
+  fi
+  tmo="${SWARM_AUTH_PROBE_TIMEOUT:-$(swarm_opt swarm.authProbeTimeout 60)}"; case "$tmo" in ''|*[!0-9]*) tmo=60 ;; esac
+  cmd="${SWARM_AUTH_PROBE_CMD:-${SWARM_CLAUDE_BIN:-claude} -p \"Reply with the single word ok.\" --model haiku --output-format stream-json --verbose}"
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/swarm-auth.XXXXXX") || return 0
+  ( cd "$dir" && swarm_bounded "$tmo" bash -c "$cmd" ) > "$dir.log" 2>/dev/null < /dev/null
+  mkdir -p "$SWARM_LOGS" 2>/dev/null
+  if said=$(swarm_api_auth_log "$dir.log"); then
+    swarm_auth_hold_write "$said"
+    printf '%s\tfailed\t%s\n' "$now" "$(printf '%s' "$said" | tr '\n\t' '  ')" > "$f" 2>/dev/null
+    rm -rf "$dir" "$dir.log"
+    printf '%s' "$said"
+    return 1
+  fi
+  printf '%s\tok\t\n' "$now" > "$f" 2>/dev/null
+  rm -rf "$dir" "$dir.log"
+  return 0
+}
+
 # swarm_usage_hold_recheck — a hold file is asked again: one probe call at most every
 # swarm.usageProbeMin (15) min, never in the hold's first interval, judged on that call's own
 # reading. Every window the hold is on must read not rejected and under swarm.usageCeiling
