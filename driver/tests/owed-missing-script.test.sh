@@ -68,4 +68,44 @@ want "the reviewer ran once" "1" "$(calls reviewer)"
 want "and its verdict was recorded" "1" "$(calls recorder)"
 want "and the step passes" "0" "$rc"
 
+echo "--- an owed-only row naming a missing npm script parks nothing, before or at the push ---"
+cp "$HARNESS_CFG" "$FIX/cfg.full"
+jq '.review = {"attest":{"ui-gate":"npm run check:ui-gate-attested"}}' "$FIX/cfg.full" > "$FIX/cfg.tmp" && cat "$FIX/cfg.tmp" > "$HARNESS_CFG"
+tkt 603 '{"name":"p","scripts":{"test":"true"}}'
+rc=0; out=$(driver_push_requires_unpayable 603 2>&1) || rc=$?
+want "the pre-review check returns 0" "0" "$rc"
+want "and parks nothing" "" "$(driver_state_get 603 park_note)"
+rc=0; out2=$(driver_push_requires 603 2>&1) || rc=$?
+want "the push requirements return 0" "0" "$rc"
+want "and still park nothing" "" "$(driver_state_get 603 park_note)"
+said=$(printf '%s\n%s\n' "$out" "$out2" | grep -c "names npm script check:ui-gate-attested, which package.json does not have")
+want "the fault is said once across both" "1" "$said"
+cat "$FIX/cfg.full" > "$HARNESS_CFG"
+
+echo "--- the fault names the repo's settings file, never the temp snapshot it was read through ---"
+rel=".claude/$(basename "$HARNESS_CFG_PATH")"
+SNAP="$FIX/$(basename "$HARNESS_CFG_PATH").abcdef012345"; cp "$HARNESS_CFG" "$SNAP"
+tkt 604 '{"name":"p","scripts":{"test":"true"}}'
+out=$(HARNESS_CFG="$SNAP" HARNESS_CFG_FROM="origin/develop@1a2b3c4" driver_push_requires 604 2>&1)
+want_in "it names the repo's settings file and where it was read" "a settings fault in $rel .read from origin/develop@1a2b3c4." "$out"
+want_not_in "and not the snapshot" "$(basename "$SNAP")" "$out"
+
+echo "--- only the plain 'npm run [-s] <name>' form is classified ---"
+mkdir -p "$FIX/pj"; printf '%s\n' '{"name":"p","scripts":{"test":"true"}}' > "$FIX/pj/package.json"
+for c in 'npm run -w apps/web check:x' 'npm run --workspace=apps/web check:x' 'npm run --if-present check:x' \
+         'npm run --prefix apps/web check:x' 'npm run "check:x"' "npm run 'check:x'"; do
+  rc=0; _driver_owed_missing_script "$c" "$FIX/pj" >/dev/null || rc=$?
+  want "not classified: $c" "1" "$rc"
+done
+rc=0; n=$(_driver_owed_missing_script 'npm run --silent check:x' "$FIX/pj") || rc=$?
+want "classified: npm run --silent check:x" "0:check:x" "$rc:$n"
+
+echo "--- a package.json that does not parse is not a missing script ---"
+printf '<<<<<<< HEAD\n{"scripts":{}}\n' > "$FIX/pj/package.json"
+rc=0; _driver_owed_missing_script 'npm run check:x' "$FIX/pj" >/dev/null || rc=$?
+want "unparseable: not classified" "1" "$rc"
+printf '%s\n' '{"scripts":["check:x"]}' > "$FIX/pj/package.json"
+rc=0; _driver_owed_missing_script 'npm run check:x' "$FIX/pj" >/dev/null || rc=$?
+want ".scripts not an object: not classified" "1" "$rc"
+
 suite_end "$FAILED"
