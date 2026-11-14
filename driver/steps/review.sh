@@ -110,13 +110,13 @@ driver_step_review() { # <ticket>
   # before; re-reviewing all of it sent fixes, screens among them, after the sign-off.
   # Its own change: every commit since the repair began, and of a trunk merge only the
   # files whose resolution differs from both sides.
-  local -a dargs=(); local rbase own_paths="" p
+  local -a dargs=(); local rbase own_paths="" own_scope="" p
   rbase=$(driver_state_get "$t" repair_base)
   # AN ADOPTED DRAFT IS REVIEWED WHOLE: the driver never reviewed any of it.
   if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ] && ! driver_adopted "$t"; then
     # --first-parent: a merge's second side is the trunk's commits, never the repair's.
-    own_paths=$(git -C "$wt" log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
-    dargs=("$rbase"..HEAD --)
+    own_paths=$(git -C "$wt" -c core.quotePath=false log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
+    dargs=("$rbase"..HEAD --); own_scope=1
     while IFS= read -r p; do [ -n "$p" ] && dargs+=("$p"); done <<<"$own_paths"
     if [ -n "$own_paths" ]; then diff=$(git -C "$wt" diff "${dargs[@]}" 2>/dev/null); else diff=""; fi
     driver_say "   review: the repair's own change since $(printf '%s' "$rbase" | cut -c1-8), $(printf '%s' "$own_paths" | grep -c .) file(s)"
@@ -192,6 +192,18 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
 
 [ALREADY RAISED ON THIS CHANGE — never return any of these again, reworded or not:
 $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
+  # AREA GUIDES: the nearest REVIEW.md above each changed path, read from the trunk so a
+  # change never writes the guide it is judged by. On a repair the changed set is its own.
+  local changed guides=""
+  if [ -n "$own_scope" ]; then changed="$own_paths"
+  elif [ "${#dargs[@]}" -gt 0 ]; then changed=$(git -C "$wt" -c core.quotePath=false diff --name-only "${dargs[@]}" 2>/dev/null)
+  else changed=""; fi
+  [ -z "$changed" ] || [ -z "$trunk" ] \
+    || guides=$(printf '%s\n' "$changed" | bash "$KIT_ROOT/scripts/review-guide.sh" "$wt" "$trunk" 2>/dev/null)
+  [ -z "$guides" ] || diff="${diff}
+
+[AREA REVIEW GUIDES — what each area asks of its reviewer: what to skip, the nit cap, the evidence wanted. Hold the change to the guide of every file it touches:
+${guides}]"
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # THE REVIEWER IS CLAUDE CODE'S OWN code-review, at review.effort (default high: one
