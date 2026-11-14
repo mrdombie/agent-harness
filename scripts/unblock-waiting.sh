@@ -182,7 +182,7 @@ person_held() {
   done
   grep -qx "$n" <<<"$CLAIMS" && { echo "a live claim holds it"; return 0; }
   case ",$labs," in *",$LBL_BLOCKED,"*) ;; *) return 1 ;; esac
-  tl=$("$GH" api "repos/$REPO_SLUG/issues/$n/timeline?per_page=100" --paginate 2>/dev/null) || return 2
+  tl=$("$GH" api "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$n/timeline?per_page=100" --paginate 2>/dev/null) || return 2
   ev=$(jq -rs --arg l "$LBL_BLOCKED" --arg at "$at" --argjson g "$GRACE" '
         [add[]? | select(.event == "labeled" and .label.name == $l)] | last
         | if . == null then empty

@@ -28,7 +28,7 @@ person_hold_check() { # <ticket>
     [ -n "$l" ] || continue
     case ",$labs," in *",$l,"*) ;; *) continue ;; esac
     who="someone at an unknown time"
-    if tl=$(gh_read "#$t's timeline" api "repos/$REPO_SLUG/issues/$t/timeline?per_page=100" --paginate); then
+    if tl=$(gh_read "#$t's timeline" api "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$t/timeline?per_page=100" --paginate); then
       who=$(jq -rs --arg l "$l" '[(.[] | if type == "array" then .[] else . end) | select(.event? == "labeled" and .label.name? == $l)]
               | last | if . == null then empty else "\(.actor.login // "someone") at \(.created_at)" end' <<<"$tl" 2>/dev/null)
       [ -n "$who" ] || who="someone at an unknown time"
