@@ -41,10 +41,11 @@ W_IMPL=$(git -C "$REPO" rev-parse HEAD)
 printf '#!/usr/bin/env bash\ngrep -q new greeting.txt\n' > "$REPO/plain.test.sh"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: a file with no filter"
 
-# slow_script — slow for its first SLOW_RUNS runs; it reads memory as 5% free when it starts
-# into SLOW_MEM_FILE when set, as a build beside it would take the memory (a proof drops SWARM_*).
+# slow_script — slow for its first SLOW_RUNS runs; into SLOW_MEM_FILE when set it writes 5%
+# free for its first SLOW_TIGHT_RUNS runs and 60% after, as a build beside it takes the memory
+# and gives it back (a proof drops SWARM_*).
 slow_script() {
-  printf '#!/usr/bin/env bash\n[ -z "${SLOW_MEM_FILE:-}" ] || echo 5 > "$SLOW_MEM_FILE"\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
+  printf '#!/usr/bin/env bash\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\nif [ -n "${SLOW_MEM_FILE:-}" ]; then if [ "$n" -lt "${SLOW_TIGHT_RUNS:-99}" ]; then echo 5; else echo 60; fi > "$SLOW_MEM_FILE"; fi\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
 }
 # slow_commits — S_TEST and S_IMPL: the slow suite, made once.
 slow_commits() {
@@ -127,6 +128,20 @@ want "taken twice and no more" "4" "$(cat "$FIX/count")"
 want_in "the retry waited on memory" 'machine busy \(free memory 5%' "$out"
 want_in "the note names memory" 'the machine was out of memory \(free memory 5%, floor 10%\)' "$out"
 want_not_in "it guesses at no cause" 'watch-mode' "$out"
+fi
+
+if suite_case "out of memory at the first timeout, memory to spare at the second: it names no memory"; then
+printf '0\n' > "$FIX/count"; export COUNT_FILE="$FIX/count"
+slow_commits
+printf '#!/usr/bin/env bash\necho 60 > "%s"\n' "$FIX/mem-pct" > "$FIX/mem-raise"; chmod +x "$FIX/mem-raise"
+printf '60\n' > "$FIX/mem-pct"
+out=$(unset SWARM_FREE_MEM_PCT; SLOW_MEM_FILE="$FIX/mem-pct" SLOW_TIGHT_RUNS=2 SWARM_FREE_MEM_PCT_FILE="$FIX/mem-pct" SWARM_SWAP_PCT=0 MACHINE_GATE_ON_WAIT="$FIX/mem-raise" MACHINE_GATE_POLL=0 \
+  SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
+want "still out of time: its own refusal" "4" "$rc"
+want "taken twice and no more" "4" "$(cat "$FIX/count")"
+want_in "the retry waited on memory" 'machine busy \(free memory 5%' "$out"
+want_in "and that it was taken twice" 'taken twice, the second time alone in a machine gate slot with twice the limit' "$out"
+want_not_in "the second timeout had memory to spare: memory is not named" 'out of memory' "$out"
 fi
 
 if suite_case "every step is told which test files take a filter"; then
