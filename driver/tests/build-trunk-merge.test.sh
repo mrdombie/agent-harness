@@ -126,21 +126,28 @@ want_in "naming the edited file"       'carries edits beyond the clean merge \(o
 want_in "the next try is told why"     'beyond the clean merge' "$(cat "$(driver_state_dir 152)/steps/build-task-1.refused" 2>/dev/null)"
 want "and nothing is recorded as proved" "no" "$([ -e "$(driver_state_dir 152)/steps/build-task-1.proved" ] && echo yes || echo no)"
 
-echo "--- a conflict resolved by hand with green gates is accepted ---"
+echo "--- a conflict resolved by hand is accepted, and no gate runs here: self-check's run next ---"
 WT="$FIX/conflict"
 X_P1=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
 want "the merge did conflict" "UU shared.txt" "$(git -C "$WT" status --porcelain --untracked-files=no | grep shared)"
 printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
 X_M=$(git -C "$WT" rev-parse HEAD)
-out=$(driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" "$FIX/x-gates.json" 2>&1); rc=$?
+# A gate that reads stdin, and one that would show it ran: the build must run neither.
+jq --arg f "$FIX/x-ran" '.gates = {lint: ("cat >/dev/null; echo lint >> " + $f), test: ("echo test >> " + $f)}' "$HARNESS_CFG_PATH" > "$FIX/x-cfg.json"
+out=$(HARNESS_CFG="$FIX/x-cfg.json" driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" "$FIX/x-res.json" 2>&1); rc=$?
 want "it is accepted"                  "0" "$rc"
 want_in "naming the files resolved"    'resolves its conflicts by hand \(shared\.txt\)' "$out"
-want_in "and the lint gate's exit"     'lint.*exit 0' "$out"
-want_in "and the test gate's exit"     'test.*exit 0' "$out"
-want "the gates are kept as the proof" "trunk-merge-gates 2 0 0" \
-  "$(jq -r '"\(.kind) \(.gates | length) \(.gates[0].exit) \(.gates[1].exit)"' "$FIX/x-gates.json" 2>/dev/null)"
-want "each gate with its command"      "echo lint-ok|echo test-ok" "$(jq -r '[.gates[].cmd] | join("|")' "$FIX/x-gates.json" 2>/dev/null)"
+want_in "and who judges them"          "self-check's gates judge it on this head" "$out"
+want "no gate ran in the build"        "" "$(cat "$FIX/x-ran" 2>/dev/null)"
+want "the resolution is kept as the proof" "trunk-merge-resolved shared.txt" \
+  "$(jq -r '"\(.kind) \(.files | join(","))"' "$FIX/x-res.json" 2>/dev/null)"
+
+echo "--- under gates.localOnly with no local list, the changed list is not run either ---"
+jq --arg f "$FIX/lo-ran" '.gates = {changed: [("echo changed >> " + $f)], localOnly: true}' "$HARNESS_CFG_PATH" > "$FIX/lo-cfg.json"
+out=$(HARNESS_CFG="$FIX/lo-cfg.json" driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want "and the changed list never ran"  "" "$(cat "$FIX/lo-ran" 2>/dev/null)"
 
 # Through the step: the session merges, resolves the conflict and commits.
 WT="$FIX/resolve"
@@ -156,7 +163,10 @@ R_M=$(git -C "$WT" rev-parse HEAD)
 want "the session made a merge commit" "2 $R_P1" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1, $2}')"
 want "the step finishes"               "0" "$rc"
 want "it is recorded as proved, on the merge" "$R_M" "$(jq -r '.commits[0]' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
-want "with the gates as its proof"     "2" "$(jq -r '.proof.gates | length' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want "with the resolution as its proof" "trunk-merge-resolved shared.txt" \
+  "$(jq -r '"\(.proof.kind) \(.proof.files | join(","))"' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want_in "the summary counts it as resolved by hand" '1 of 1 task\(s\) merged the trunk — 1 resolved by hand' "$out"
+want_not_in "and does not call it a clean merge" 'clean merge' "$out"
 want "and nothing refused"             "no" "$([ -e "$(driver_state_dir 154)/steps/build-task-1.refused" ] && echo yes || echo no)"
 
 echo "--- a resolution that keeps a conflict marker is refused ---"
@@ -180,17 +190,16 @@ out=$(driver_prove_trunk_merge "$WT" "$B_P1" "$B_M" "$B_M" 2>&1); rc=$?
 want "it is refused"                   "1" "$rc"
 want_in "naming that file"             'base\.txt, which neither side changed' "$out"
 
-echo "--- a resolution with a red gate is refused ---"
+echo "--- a resolution is not refused here for a red gate: self-check owns that red ---"
 WT="$FIX/redgate"
 G2_P1=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
 printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
 G2_M=$(git -C "$WT" rev-parse HEAD)
 jq '.gates = {lint: "echo lint-ok", test: "false"}' "$HARNESS_CFG_PATH" > "$FIX/red-cfg.json"
-out=$(HARNESS_CFG="$FIX/red-cfg.json" driver_prove_trunk_merge "$WT" "$G2_P1" "$G2_M" "$G2_M" "$FIX/red-gates.json" 2>&1); rc=$?
-want "it is refused"                   "1" "$rc"
-want_in "naming the gate and its exit" 'test exit 1' "$out"
-want "and no gates file marks it proved" "no" "$([ -e "$FIX/red-gates.json" ] && echo yes || echo no)"
+out=$(HARNESS_CFG="$FIX/red-cfg.json" driver_prove_trunk_merge "$WT" "$G2_P1" "$G2_M" "$G2_M" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want_not_in "no gate exit is claimed"  'exit [0-9]' "$out"
 
 echo "--- a resolved merge found on the branch before the task is still refused ---"
 WT="$FIX/foundres"
