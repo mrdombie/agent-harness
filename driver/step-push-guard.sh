@@ -14,8 +14,10 @@ real_git=$1 wt=$2 stamp=$3; shift 3
 refuse() { echo "git push refused inside a driver step: $1 (${HARNESS_DRIVER_RUN:-})" >&2; exit 1; }
 DEFAULT="the driver alone pushes, after the review"
 
+# HARNESS_STEP_TMP_ROOTS (colon-separated) replaces the temp roots; no looser than TMPDIR.
 tmp_roots=()
-for t in "${TMPDIR:-/tmp}" /tmp; do
+IFS=: read -ra _roots <<<"${HARNESS_STEP_TMP_ROOTS:-${TMPDIR:-/tmp}:/tmp}"
+for t in "${_roots[@]}"; do
   r=$(cd "$t" 2>/dev/null && pwd -P) && [ -n "$r" ] && tmp_roots+=("${r%/}")
 done
 under_tmp() { local r; for r in "${tmp_roots[@]}"; do case "$1/" in "$r"/?*) return 0 ;; esac; done; return 1; }
@@ -46,33 +48,38 @@ while [ $# -gt 0 ]; do
     *) remote=$1; break ;;
   esac
 done
-[ -n "$remote" ] || refuse "$DEFAULT"
+[ -n "$remote" ] || refuse "no remote named on the command line"
 
 src=$("$real_git" ${pre[@]+"${pre[@]}"} rev-parse --show-toplevel 2>/dev/null)
 [ -n "$src" ] || src=$("$real_git" ${pre[@]+"${pre[@]}"} rev-parse --absolute-git-dir 2>/dev/null)
-[ -n "$src" ] && src=$(cd "$src" 2>/dev/null && pwd -P) || refuse "$DEFAULT"
+[ -n "$src" ] && src=$(cd "$src" 2>/dev/null && pwd -P) || refuse "pushing from outside a repo"
 
 url=$remote
 case "$remote" in
-  file://*|/*|./*|../*) ;;
-  *) [ -d "$base/$remote" ] || url=$("$real_git" ${pre[@]+"${pre[@]}"} remote get-url --push "$remote" 2>/dev/null) || refuse "$DEFAULT" ;;
+  *://*|/*|./*|../*) ;;
+  *:*) case "${remote%%:*}" in */*) ;; *) refuse "remote has a host ($remote)" ;; esac ;;
+  *) [ -d "$base/$remote" ] || url=$("$real_git" ${pre[@]+"${pre[@]}"} remote get-url --push "$remote" 2>/dev/null) \
+       || refuse "no remote named '$remote'" ;;
 esac
 case "$url" in
   file://localhost/*) url=${url#file://localhost} ;;
-  file://*) url=${url#file://} ;;
-  *://*) refuse "$DEFAULT" ;;
+  file:///*) url=${url#file://} ;;
+  *://*) refuse "remote has a host ($url)" ;;
+  /*|./*|../*) ;;
+  *:*) case "${url%%:*}" in */*) ;; *) refuse "remote has a host ($url)" ;; esac ;;
 esac
 case "$url" in /*) ;; *) url="$base/$url" ;; esac
-dest=$(cd "$url" 2>/dev/null && pwd -P) || refuse "$DEFAULT"
+dest=$(cd "$url" 2>/dev/null && pwd -P) || refuse "remote is not a directory ($url)"
 
 wt_top=$(cd "$wt" 2>/dev/null && pwd -P || true)
 wt_common=$("$real_git" -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
 [ -z "$wt_common" ] || wt_common=$(cd "$wt_common" 2>/dev/null && pwd -P || true)
-for p in "$src" "$dest"; do
-  under_tmp "$p" && made_in_step "$p" || refuse "$DEFAULT"
-  for w in "$wt_top" "$wt_common"; do
-    [ -n "$w" ] || continue
-    case "$p/" in "$w"/*) refuse "$DEFAULT" ;; esac
-  done
-done
+in_wt() { local w; for w in "$wt_top" "$wt_common"; do [ -n "$w" ] && case "$1/" in "$w"/*) return 0 ;; esac; done; return 1; }
+
+under_tmp "$dest" || refuse "remote is not inside the temp dir ($dest)"
+made_in_step "$dest" || refuse "remote was not made during this step ($dest)"
+in_wt "$dest" && refuse "remote is the build worktree ($dest)"
+in_wt "$src" && refuse "pushing from the build worktree ($src)"
+under_tmp "$src" || refuse "pushing from outside the temp dir ($src)"
+made_in_step "$src" || refuse "pushing from a repo not made during this step ($src)"
 exit 0
