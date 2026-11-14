@@ -185,7 +185,7 @@ while IFS=$'\t' read -r n bl; do
   fi
   if [ -n "$open" ]; then echo "waits: #$n — still open:$open"; continue; fi
   if [ "$DRY" = 1 ]; then echo "would unblock #$n — every blocker landed (#${bl// /, #})"; continue; fi
-  issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "unblock: #$n could not be set $LBL_READY"; continue; }
+  issue_status_set "$n" "$LBL_READY" --drop "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "unblock: #$n could not be set $LBL_READY"; continue; }
   "$GH" issue comment "$n" --repo "$REPO_SLUG" --body "**Unblocked:** every ticket it waited for has landed (#${bl// /, #}). Back on the queue, first at its priority." >/dev/null 2>&1 || true
   bash "$QUEUE" add "$n" --first >/dev/null 2>&1 || echo "unblock: #$n could not be queued — the next seed finds it ready"
   echo "unblocked #$n"

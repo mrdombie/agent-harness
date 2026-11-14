@@ -554,7 +554,7 @@ ones they name:
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 OPERATOR=$(toolkit_login)
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$N" "$LBL_READY"   # takes every other status off too
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$N" "$LBL_READY" --drop "$LBL_BLOCKED"   # takes every other status off too; blocked only by --drop
 gh issue comment "$N" --repo "$REPO_SLUG" \
   --body "Released to ready — blocker #$B closed on <date>. Confirmed by @$OPERATOR in the agent window."
 ```

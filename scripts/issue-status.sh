@@ -17,6 +17,9 @@
 # state the work is in — and labels.batched, a child built by its batch's PR. `set`
 # keeps them; `mark` adds one; whoever answers the question takes it off (--drop).
 #
+# labels.blocked is a lifecycle status that is also a person's hold: `set` keeps it
+# beside the new status, and only an explicit --drop takes it off.
+#
 # --also adds a marker or a non-status label (the owner's hold) in the same call;
 # --drop removes any label in the same call. Every other label family is untouched.
 # After `set`, ISSUE_STATUS_ADDED is 1 when <status> was not already on the ticket, and
@@ -82,7 +85,9 @@ issue_status_set() {
   local args="" add=0 rm_any=0 kept=""
   while IFS= read -r l; do
     [ -n "$l" ] || continue
-    if issue_status_is_lifecycle "$l" && [ "$l" != "$want" ]; then
+    # A person's status:blocked is a hold: it stays on until a lifter --drops it.
+    if issue_status_is_lifecycle "$l" && [ "$l" != "$want" ] \
+       && { [ -z "${LBL_BLOCKED:-}" ] || [ "$l" != "$LBL_BLOCKED" ]; }; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1
     elif printf '%s' "$dropx" | grep -qxF -- "$l"; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1

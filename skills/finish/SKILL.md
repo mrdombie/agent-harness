@@ -1168,7 +1168,7 @@ TOOLS=$(toolkit_tools) || exit 1
 UNBLOCKED=$("$TOOLS/scripts/auto-promote-gated-children.sh" "$CLOSED_NUM" "$MERGE_SHA" 2>&1 | grep '^unblocked ' | awk '{print $2}' | tr '\n' ' ')
 ```
 
-For a partial (human-blocker case): leave the issue open, post the merge comment but flip the label to `$LBL_IN_REVIEW` (in-review) or `$LBL_BLOCKED` (blocked) with `bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$ISSUE_NUM" "$LBL_BLOCKED"`, which takes every other status off — never `gh issue edit --add-label` a status. The auto-promote step is still safe to run — it only acts on `$LBL_GATED` (gated) siblings, which a partial isn't.
+For a partial (human-blocker case): leave the issue open, post the merge comment but flip the label to `$LBL_IN_REVIEW` (in-review) or `$LBL_BLOCKED` (blocked) with `bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$ISSUE_NUM" "$LBL_BLOCKED"`, which takes every other status off (a person's `$LBL_BLOCKED` stays on through any `set` until a lifter passes `--drop "$LBL_BLOCKED"`) — never `gh issue edit --add-label` a status. The auto-promote step is still safe to run — it only acts on `$LBL_GATED` (gated) siblings, which a partial isn't.
 
 **7e. (removed) — promoting `develop → uat` is the review gate's job, not `/agent-harness:finish`'s.**
 
