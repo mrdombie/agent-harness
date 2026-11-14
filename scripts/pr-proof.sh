@@ -52,11 +52,11 @@ compose() {
       continue
     fi
     jq -e '.proof | type == "object"' "$f" >/dev/null 2>&1 || continue
-    # A trunk merge resolved by hand has no red: the gates the driver ran on it are its record.
-    if jq -e '.proof.kind == "trunk-merge-gates"' "$f" >/dev/null 2>&1; then
+    # A trunk merge resolved by hand has no red: self-check's gates below are its record.
+    if jq -e '.proof.kind == "trunk-merge-resolved"' "$f" >/dev/null 2>&1; then
       nmerges=$((nmerges + 1))
       echo
-      echo "**$(jq -r '.title // "a task"' "$f" | tr '\n' ' ')** — a trunk merge resolved by hand at $(jq -r '.commits[0] // "?"' "$f" | cut -c1-8); the driver ran the gates on it: $(jq -r '[.proof.gates[] | "`\(.cmd)` exit \(.exit)"] | join(", ")' "$f")"
+      echo "**$(jq -r '.title // "a task"' "$f" | tr '\n' ' ')** — a trunk merge resolved by hand at $(jq -r '.commits[0] // "?"' "$f" | cut -c1-8) ($(jq -r '.proof.files // [] | join(", ")' "$f")); self-check's gates below ran on the branch head"
       continue
     fi
     ntests=$((ntests + 1))
@@ -96,7 +96,7 @@ compose() {
 
   local tested=""
   [ "$ntests" -eq 0 ] || tested="$ntests test$([ "$ntests" -eq 1 ] || echo s) the driver ran red without the change and green with it ($tfiles)"
-  [ "$nmerges" -eq 0 ] || tested="$tested${tested:+; }$nmerges trunk merge$([ "$nmerges" -eq 1 ] || echo s) resolved by hand, its gates green on the merge"
+  [ "$nmerges" -eq 0 ] || tested="$tested${tested:+; }$nmerges trunk merge$([ "$nmerges" -eq 1 ] || echo s) resolved by hand, judged by the gates below"
   [ "${nfix:-0}" -eq 0 ] || tested="$tested${tested:+; }$nfix review finding fix$([ "$nfix" -eq 1 ] || echo es) proved the same way"
   [ "$ngates" -eq 0 ] || tested="$tested${tested:+; }$ngates gate$([ "$ngates" -eq 1 ] || echo s) green on this branch ($gnames)"
   [ -z "$screens" ] || tested="$tested${tested:+; }$screens"

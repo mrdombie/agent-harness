@@ -713,16 +713,16 @@ driver_prove_no_code() {
   return 0
 }
 
-# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit> [<gates-out>]
+# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit> [<resolved-out>]
 #
 # THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
 # were proved where they landed, so there is no red to show: what is checked is that
 # the commit is that merge and nothing more. A conflict resolved by hand is accepted
-# when no marker remains, only the conflicted files differ from git's own merge, and
-# the project's gates pass on the merge; on a pass each gate's exit is written to <gates-out>.
+# when no marker remains and only the conflicted files differ from git's own merge; the
+# conflicted files are written to <resolved-out>. Self-check's gates judge the resolution.
 #
 # 0 a trunk merge, made by this task and its only commit · 1 not a merge of the trunk,
-# its tree carries edits beyond the merge, or a gate failed on its resolution · 2 the
+# its tree carries edits beyond the merge, or a conflict marker is left · 2 the
 # merge predates the task, or the task changed something besides it · 3 the claim
 # cannot be checked
 driver_prove_trunk_merge() {
@@ -797,31 +797,11 @@ driver_prove_trunk_merge() {
     printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
     return 0
   fi
-  # A resolution by hand is held to the project's gates, run on the merge itself (HEAD, clean).
-  local rows row name cmd grc said="" failed="" jl=""
-  rows=$(driver_gate_rows 2>/dev/null) || rows=""
-  [ -n "$rows" ] || { printf '%s resolves its conflicts by hand and the project names no gate to judge the resolution\n' "$s8"; return 3; }
-  _driver_proof_gate || { printf 'the machine gate could not be waited for, so no gate ran on the resolution in %s\n' "$s8"; return 3; }
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    name=${row%%	*}; cmd=${row#*	}
-    case "$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" in ''|null|'#'*) continue ;; esac
-    grc=0; ( cd "$repo" && driver_run_project "${DRIVER_CMD_TIMEOUT:-1800}" "$cmd" ) >/dev/null 2>&1 || grc=$?
-    said="$said${said:+, }$name exit $grc"
-    [ "$grc" -eq 0 ] || failed="$failed${failed:+, }$name"
-    jl="$jl$(jq -nc --arg n "$name" --arg c "$cmd" --argjson e "$grc" '{name: $n, cmd: $c, exit: $e}')"$'\n'
-  done <<<"$rows"
-  machine_gate_release 2>/dev/null || true
-  [ -n "$said" ] || { printf '%s resolves its conflicts by hand and every gate the project names is empty\n' "$s8"; return 3; }
+  # The gates are self-check's, which runs next on this head and blocks the push on a red.
   f=$(printf '%s\n' "$conflicted" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  if [ -n "$failed" ]; then
-    printf '%s resolves its conflicts by hand (%s) and its gates fail: %s (%s)\n' "$s8" "$f" "$failed" "$said"
-    return 1
-  fi
-  # Written only on a pass: the step reads this file as the task's proof.
-  [ -z "$gout" ] || printf '%s' "$jl" | jq -sc '{kind: "trunk-merge-gates", gates: .}' > "$gout" 2>/dev/null
-  printf '%s merges %s and resolves its conflicts by hand (%s); the gates pass on it: %s\n' \
-    "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "$f" "$said"
+  [ -z "$gout" ] || printf '%s\n' "$conflicted" | jq -Rsc '{kind: "trunk-merge-resolved", files: (split("\n") | map(select(. != "")))}' > "$gout" 2>/dev/null
+  printf "%s merges %s and resolves its conflicts by hand (%s); self-check's gates judge it on this head\n" \
+    "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "$f"
   return 0
 }
 
@@ -840,7 +820,7 @@ _driver_build_task_start() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0 nresolved=0
   export DRIVER_TICKET="$t"
   whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
@@ -988,13 +968,13 @@ driver_step_build() { # <ticket>
     # A TASK THAT ONLY MERGES THE TRUNK changes nothing of its own: the commit is checked, not a test.
     if jq -e '.trunkMerge | type == "object"' "$ans" >/dev/null 2>&1; then
       why=""; prc=0
-      rm -f "$proved.gates"
-      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")" "$proved.gates") || prc=$?
+      rm -f "$proved.resolved"
+      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")" "$proved.resolved") || prc=$?
       if [ "$prc" -eq 0 ]; then
         tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
         rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
-        # A resolution by hand carries its gates as the proof; a clean merge carries none.
-        [ ! -s "$proved.gates" ] || mv -f "$proved.gates" "$proved.proof"
+        # A resolution by hand carries its files as the proof; a clean merge carries none.
+        [ ! -s "$proved.resolved" ] || { mv -f "$proved.resolved" "$proved.proof"; nresolved=$((nresolved+1)); }
         _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
         nmerge=$((nmerge+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
@@ -1103,7 +1083,11 @@ driver_step_build() { # <ticket>
 
   if [ "$bad" -eq 0 ]; then
     [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
-    [ "$nmerge" -eq 0 ] || driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
+    if [ "$nresolved" -gt 0 ]; then
+      driver_say "   build: $nmerge of $ntasks task(s) merged the trunk — $nresolved resolved by hand, judged by self-check's gates$([ "$nmerge" -eq "$nresolved" ] || echo ", $((nmerge - nresolved)) merged cleanly"); not a test pair"
+    elif [ "$nmerge" -gt 0 ]; then
+      driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
+    fi
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
     elif [ "$merged" -gt 0 ]; then
