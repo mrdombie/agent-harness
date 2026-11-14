@@ -54,31 +54,58 @@ src=$("$real_git" ${pre[@]+"${pre[@]}"} rev-parse --show-toplevel 2>/dev/null)
 [ -n "$src" ] || src=$("$real_git" ${pre[@]+"${pre[@]}"} rev-parse --absolute-git-dir 2>/dev/null)
 [ -n "$src" ] && src=$(cd "$src" 2>/dev/null && pwd -P) || refuse "pushing from outside a repo"
 
-url=$remote
-case "$remote" in
-  *://*|/*|./*|../*) ;;
-  *:*) case "${remote%%:*}" in */*) ;; *) refuse "remote has a host ($remote)" ;; esac ;;
-  *) [ -d "$base/$remote" ] || url=$("$real_git" ${pre[@]+"${pre[@]}"} remote get-url --push "$remote" 2>/dev/null) \
-       || refuse "no remote named '$remote'" ;;
-esac
-case "$url" in
-  file://localhost/*) url=${url#file://localhost} ;;
-  file:///*) url=${url#file://} ;;
-  *://*) refuse "remote has a host ($url)" ;;
-  /*|./*|../*) ;;
-  *:*) case "${url%%:*}" in */*) ;; *) refuse "remote has a host ($url)" ;; esac ;;
-esac
-case "$url" in /*) ;; *) url="$base/$url" ;; esac
-dest=$(cd "$url" 2>/dev/null && pwd -P) || refuse "remote is not a directory ($url)"
+g() { "$real_git" ${pre[@]+"${pre[@]}"} "$@"; }
+
+# Where git pushes: a configured name wins over a same-named directory, and every
+# push URL counts. get-url skips pushInsteadOf, so the raw URLs are checked for rewrites too.
+urls=() raw=()
+if g remote get-url --push "$remote" >/dev/null 2>&1; then
+  while IFS= read -r u; do urls+=("$u"); done < <(g remote get-url --push --all "$remote" 2>/dev/null)
+  while IFS= read -r u; do raw+=("$u"); done < <(g config --get-all "remote.$remote.url" 2>/dev/null; g config --get-all "remote.$remote.pushurl" 2>/dev/null)
+  [ ${#urls[@]} -gt 0 ] || refuse "no push url for remote '$remote'"
+else
+  case "$remote" in
+    *://*|/*|./*|../*) ;;
+    *:*) case "${remote%%:*}" in */*) ;; *) refuse "remote has a host ($remote)" ;; esac ;;
+    *) [ -d "$base/$remote" ] || refuse "no remote named '$remote'" ;;
+  esac
+  urls=("$remote")
+fi
+
+rewrites=()
+while IFS= read -r -d '' kv; do rewrites+=("${kv#*$'\n'}"); done \
+  < <(g config -z --get-regexp '^url\..*\.(push)?insteadof$' 2>/dev/null)
+for u in "${urls[@]}" ${raw[@]+"${raw[@]}"}; do
+  for v in ${rewrites[@]+"${rewrites[@]}"}; do
+    case "$u" in "$v"*) refuse "a url rewrite applies to the remote ($u)" ;; esac
+  done
+done
+
+dest_of() { # <url> — prints the directory the url names, or refuses
+  local url=$1
+  case "$url" in
+    file://localhost/*) url=${url#file://localhost} ;;
+    file:///*) url=${url#file://} ;;
+    *://*) refuse "remote has a host ($url)" ;;
+    /*|./*|../*) ;;
+    *:*) case "${url%%:*}" in */*) ;; *) refuse "remote has a host ($url)" ;; esac ;;
+  esac
+  case "$url" in /*) ;; *) url="$base/$url" ;; esac
+  (cd "$url" 2>/dev/null && pwd -P) || refuse "remote is not a directory ($url)"
+}
+dests=()
+for u in "${urls[@]}"; do d=$(dest_of "$u") || exit 1; dests+=("$d"); done
 
 wt_top=$(cd "$wt" 2>/dev/null && pwd -P || true)
 wt_common=$("$real_git" -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
 [ -z "$wt_common" ] || wt_common=$(cd "$wt_common" 2>/dev/null && pwd -P || true)
 in_wt() { local w; for w in "$wt_top" "$wt_common"; do [ -n "$w" ] && case "$1/" in "$w"/*) return 0 ;; esac; done; return 1; }
 
-under_tmp "$dest" || refuse "remote is not inside the temp dir ($dest)"
-made_in_step "$dest" || refuse "remote was not made during this step ($dest)"
-in_wt "$dest" && refuse "remote is the build worktree ($dest)"
+for dest in "${dests[@]}"; do
+  under_tmp "$dest" || refuse "remote is not inside the temp dir ($dest)"
+  made_in_step "$dest" || refuse "remote was not made during this step ($dest)"
+  in_wt "$dest" && refuse "remote is the build worktree ($dest)"
+done
 in_wt "$src" && refuse "pushing from the build worktree ($src)"
 under_tmp "$src" || refuse "pushing from outside the temp dir ($src)"
 made_in_step "$src" || refuse "pushing from a repo not made during this step ($src)"
