@@ -74,6 +74,15 @@ _driver_ship_account_tests() {
   jq -c '(.replacedTests // [])[]' "$ans" >> "$d/replaced.jsonl" 2>/dev/null || return 1
 }
 
+# _driver_ship_refusal_print <ticket> <tree> — "<HEAD> <shasum of replaced.jsonl, or none>",
+# what a deleted-tests refusal was judged on; a retry that matches it would refuse the same.
+_driver_ship_refusal_print() {
+  local rec h
+  rec="$(driver_state_dir "$1")/steps/replaced.jsonl"
+  h=none; [ -f "$rec" ] && h=$(shasum < "$rec" | cut -d' ' -f1)
+  printf '%s %s' "$(git -C "$2" rev-parse HEAD 2>/dev/null)" "$h"
+}
+
 # _driver_ship_body_replaced <body> <section lines> — the body with its "## Deleted tests"
 # section, if any, replaced by one holding the given lines at its end.
 _driver_ship_body_replaced() {
@@ -579,6 +588,13 @@ driver_step_ship() { # <ticket>
     driver_state_set "$t" park_note "HEAD in the worktree is detached at $(git -C "$wt" rev-parse --short HEAD 2>/dev/null) and $branch is not an ancestor of it, so ship could not put the branch back on it"
     return "$DRIVER_E_REFUSED"
   fi
+  # Re-running into the same deleted-tests refusal re-pushes and re-edits the PR for nothing.
+  local refused
+  refused=$(driver_state_get "$t" deleted_tests_refused)
+  if [ -n "$refused" ] && [ "$refused" = "$(_driver_ship_refusal_print "$t" "$wt")" ]; then
+    driver_say "✋ ship: nothing has changed since the deleted-tests refusal: same HEAD, same $(driver_state_dir "$t")/steps/replaced.jsonl. Add the missing rows there, then retry."
+    return "$DRIVER_E_REFUSED"
+  fi
 
   # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. Each step commits its own as it
   # ends (driver_commit_scratch); this is the same commit for a tree an older run or a
@@ -924,8 +940,10 @@ $polish"
     dtfiles=$(printf '%s\n' "$dt" | awk '/^  [^ ].* — /{sub(/^ +/, ""); sub(/ — .*/, ""); print}' | paste -sd, - | sed 's/,/, /g')
     driver_state_set "$t" park_note "deleted tests not accounted for: ${dtfiles}. Write one JSON line per file to $(driver_state_dir "$t")/steps/replaced.jsonl, either {\"file\":\"<path>\",\"coveredBy\":\"<test at head>\"} or {\"file\":\"<path>\",\"removedBecause\":\"<why>\"}, e.g. {\"file\":\"${dtfiles%%, *}\",\"removedBecause\":\"<why>\"}. This goes in the record, not the PR body: ship rebuilds the body from that file."
     driver_state_set "$t" park_cause pm
+    driver_state_set "$t" deleted_tests_refused "$(_driver_ship_refusal_print "$t" "$wt")"
     return "$DRIVER_E_REFUSED"
   fi
+  driver_state_set "$t" deleted_tests_refused ""
 
   # Ready, and only then auto. A draft is the only state an automerge workflow
   # will not land, so the draft is what holds the pull request while the review
