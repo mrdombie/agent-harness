@@ -63,4 +63,12 @@ want "the check fails while held" "1" "$rc"
 want "no probe ran" "0" "$(probes)"
 want "the hold stands" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
 
+echo "--- the hold removed by hand: a kept failed check is not trusted, a fresh probe runs ---"
+plant_hold "$T"
+rm -f "$SWARM_AUTH_HOLD_FILE"
+env_do "$(( T + 60 ))" "$FIX/ok.jsonl" swarm_auth_check >/dev/null; rc=$?
+want "the check passes" "0" "$rc"
+want "one probe ran" "1" "$(probes)"
+want "the kept check now reads ok" "ok" "$(cut -f2 "$SWARM_LOGS/.auth-check")"
+
 suite_end "$FAILED"
