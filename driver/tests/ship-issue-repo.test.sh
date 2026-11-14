@@ -104,6 +104,7 @@ want "the ticket was asked of the queue's repo, the pull request of the code's" 
 echo "--- one repo for both: nothing moves ---"
 rc=0; out=$( unset ISSUE_REF ISSUE_SLUG; : > "$GH_LOG"
              printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_issues_77_comments_per_page_100.json"
+             printf '{"number":77,"labels":[]}\n' > "$FIX/gh/issue-77.json"
              jq 'del(.issueRepo)' "$HARNESS_CFG_PATH" > "$FIX/one.json"
              HARNESS_CFG_PATH="$FIX/one.json" SWARM_GH="$BIN/gh" bash "$HERE/../../scripts/person-stop.sh" check 77 2>&1
              grep -oE 'repos/[^ ]+/issues/77/comments' "$GH_LOG" | sort -u ) || rc=$?

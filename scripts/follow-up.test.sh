@@ -199,7 +199,7 @@ plant "the drop of held findings" '  rm -f "$hf"
 plant "the block of a child" '      issue_status_set "$n" "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_BLOCKED"; rc=1; continue; }' \
   'fix_issue 950 OPEN "status:ready,fix-after-merge"; jq -n --argjson k "$(kid 950 status:ready,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo open > "$FIX/fgh.pr.55"
    case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="blocked=$(grep -c "issue edit 950 .*status:blocked" "$GH_LOG")"; }' "blocked=0" case_settle
-plant "the unblock on merge" '      issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_READY"; rc=1; continue; }' \
+plant "the unblock on merge" '      issue_status_set "$n" "$LBL_READY" --drop "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_READY"; rc=1; continue; }' \
   'fix_issue 950 OPEN "status:blocked,fix-after-merge"; jq -n --argjson k "$(kid 950 status:blocked,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo "950 55" > "$FIX/blocked.tsv"; echo merged > "$FIX/fgh.pr.55"
    case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="ready=$(grep -c "issue edit 950 .*status:ready" "$GH_LOG")"; }' "ready=0" case_settle
 

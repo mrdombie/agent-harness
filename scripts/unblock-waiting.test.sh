@@ -14,14 +14,24 @@ cat > "$BIN/queue" <<'SH'
 echo "$*" >> "$FIX/queue.log"
 SH
 chmod +x "$BIN/queue"; export UNBLOCK_QUEUE="$BIN/queue"
+# A wait's times: the body is filed at BODY_AT, every comment at NOTE_AT.
+BODY_AT=2026-11-01T09:00:00Z NOTE_AT=2026-11-01T10:00:00Z
+# No live claim unless a case plants one in $FIX/claims.
+printf '#!/usr/bin/env bash\ncat "$FIX/claims" 2>/dev/null; exit 0\n' > "$BIN/claims"; chmod +x "$BIN/claims"; export UNBLOCK_CLAIMS="$BIN/claims"
+labeled() { # <n> <login> <at> — the newest status:blocked labeled event on its timeline
+  jq -n --arg u "$2" --arg at "$3" '[{event:"labeled", label:{name:"status:blocked"}, actor:{login:$u}, created_at:$at}]' \
+    > "$FIX/gh/api-repos_acme_widgets_issues_$1_timeline_per_page_100.json"
+}
 waiting() { # <n> <label> <body> <comment…> — an open ticket waiting, as the list read returns it
   local n="$1" l="$2" b="$3"; shift 3
-  jq -n --argjson n "$n" --arg l "$l" --arg b "$b" '{number:$n, state:"OPEN", title:"Ticket \($n)", labels:[{name:$l},{name:"P0"}], body:$b,
-    comments:[$ARGS.positional[] | {body:.}]}' --args "$@" > "$FIX/gh/issue-$n.json"
+  jq -n --argjson n "$n" --arg l "$l" --arg b "$b" --arg ba "$BODY_AT" --arg na "$NOTE_AT" '{number:$n, state:"OPEN", title:"Ticket \($n)", labels:[{name:$l},{name:"P0"}], body:$b, createdAt:$ba,
+    comments:[$ARGS.positional[] | {body:., createdAt:$na}]}' --args "$@" > "$FIX/gh/issue-$n.json"
+  # The machine's own wait: the label goes on 2 s after the line that names it.
+  [ "$l" != status:blocked ] || if [ $# -gt 0 ]; then labeled "$n" harness-bot 2026-11-01T10:00:02Z; else labeled "$n" harness-bot 2026-11-01T09:00:02Z; fi
 }
 listing() { # <label> <n…>
   local l="$1"; shift
-  local f; for f in "$@"; do cat "$FIX/gh/issue-$f.json"; done | jq -s '[.[] | {number, body, comments}]' > "$FIX/gh/issue-list-$l.json"
+  local f; for f in "$@"; do cat "$FIX/gh/issue-$f.json"; done | jq -s '[.[] | {number, body, createdAt, labels, comments}]' > "$FIX/gh/issue-list-$l.json"
 }
 closed() { jq -n --argjson n "$1" --arg r "${2:-COMPLETED}" '{number:$n, state:"CLOSED", stateReason:$r, title:"t", labels:[]}' > "$FIX/gh/issue-$1.json"; }
 opened() { fix_issue "$1" OPEN "status:ready"; }
@@ -201,5 +211,63 @@ want "  one waiting on something else is left"     "0" "$(grep -c '^issue commen
 out=$(bash "$U" --repoint 960 961 962 --dry-run 2>&1)
 want_in "  dry: says it"                           '^would repoint #963' "$out"
 want "  dry: writes nothing"                       "0" "$(grep -c '^issue comment' "$GH_LOG")"
+
+echo "--- a person's block after the wait is theirs: no landed blocker lifts it ---"
+# #20022: filed "Blocked until #19700"; a person put status:blocked on an hour later; #19700 landed and released it.
+fresh
+waiting 20022 status:blocked "Blocked until #19700 merges."
+labeled 20022 dom 2026-11-01T10:00:00Z
+listing status:blocked 20022; closed 19700
+out=$(run)
+want_not_in "the person's block is not released"   '^unblocked #20022$' "$out"
+want_in "  it says a person blocked it after the wait" '^held: #20022 — @dom put status:blocked on at 2026-11-01T10:00:00Z, after its wait line \(theirs to lift\)$' "$out"
+want "  not set ready"                             "0" "$(grep -c '^issue edit 20022' "$GH_LOG")"
+want "  no Unblocked note"                         "0" "$(grep -c '^issue comment 20022.*Unblocked' "$GH_LOG")"
+waiting 20022 status:blocked "spec" "Blocked until #19700 merges."
+jq '.labels += [{name:"needs:owner-decision"}]' "$FIX/gh/issue-20022.json" > "$FIX/t" && mv "$FIX/t" "$FIX/gh/issue-20022.json"
+listing status:blocked 20022
+out=$(run)
+want_not_in "a fresh wait beside the owner's hold: not released" '^unblocked #20022$' "$out"
+want_in "  it says whose hold"                     '^held: #20022 — it wears needs:owner-decision \(a person.s hold\)$' "$out"
+waiting 20022 status:blocked "spec" "Blocked until #19700 merges."
+listing status:blocked 20022; echo 20022 > "$FIX/claims"
+out=$(run)
+want_not_in "a live claim: not released"           '^unblocked #20022$' "$out"
+want_in "  it says the claim holds it"             '^held: #20022 — a live claim holds it$' "$out"
+want "  not set ready"                             "0" "$(grep -c '^issue edit 20022' "$GH_LOG")"
+rm -f "$FIX/claims"
+out=$(run)
+want_in "the machine's wait (label 2 s after the line) is released" '^unblocked #20022$' "$out"
+rm -f "$FIX/gh/api-repos_acme_widgets_issues_20022_timeline_per_page_100.json"
+out=$(run); rc=$?
+want_not_in "an unread timeline releases nothing"  '^unblocked #20022$' "$out"
+want "  and is a failed read"                      "1" "$rc"
+
+echo "--- tickets in another repo's queue (issueRepo): the block's timeline is read there ---"
+fresh
+waiting 20023 status:blocked "Blocked until #19700 merges."
+jq -n '[{event:"labeled", label:{name:"status:blocked"}, actor:{login:"dom"}, created_at:"2026-11-01T10:00:00Z"}]' \
+  > "$FIX/gh/api-repos_acme_queue_issues_20023_timeline_per_page_100.json"
+listing status:blocked 20023; closed 19700
+jq '.issueRepo = "acme/queue"' "$HARNESS_CFG_PATH" > "$FIX/cfg-queue.json"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-queue.json" run)
+want_not_in "the person's block in the queue's repo is not released" '^unblocked #20023$' "$out"
+want_in "  it names who put it on there" '^held: #20023 — @dom put status:blocked on at 2026-11-01T10:00:00Z' "$out"
+
+echo "--- the machine's own block, however late, is the machine's: its blocker landing lifts it ---"
+fresh
+waiting 20024 status:blocked "Blocked until #19700 merges."
+labeled 20024 harness-bot 2026-11-01T10:00:00Z
+listing status:blocked 20024; closed 19700
+jq '.driver.accounts = ["harness-bot"]' "$HARNESS_CFG_PATH" > "$FIX/cfg-accounts.json"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-accounts.json" run)
+want_in "a driver account's late block is released" '^unblocked #20024$' "$out"
+want_not_in "  never called theirs to lift" 'theirs to lift' "$out"
+labeled 20024 'renovate[bot]' 2026-11-01T10:00:00Z
+out=$(run)
+want_in "a bot's late block is released" '^unblocked #20024$' "$out"
+labeled 20024 dom 2026-11-01T10:00:00Z
+out=$(HARNESS_CFG_PATH="$FIX/cfg-accounts.json" run)
+want_not_in "a person's late block still is not" '^unblocked #20024$' "$out"
 
 suite_end "$FAILED"

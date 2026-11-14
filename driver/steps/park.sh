@@ -58,7 +58,8 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   # ticket's shape — which repo, how it splits, the order, the acceptance wording —
   # which the PM answers and clears; the owner's hold stays for his own calls.
   local cause="${4:-person}"
-  case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
+  # `hold` is a person's hold label put on mid-run: the question is "<label> put on by <who> at <when>".
+  case "$cause" in person|pm|driver|hold) : ;; *) cause=person ;; esac
   # OFF UNTIL THE RELEASE, the design critic is nobody's question (#12704 parked on one).
   if [ "$cause" = person ] && release_critic_paused "$(driver_critic_labels "$t")" && printf '%s %s' "$reason" "$question" | grep -qi 'critic'; then
     cause=driver; driver_say "   park: $RELEASE_CRITIC_OFF — a question about it goes to nobody"
@@ -164,6 +165,9 @@ $(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
   elif [ "$cause" = "person" ]; then
     printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-a person to say how to proceed}" "$HOLD_LABEL"
+  elif [ "$cause" = "hold" ]; then
+    printf 'Held by a person: %s.\n**Resume:** once that label comes off, the ticket is ready and the driver picks up from the last finished step.\n<!-- driver-park: hold -->' \
+      "$(printf '%s' "$question" | sed 's/ put on by /, put on by /')"
   elif [ "$cause" = "pm" ]; then
     printf '**Needs (PM):** %s\n**Resume:** answer that on this ticket, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-the PM to say how the ticket is shaped}" "$DRIVER_PM_LABEL"
@@ -227,6 +231,10 @@ BRIEF
     [ ! -f "$oq" ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
       --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true
     issue_status_set "$t" "$LBL_PARKED" --also "$HOLD_LABEL" >/dev/null 2>&1 || true
+  elif [ "$cause" = "hold" ]; then
+    # Ready beside the person's label, which every status write keeps: its removal resumes the run.
+    issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || true
+    driver_state_set "$t" held_by "$question"
   elif [ "$cause" = "pm" ]; then
     # The PM's question is a marker beside the parked status, kept until answered.
     issue_status_set "$t" "$LBL_PARKED" --also "$DRIVER_PM_LABEL" >/dev/null 2>&1 || true

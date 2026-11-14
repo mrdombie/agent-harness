@@ -32,10 +32,34 @@ want "read fresh first" 1 "$(grep -c '^issue view 501 ' "$GH_LOG")"
 want "only claimed is left, other families kept" "P1,needs:human-approval,status:claimed" "$(after 501)"
 
 echo "--- set: the status it already wears, beside another — the other comes off ---"
+: > "$GH_LOG"; fix_issue 512 OPEN "status:ready,status:in-review"
+bash "$IS" set 512 status:ready
+want "in-review removed, ready kept" "status:ready" "$(after 512)"
+want_not_in "ready is not re-added" '--add-label status:ready' "$(cat "$GH_LOG")"
+
+echo "--- set: a person's status:blocked is a hold — only --drop takes it off ---"
 : > "$GH_LOG"; fix_issue 502 OPEN "status:ready,status:blocked"
 bash "$IS" set 502 status:ready
-want "blocked removed, ready kept" "status:ready" "$(after 502)"
-want_not_in "ready is not re-added" '--add-label status:ready' "$(cat "$GH_LOG")"
+want "blocked kept, ready kept" "status:blocked,status:ready" "$(after 502)"
+want "and no edit at all" 0 "$(grep -c '^issue edit 502 ' "$GH_LOG")"
+: > "$GH_LOG"; fix_issue 513 OPEN "status:claimed,status:blocked,P1"
+bash "$IS" set 513 status:claimed
+want "a claimed write keeps blocked" "P1,status:blocked,status:claimed" "$(after 513)"
+: > "$GH_LOG"; fix_issue 514 OPEN "status:claimed,status:blocked"
+bash "$IS" set 514 status:ready --drop status:blocked
+want "one edit" 1 "$(grep -c '^issue edit 514 ' "$GH_LOG")"
+want "--drop lifts it in the same edit" "status:ready" "$(after 514)"
+
+echo "--- set: needs-human and external-blocked are a person's holds too ---"
+: > "$GH_LOG"; fix_issue 515 OPEN "status:claimed,status:needs-human"
+bash "$IS" set 515 status:ready
+want "needs-human kept beside ready" "status:needs-human,status:ready" "$(after 515)"
+: > "$GH_LOG"; fix_issue 516 OPEN "status:claimed,status:external-blocked"
+bash "$IS" set 516 status:ready
+want "external-blocked kept beside ready" "status:external-blocked,status:ready" "$(after 516)"
+: > "$GH_LOG"; fix_issue 517 OPEN "status:parked,status:needs-human"
+bash "$IS" set 517 status:ready --drop status:needs-human
+want "--drop lifts needs-human" "status:ready" "$(after 517)"
 
 echo "--- set: already exactly right — no edit at all ---"
 : > "$GH_LOG"; fix_issue 503 OPEN "status:ready,P2"
@@ -101,5 +125,21 @@ printf 'x=$(issue_status_set "$t" "$_to")\n' > "$P/scripts/fine.sh"
 printf 'gh issue edit "$N" --repo "$R" --add-label "$HOLD_LABEL"\n' > "$P/skills/x/SKILL.md"
 printf 'gh issue edit 1 --add-label status:ready\n' > "$P/driver/tests/t.sh"
 out=$(bash "$CHECK" "$P" 2>&1); want "the helper, the hold label and test files pass" 0 "$?"
+
+echo "--- the documented lifters drop the holds a plain set now keeps ---"
+K="$HERE/.."
+rel=$(grep -E 'issue-status.sh" set .*LBL_READY' "$K/skills/release/SKILL.md")
+want "the release skill sets ready twice" 2 "$(printf '%s\n' "$rel" | grep -c .)"
+want "each release line drops needs-human" 2 "$(printf '%s\n' "$rel" | grep -c -- '--drop "\$LBL_NEEDS_HUMAN"')"
+want "each release line drops external-blocked" 2 "$(printf '%s\n' "$rel" | grep -c -- '--drop "\$LBL_EXTERNAL_BLOCKED"')"
+want_not_in "no release line says it takes every other status off" 'takes every other status off too' "$rel"
+for f in skills/release-stale/SKILL.md skills/claim/SKILL.md; do
+  want_in "$f: the flip back names the --drop of needs-human" '--drop "\$LBL_NEEDS_HUMAN"' "$(cat "$K/$f")"
+done
+for f in README.md skills/finish/SKILL.md; do
+  for l in labels.needsHuman labels.externalBlocked; do
+    want_in "$f names $l as kept by set" "$l" "$(grep -E 'stays on|kept|keeps' "$K/$f" | grep -E 'labels.blocked|LBL_BLOCKED')"
+  done
+done
 
 suite_end "$FAILED"

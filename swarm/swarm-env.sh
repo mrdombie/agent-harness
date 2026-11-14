@@ -743,7 +743,7 @@ export LBL_POLISH_LIST LBL_SCREEN_PREFIX
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "${LBL_EXTERNAL_BLOCKED:-}" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 
@@ -752,6 +752,13 @@ swarm_blocking_labels() {
 # "The issue is open" is true of every ticket until its PR MERGES, which is why
 # the open-PR probe is here: on 2026-09-19 a version without it re-spawned three
 # tickets whose PRs were already open and waiting on a person.
+swarm_hold_parked() { # <ticket> — its run record, or on another host its newest park comment, says a person's hold parked it
+  local f="${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json"
+  [ -f "$f" ] && jq -e '(.held_by // "") != ""' "$f" >/dev/null 2>&1 && return 0
+  swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments \
+    -q '[.comments[]? | .body // "" | select(startswith("**Parked —"))] | last // "" | contains("<!-- driver-park: hold -->")' 2>/dev/null \
+    | grep -qx true
+}
 swarm_spawnable() { # <ticket>
   local t="$1" meta st lab l openpr
   meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels \
@@ -767,7 +774,8 @@ $(swarm_blocking_labels)
 EOS
   openpr=$(swarm_gh pr list --repo "$REPO_SLUG" --state open \
              --search "head:$BRANCH_PREFIX$t/" --json number -q 'length' 2>/dev/null)
-  [ "${openpr:-0}" = "0" ] || { echo "  #$t has an open PR — skip"; return 1; }
+  # A person's hold park drafts its PR and leaves it open; the run resumes on that PR.
+  [ "${openpr:-0}" = "0" ] || swarm_hold_parked "$t" || { echo "  #$t has an open PR — skip"; return 1; }
   swarm_ticket_live "$t" && { echo "  #$t already running — skip"; return 1; }
   return 0
 }
