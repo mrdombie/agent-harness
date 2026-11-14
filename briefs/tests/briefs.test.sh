@@ -158,5 +158,12 @@ PY
   done
 fi
 
+# The build and fix briefs give one accounting rule, and it covers a deleted file.
+para() { awk '/^## A test you reword or remove is accounted for/{f=1;next} f&&/^(## |\*\*)/{exit} f' "$BRIEFS/$1.md"; }
+want "build.md and fix.md give the same replacedTests rule" "$(para build)" "$(para fix)"
+para build | tr '\n' ' ' | grep -qiE 'delet[a-z]* (a )?(whole )?test file' \
+  && ok "the replacedTests rule names a deleted test file" \
+  || bad "the replacedTests rule no longer names a deleted test file"
+
 [ "$FAILED" = 0 ] && echo "briefs: all good"
 suite_end "$FAILED"
