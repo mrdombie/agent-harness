@@ -1090,9 +1090,11 @@ _driver_build_own_list() {
 # _driver_build_features <ticket> — an item passes once every task of it is proved and one of
 # them proved the test file its steps run in. Re-derived on each pass, kept in the list, and
 # posted when the whole list first passes. 1 while any item fails: an item whose tasks are all
-# proved and whose test never ran sends its last task back, naming the file.
+# proved and whose test never ran sends its last task back, naming the file. An item the plan
+# check kept as already built (`kept`) passes on that record: with no task at once, with tasks
+# once they are all proved.
 _driver_build_features() {
-  local t="$1" d list id test i m last all hit pass fails=0 before total
+  local t="$1" d list id test i m last all hit pass fails=0 before total kept
   d="$(driver_state_dir "$t")/steps"; list="$(driver_state_dir "$t")/features.json"
   [ -s "$list" ] || return 0
   before=$(jq -c '[.items[].passes]' "$list")
@@ -1100,13 +1102,16 @@ _driver_build_features() {
   for id in $(jq -r '.items[].id' "$list"); do
     test=$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .test' "$list")
     last=""; all=1; hit=""
+    kept=$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .kept == true' "$list")
+    [ "$kept" != true ] || hit=1
     for i in $(jq -r --arg id "$id" '.tasks | to_entries[] | select(.value.item == $id) | .key + 1' "$d/plan.json"); do
       last="$i"; m="$d/build-task-$i.proved"
       if [ ! -s "$m" ]; then all=""; continue; fi
       jq -e --arg f "$test" '((.answer.testFirst.test.file // .answer.testOnly.test.file // "") | ltrimstr("./")) == ($f | ltrimstr("./"))' "$m" >/dev/null 2>&1 && hit=1
     done
     pass=false
-    if [ -n "$last" ] && [ -n "$all" ]; then
+    if [ -z "$last" ] && [ "$kept" = true ]; then pass=true
+    elif [ -n "$last" ] && [ -n "$all" ]; then
       if [ -n "$hit" ]; then pass=true
       else
         printf '%s passes only when its steps pass in %s, and no task of it proved that file: prove it in testFirst.test.file\n' "$id" "$test" > "$d/build-task-$last.refused"

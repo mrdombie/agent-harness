@@ -6,7 +6,13 @@
 # rewritten can always be made to pass.
 #
 #   . driver/feature-list.sh
-#   feature_list_problems <plan.json>        what is wrong with how the plan builds its list; exit 1 when any
+#   feature_list_problems <plan.json> [built.json]  what is wrong with how the plan builds its list; exit 1
+#                                            when any. With built.json (feature_list_built), an item already
+#                                            built needs no task, and each refusal names the file and the remedy
+#   feature_list_built <plan.json> <tree> <brief|""> <shipped-ref|""> <record-dir>…
+#                                            for each item no task writes the test of: is that test already built?
+#                                            {"<test>": {state: passes|missing|fails|unproved, why}}
+#   feature_list_kept <plan.json> <built.json>  the items kept as already built, `F<n><tab><test>` a line
 #   feature_list_uncovered <plan.json> <body> each ticket item (ticket-parts.sh) no list item covers and
 #                                            `outside` does not name by id (a `note` entry names none), and each
 #                                            id covered that the ticket lacks
@@ -28,9 +34,59 @@ declare -F driver_state_dir >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE
 FEATURE_LIST_MARK='<!-- harness:feature-list -->'
 FEATURE_LIST_BROWSER_RE='(^|/)(e2e|playwright|cypress)(/|$)|\.e2e\.|\.(cy|pw)\.[jt]sx?$'
 
-feature_list_problems() { # <plan.json>
-  local out
-  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" '
+# AN ITEM ALREADY BUILT NEEDS NO TASK. A fix round's plan has tasks only for the red checks
+# handed to it, and every item of its list was built by the run that shipped the pull request.
+# No test is run to tell: a whole suite an item would cost more than the plan. An item's test is
+#   missing   not at the tree's head and not on the trunk;
+#   fails     there, and named in the brief handed to this run (its red checks and findings);
+#   passes    there, not named, and on record as proved: a kept list item that passes or a proved
+#             task's test in one of the record dirs, or (a fix of an open pull request) a file at
+#             the head that pull request shipped, which a build ships only once its list passes;
+#   unproved  there, with no record.
+feature_list_built() { # <plan.json> <tree> <brief-file|""> <shipped-ref|""> <record-dir>…
+  local plan="$1" wt="$2" brief="${3:-}" shipped="${4:-}" trunk="" r d m proved test state why
+  shift 4 2>/dev/null || shift $#
+  for r in "origin/${INTEGRATION_BRANCH:-}" "${INTEGRATION_BRANCH:-}"; do
+    [ "${r%/}" = "$r" ] && [ -n "$r" ] && git -C "$wt" rev-parse --verify -q "$r^{commit}" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  [ -z "$shipped" ] || git -C "$wt" rev-parse --verify -q "$shipped^{commit}" >/dev/null 2>&1 || shipped=""
+  proved=$(for d in "$@"; do
+      [ -n "$d" ] && [ -d "$d" ] || continue
+      [ ! -s "$d/features.json" ] || jq -r '.items[]? | select(.passes == true) | .test' "$d/features.json" 2>/dev/null
+      for m in "$d"/steps/build-task-*.proved; do
+        [ ! -s "$m" ] || jq -r '.answer.testFirst.test.file // .answer.testOnly.test.file // empty' "$m" 2>/dev/null
+      done
+    done | sed 's|^\./||' | sort -u)
+  jq -r '(.tasks // []) as $t | (.features // [])[] | . as $i
+      | select([$t[] | select(.item == $i.id) | .tests[]?.file] | any(. == $i.test) | not) | .test' "$plan" 2>/dev/null \
+    | sort -u | while IFS= read -r test; do
+      [ -n "$test" ] || continue
+      r="${test#./}"
+      if ! git -C "$wt" cat-file -e "HEAD:$r" 2>/dev/null && { [ -z "$trunk" ] || ! git -C "$wt" cat-file -e "$trunk:$r" 2>/dev/null; }; then
+        state=missing; why="which is not on the branch${trunk:+ or on ${trunk#origin/}}"
+      elif [ -n "$brief" ] && [ -s "$brief" ] && grep -qF -- "$r" "$brief"; then
+        state=fails; why="which is on the branch and named in the red checks and findings handed to this run"
+      elif printf '%s\n' "$proved" | grep -qxF -- "$r"; then
+        state=passes; why="it is on the branch and its steps passed on an earlier pass"
+      elif [ -n "$shipped" ] && git -C "$wt" cat-file -e "$shipped:$r" 2>/dev/null; then
+        state=passes; why="it is at the head the open pull request shipped, and no red check handed to this run names it"
+      else
+        state=unproved; why="which is on the branch with no record of its steps passing"
+      fi
+      jq -nc --arg k "$test" --arg s "$state" --arg w "$why" '{key: $k, value: {state: $s, why: $w}}'
+    done | jq -s 'from_entries'
+}
+
+feature_list_kept() { # <plan.json> <built.json>
+  jq -r --slurpfile b "$2" '(.tasks // []) as $t | (.features // [])[] | . as $i
+    | select([$t[] | select(.item == $i.id) | .tests[]?.file] | any(. == $i.test) | not)
+    | select(($b[0][$i.test].state // "") == "passes") | "\(.id)\t\(.test)"' "$1" 2>/dev/null
+}
+
+feature_list_problems() { # <plan.json> [built.json]
+  local out built='{}' known=false
+  if [ -n "${2:-}" ] && [ -s "$2" ] && jq -e 'type == "object"' "$2" >/dev/null 2>&1; then built=$(cat "$2"); known=true; fi
+  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" '
     (.features // []) as $f | (.tasks // []) as $t | ([$f[].id]) as $ids
     | ([$t[] | select(.item == "foundation")] | length) as $nf
     | if ($f | length) == 0 then empty else
@@ -41,9 +97,13 @@ feature_list_problems() { # <plan.json>
           elif (.item | startswith("F")) and (.item as $it | $ids | any(. == $it) | not) then "task \($k) (\(.title)) names \(.item), which the list does not have"
           else empty end),
       ($f[] | . as $i | [$t[] | select(.item == $i.id)] as $mine
-        | if ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own tasks"
-          elif ([$mine[].tests[]?.file] | any(. == $i.test) | not) then "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it"
-          else empty end),
+        | ($built[$i.test] // null) as $b
+        | if ([$mine[].tests[]?.file] | any(. == $i.test)) then empty
+          elif $known and $b != null then
+            (if $b.state == "passes" then empty
+             else "\($i.id) runs its steps in \($i.test), \($b.why), and no task of \($i.id) writes it: add a task with item \($i.id) whose tests name \($i.test)" end)
+          elif ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own tasks"
+          else "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it" end),
       ($f[] | select(.test | test($br)) | "\(.id) runs its steps in \(.test), a browser check: the steps run as fast component or logic tests in the required test run"),
       (if $nf > 0 and (.foundation == null) then "the plan has foundation tasks and no `foundation`: a shared foundation goes first only with its reason (expand-contract, refactor or hidden-backend); otherwise fold it into the item that uses it" else empty end),
       (if $nf == 0 and (.foundation != null) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
