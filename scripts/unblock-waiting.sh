@@ -34,6 +34,12 @@
 #   unblock-waiting.sh --repoint <A> <part…> [--dry-run]
 # The split step's call: every waiting ticket whose newest wait names #A gets a new newest
 # line naming A's parts in its place, so the wait reads as what it is.
+#
+# A PERSON'S HOLD IS THEIRS TO LIFT (#20022 was released when #19700 landed, though a person
+# had put status:blocked on an hour after its wait line). A ticket is left held when its
+# blocked label went on more than UNBLOCK_LABEL_GRACE_SEC (300) after its newest wait line (a
+# body line reads as the issue's filing time), when it wears another person-hold label, or
+# when a live claim holds it.
 # Exit: 0 done · 1 a read failed (nothing is released on a read that failed).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +58,8 @@ while [ $# -gt 0 ]; do
 done
 GH="${SWARM_GH:-gh}"
 QUEUE="${UNBLOCK_QUEUE:-$SELF_DIR/coordinator-queue.sh}"
+GRACE="${UNBLOCK_LABEL_GRACE_SEC:-300}"; case "$GRACE" in ""|*[!0-9]*) GRACE=300 ;; esac
+PERSON_HOLDS="${UNBLOCK_HOLD_LABELS:-$(toolkit_cfg labels.ownerDecision 2>/dev/null || echo needs:owner-decision) ${LBL_NEEDS_HUMAN:-} needs:data-model ${HOLD_LABEL:-}}"
 NOTIFY="${UNBLOCK_NOTIFY:-$SELF_DIR/coordinator-notify.sh}"
 tell_pm() { # <key> <line> — the PM's channel; once a key, and never on a dry run
   [ "$DRY" = 1 ] || bash "$NOTIFY" --class agent "$1" "$2" >/dev/null 2>&1 || true
@@ -70,19 +78,21 @@ note_once() { # <n> <marker> <body> — one comment on the ticket, looked for fi
 TICKETS_JQ='def tickets: [scan("#([0-9]+)(?:[ ]*[–—-][ ]*#?([0-9]+))?")
     | (.[0] | tonumber) as $a | (if .[1] == null then $a else (.[1] | tonumber) end) as $z
     | if $z > $a and $z - $a <= 50 then range($a; $z + 1) else $a, $z end | tostring] | unique;'
-# The waiting tickets, each as "<n>\t<blockers…>" from its newest wait line: "Blocked until",
+# The waiting tickets, each as "<n>\t<blockers…>\t<that line's time>\t<labels,…>" from its newest wait line: "Blocked until",
 # and on a blocked ticket "Blocked on #N" / "Blocked by #N" too. A blocked ticket naming no
 # wait comes back as "<n>\t?", unless a line says it "waits for #N" (follow-up.sh's to lift).
 read_waiting() { # <label> <1 when it is the blocked label>
-  "$GH" issue list --repo "$REPO_SLUG" --label "$1" --state open --limit 200 --json number,body,comments 2>/dev/null \
+  "$GH" issue list --repo "$REPO_SLUG" --label "$1" --state open --limit 200 --json number,body,createdAt,labels,comments 2>/dev/null \
   | jq -r --argjson bl "${2:-0}" "$TICKETS_JQ"'
       (if $bl == 1 then "blocked until|blocked (on|by) *#[0-9]" else "blocked until" end) as $re
       | .[]? | .number as $n
-      | [(.body // ""), ((.comments // [])[]? | .body // "")] as $texts
-      | ($texts | map(split("\n")[] | select(test($re; "i"))) | last // "") as $l
-      | ($l | sub("(?i).*blocked (until|on|by)"; "") | tickets | map(select(. != ($n | tostring))) | join(" ")) as $b
-      | if $b != "" then "\($n)\t\($b)"
-        elif $bl == 1 and ($texts | map(test("waits for #[0-9]"; "i")) | any | not) then "\($n)\t?"
+      | ([(.labels // [])[]?.name] | join(",")) as $labs
+      | [{t: (.createdAt // ""), s: (.body // "")}, ((.comments // [])[]? | {t: (.createdAt // ""), s: (.body // "")})] as $ents
+      | ($ents | map(.s)) as $texts
+      | ($ents | map(.t as $t | .s | split("\n")[] | select(test($re; "i")) | {t: $t, l: .}) | last // {t: "", l: ""}) as $w
+      | ($w.l | sub("(?i).*blocked (until|on|by)"; "") | tickets | map(select(. != ($n | tostring))) | join(" ")) as $b
+      | if $b != "" then "\($n)\t\($b)\t\($w.t)\t\($labs)"
+        elif $bl == 1 and ($texts | map(test("waits for #[0-9]"; "i")) | any | not) then "\($n)\t?\t\t\($labs)"
         else empty end'
 }
 held=""
@@ -91,7 +101,9 @@ for lab in "${LBL_BLOCKED:-}" "${LBL_GATED:-}"; do
   out=$(read_waiting "$lab" "$([ "$lab" = "${LBL_BLOCKED:-}" ] && echo 1 || echo 0)") || { echo "unblock: the $lab tickets could not be read"; exit 1; }
   held="$held$out"$'\n'
 done
-held=$(printf '%s\n' "$held" | awk -F'\t' 'NF == 2 && !seen[$1]++')
+held=$(printf '%s\n' "$held" | awk -F'\t' 'NF >= 2 && !seen[$1]++')
+WAITMETA=$(printf '%s\n' "$held" | awk -F'\t' 'NF >= 2 { print $1 "\t" $3 "\t" $4 }')   # <n> \t <wait at> \t <labels>
+held=$(printf '%s\n' "$held" | cut -f1,2)
 [ -n "$held" ] || exit 0
 
 # --repoint: the split step's call, before any state is read.
@@ -159,6 +171,27 @@ landed() {
     *) LEAVES="$LEAVES $b"; return 1 ;;
   esac
 }
+CLAIMS=""; CLAIMS_READ=0
+# person_held <n> — 0 with the reason echoed when a person holds it; 1 free; 2 a read failed. Reads CLAIMS.
+person_held() {
+  local n="$1" at labs h tl ev
+  at=$(awk -F'\t' -v n="$n" '$1 == n { print $2; exit }' <<<"$WAITMETA")
+  labs=$(awk -F'\t' -v n="$n" '$1 == n { print $3; exit }' <<<"$WAITMETA")
+  for h in $PERSON_HOLDS; do
+    case ",$labs," in *",$h,"*) echo "it wears $h (a person's hold)"; return 0 ;; esac
+  done
+  grep -qx "$n" <<<"$CLAIMS" && { echo "a live claim holds it"; return 0; }
+  case ",$labs," in *",$LBL_BLOCKED,"*) ;; *) return 1 ;; esac
+  tl=$("$GH" api "repos/$REPO_SLUG/issues/$n/timeline?per_page=100" --paginate 2>/dev/null) || return 2
+  ev=$(jq -rs --arg l "$LBL_BLOCKED" --arg at "$at" --argjson g "$GRACE" '
+        [add[]? | select(.event == "labeled" and .label.name == $l)] | last
+        | if . == null then empty
+          elif $at == "" or ((.created_at | fromdateiso8601) - ($at | fromdateiso8601)) > $g
+          then "@\(.actor.login // "someone") put \($l) on at \(.created_at), after its wait line (theirs to lift)"
+          else empty end' <<<"$tl" 2>/dev/null) || return 2
+  [ -n "$ev" ] && { echo "$ev"; return 0; }
+  return 1
+}
 EDGES=""   # <waiter> <open ticket it waits on>, split parts in their parent's place
 while IFS=$'\t' read -r n bl; do
   [ -n "${n:-}" ] || continue
@@ -184,6 +217,14 @@ while IFS=$'\t' read -r n bl; do
     continue
   fi
   if [ -n "$open" ]; then echo "waits: #$n — still open:$open"; continue; fi
+  if [ "$CLAIMS_READ" = 0 ]; then   # once a pass, and only when something is about to go
+    if [ -n "${UNBLOCK_CLAIMS:-}" ]; then CLAIMS=$("$UNBLOCK_CLAIMS"); else CLAIMS=$(toolkit_claimed_issues); fi \
+      || { echo "unblock: the live claims could not be read"; exit 1; }
+    CLAIMS_READ=1
+  fi
+  why=$(person_held "$n"); r=$?
+  [ "$r" -eq 2 ] && { echo "unblock: #$n's claims or timeline could not be read"; exit 1; }
+  [ "$r" -eq 0 ] && { echo "held: #$n — $why"; continue; }
   if [ "$DRY" = 1 ]; then echo "would unblock #$n — every blocker landed (#${bl// /, #})"; continue; fi
   issue_status_set "$n" "$LBL_READY" --drop "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "unblock: #$n could not be set $LBL_READY"; continue; }
   "$GH" issue comment "$n" --repo "$REPO_SLUG" --body "**Unblocked:** every ticket it waited for has landed (#${bl// /, #}). Back on the queue, first at its priority." >/dev/null 2>&1 || true
