@@ -74,4 +74,24 @@ want "the park is the PM's" "pm" "$(driver_state_get 113 park_cause)"
 log=$(tr "\n" " " < "$GH_LOG" | cut -c1-100000)
 case "$log" in *"pr ready"*|*"pr merge"*) want "nothing is readied or merged" "no" "yes" ;; *) want "nothing is readied or merged" "no" "no" ;; esac
 
+echo "--- a retry with nothing changed refuses again without pushing, editing or asking ---"
+: > "$GH_LOG"
+out=$(driver_step_ship 113 2>&1); rc=$?
+want "it refuses again" "24" "$rc"
+want_in "it says nothing has changed" 'nothing has changed since' "$out"
+want_in "it names the record" "$(driver_state_dir 113)/steps/replaced.jsonl" "$out"
+want "the builder is not asked again" "1" "$(grep -c . "$CALLS")"
+log=$(tr "\n" " " < "$GH_LOG" | cut -c1-100000)
+case "$log" in *"push"*|*"pr create"*|*"pr edit"*) want "no push, create or edit" "none" "$log" ;; *) want "no push, create or edit" "none" "none" ;; esac
+want_in "the park note is kept" 'not the PR body' "$(driver_state_get 113 park_note)"
+
+echo "--- once the row is on the record, the next retry ships ---"
+: > "$GH_LOG"
+printf '%s\n' '{"file":"pinned.test.ts","removedBecause":"obsolete"}' >> "$(driver_state_dir 113)/steps/replaced.jsonl"
+out=$(driver_step_ship 113 2>&1); rc=$?
+want "it ships" "0" "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out" | tail -15
+want_in "it is readied" 'pr ready' "$(tr "\n" " " < "$GH_LOG")"
+want "the builder is still asked once" "1" "$(grep -c . "$CALLS")"
+
 suite_end "$FAILED"
