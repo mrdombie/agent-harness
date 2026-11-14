@@ -41,6 +41,20 @@ W_IMPL=$(git -C "$REPO" rev-parse HEAD)
 printf '#!/usr/bin/env bash\ngrep -q new greeting.txt\n' > "$REPO/plain.test.sh"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: a file with no filter"
 
+# slow_script — slow for its first SLOW_RUNS runs; it reads memory as 5% free when it starts
+# into SLOW_MEM_FILE when set, as a build beside it would take the memory (a proof drops SWARM_*).
+slow_script() {
+  printf '#!/usr/bin/env bash\n[ -z "${SLOW_MEM_FILE:-}" ] || echo 5 > "$SLOW_MEM_FILE"\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
+}
+# slow_commits — S_TEST and S_IMPL: the slow suite, made once.
+slow_commits() {
+  S_TEST=$(git -C "$REPO" log --format=%H --grep='^test: slow' -1); S_IMPL=$(git -C "$REPO" log --format=%H --grep='^feat: slow' -1)
+  [ -z "$S_TEST" ] || return 0
+  printf 'no\n' > "$REPO/slow.txt"; slow_script
+  git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: slow"; S_TEST=$(git -C "$REPO" rev-parse HEAD)
+  printf 'yes\n' > "$REPO/slow.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: slow"; S_IMPL=$(git -C "$REPO" rev-parse HEAD)
+}
+
 if suite_case "a test file says how it runs one case"; then
 want "the filter is read off the file" "SUITE_ONLY='<case title>' bash words.test.sh" "$(driver_case_filter_of "$REPO/words.test.sh")"
 rc=0; driver_case_filter_of "$REPO/plain.test.sh" >/dev/null || rc=$?
@@ -75,7 +89,7 @@ if suite_case "out of time once: it waits for the machine and is taken once more
 # Slow for its first two runs (the two halves of the first proof), quick after: a busy machine.
 printf '0\n' > "$FIX/count"; export COUNT_FILE="$FIX/count"
 printf 'no\n' > "$REPO/slow.txt"
-printf '#!/usr/bin/env bash\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
+slow_script
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: slow"
 S_TEST=$(git -C "$REPO" rev-parse HEAD)
 printf 'yes\n' > "$REPO/slow.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: slow"
@@ -89,14 +103,8 @@ fi
 
 if suite_case "out of time twice: the note names the command and what each half took"; then
 printf '0\n' > "$FIX/count"; export COUNT_FILE="$FIX/count"
-S_TEST=$(git -C "$REPO" log --format=%H --grep='^test: slow' -1); S_IMPL=$(git -C "$REPO" log --format=%H --grep='^feat: slow' -1)
-if [ -z "$S_TEST" ]; then
-  printf 'no\n' > "$REPO/slow.txt"
-  printf '#!/usr/bin/env bash\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
-  git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: slow"; S_TEST=$(git -C "$REPO" rev-parse HEAD)
-  printf 'yes\n' > "$REPO/slow.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: slow"; S_IMPL=$(git -C "$REPO" rev-parse HEAD)
-fi
-out=$(SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
+slow_commits
+out=$(SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=0 SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
 want "still out of time: its own refusal" "4" "$rc"
 want "taken twice and no more" "4" "$(cat "$FIX/count")"
 want_in "the note names the command and the limit of the second take" 'slow.test.sh ran out of time: .bash slow.test.sh. did not finish within 4s' "$out"
@@ -104,6 +112,21 @@ want_in "and what each half took" '\(without the change: stopped at [0-9]+s; wit
 want_in "and that it was taken twice" 'taken twice, the second time alone in a machine gate slot with twice the limit' "$out"
 want_not_in "it guesses at no cause" 'watch-mode' "$out"
 want_not_in "the fallback park wording guesses at none either" 'watch-mode' "$(cat "$HERE/../build-ticket")"
+want_not_in "with memory to spare it names no memory" 'out of memory' "$out"
+fi
+
+if suite_case "out of time under memory pressure: it waits for memory, is taken once more, and names memory"; then
+printf '0\n' > "$FIX/count"; export COUNT_FILE="$FIX/count"
+slow_commits
+printf '#!/usr/bin/env bash\necho 60 > "%s"\n' "$FIX/mem-pct" > "$FIX/mem-raise"; chmod +x "$FIX/mem-raise"
+printf '60\n' > "$FIX/mem-pct"
+out=$(unset SWARM_FREE_MEM_PCT; SLOW_MEM_FILE="$FIX/mem-pct" SWARM_FREE_MEM_PCT_FILE="$FIX/mem-pct" SWARM_SWAP_PCT=0 MACHINE_GATE_ON_WAIT="$FIX/mem-raise" MACHINE_GATE_POLL=0 \
+  SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
+want "still out of time: its own refusal" "4" "$rc"
+want "taken twice and no more" "4" "$(cat "$FIX/count")"
+want_in "the retry waited on memory" 'machine busy \(free memory 5%' "$out"
+want_in "the note names memory" 'the machine was out of memory \(free memory 5%, floor 10%\)' "$out"
+want_not_in "it guesses at no cause" 'watch-mode' "$out"
 fi
 
 if suite_case "every step is told which test files take a filter"; then
