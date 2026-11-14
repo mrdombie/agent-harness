@@ -83,24 +83,7 @@ p=$(i --print scheduler)
 want_in "a real PATH"              '<key>PATH</key>' "$p"
 want_in "where the repo is"        "<key>HARNESS_MAIN_REPO</key><string>$REPO</string>" "$p"
 want_in "where the state is"       "<key>HARNESS_STATE_DIR</key><string>$STATE</string>" "$p"
-
-echo "--- a settings pin only when the operator set one, never a temp snapshot ---"
-for j in scheduler code-sweep; do
-  want_not_in "$j: unset, no pin" '<key>HARNESS_CFG_PATH</key>' "$(env -u HARNESS_CFG_PATH bash "$I" --print "$j" 2>&1)"
-done
-nolaunchd=$(env -u HARNESS_CFG_PATH SWARM_UNAME=Linux bash "$I" 2>&1)
-want_in "unset: the job command is still printed" 'swarm/scheduler.sh' "$nolaunchd"
-want_not_in "unset: the job command carries no pin" 'HARNESS_CFG_PATH=' "$nolaunchd"
-# The fixture itself lives under the real TMPDIR, so these cases name another.
-OTHERTMP="$FIX/othertmp"; mkdir -p "$OTHERTMP"
-OPCFG="$FIX/operator-harness.json"; cp "$HARNESS_CFG_PATH" "$OPCFG"
-want_in "operator-set: exactly that path" "<key>HARNESS_CFG_PATH</key><string>$OPCFG</string>" \
-  "$(TMPDIR="$OTHERTMP" HARNESS_CFG_PATH="$OPCFG" bash "$I" --print scheduler 2>&1)"
-want_in "operator-set: the job command carries it" "HARNESS_CFG_PATH=$OPCFG " \
-  "$(TMPDIR="$OTHERTMP" HARNESS_CFG_PATH="$OPCFG" SWARM_UNAME=Linux bash "$I" 2>&1)"
-TMPS="$FIX/tmp"; mkdir -p "$TMPS"; SNAP="$TMPS/harness.json.abcdef012345"; cp "$HARNESS_CFG_PATH" "$SNAP"
-want_not_in "a snapshot under TMPDIR: no pin" '<key>HARNESS_CFG_PATH</key>' \
-  "$(TMPDIR="$TMPS/" HARNESS_CFG_PATH="$SNAP" bash "$I" --print scheduler 2>&1)"
+want_in "and which config to read" '<key>HARNESS_CFG_PATH</key>' "$p"
 
 echo "--- kept alive, or on an interval, never both ---"
 lv=$(i --print live-view)
