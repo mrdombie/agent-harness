@@ -14,6 +14,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A driver run exports the host's state paths; left set, they win over the fixture's.
+unset DRIVER_DIR RUNS_DIR STATE_DIR SWARM_DIR SWARM_LOGS COORD_DIR COORD_LOG COORD_QUEUE COORD_EVENTS COORD_ACTIONS COORD_NEEDS_YOU
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -54,6 +56,8 @@ lib() {
     fix-released) perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/[ "\$state" = started ]; then/' "$p" ;;
     fix-alive)    perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/false; then/' "$p" ;;
     fix-mark)     perl -0pi -e 's/\$4 = "started"/\$4 = \$4/' "$p" ;;
+    runners)      perl -0pi -e 's/case "\$runners" in/case planted in/' "$p" ;;
+    pause)        perl -0pi -e 's/\$2 \+= s; //' "$p" ;;
     fix-head)     perl -0pi -e 's/if \[ "\$last" = "\$head" \]; then/if false; then/' "$p" ;;
   esac
   cmp -s "$LIB" "$p" && { echo "plant $PLANT did not apply" >&2; exit 3; }
@@ -103,7 +107,7 @@ plan_on_record() {
   printf '{"step":"plan","status":"planned","tasks":[{"title":"Add the export button","files":["src/export.ts"]},{"title":"Test the empty state","files":["src/export.test.ts"]}]}\n' > "$d/steps/plan.json"
   printf '{"step":"review","verdict":"pass","findings":[{"grade":"minor","summary":"the empty state reads as an error","file":"src/export.tsx"}]}\n' > "$d/steps/review.json"
 }
-fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/stale-updates.* "$C"/fix-parks.* "$C"/draft-resumes.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
+fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/rebuild-ci-down.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/stale-updates.* "$C"/fix-parks.* "$C"/draft-resumes.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
 closes() { grep -c "^pr close $1 " "$GH_LOG"; }
 age() { fix_at $(( T0 + $1 * 60 )); }   # minutes since the first pass
 # fixpass — one pass with the rebuild off and the fix rounds at their default (2), or FR's.
@@ -330,6 +334,92 @@ pr 78 101 head10 DIRTY '[]' unit:SUCCESS:7014
 age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
 want "nothing closed in shadow"                  "0" "$(closes 78)"
 want_in "  it says it would"                     'rebuild: would close PR #78' "$OUT"
+
+fi
+if suite_case "every CI runner offline: nothing closed, nothing queued, and it says why"; then
+RUNNERS="$FIX/gh/api-repos_acme_widgets_actions_runners_per_page_100.json"
+fresh; base unit:success lint:success
+printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"status":"offline"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "red 61 minutes, every runner offline: not closed" "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
+want_in "  it says every CI runner is offline"   'rebuild: every CI runner is offline' "$OUT"
+FR=2 MIN=60 fixpass
+want "  with fix rounds on: no fix round queued" "0" "$(grep -c 'Fix: PR #' "$QLOG")"
+want "  and none spent"                          "" "$(rounds 71)"
+echo "  the runner list cannot be read: the same"
+fresh; rm -f "$RUNNERS"; : > "$FIX/gh/runners-unread"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  not closed"                              "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
+want_in "  it says the list could not be read"   'rebuild: the CI runner list could not be read' "$OUT"
+want_in "  it names the repo whose read failed"  'runner list of acme/widgets could not be read' "$OUT"
+echo "  the caller's KIT_ROOT names an older install with no runner read: the same"
+OLD_KIT="$FIX/old-kit"; mkdir -p "$OLD_KIT"; cp -R "$KIT/scripts" "$OLD_KIT/"; rm -f "$OLD_KIT/scripts/ci-runners.sh"
+fresh; rm -f "$RUNNERS"; : > "$FIX/gh/runners-unread"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; KIT_ROOT="$OLD_KIT" pass
+want "  not closed"                              "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
+want_in "  it names the repo whose read failed"  'runner list of acme/widgets could not be read' "$OUT"
+rm -f "$FIX/gh/runners-unread"
+echo "  one runner online: rebuilt as before"
+fresh; printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  closed once"                             "1" "$(closes 71)"
+want_in "  queued with a Rebuild: brief"         '^add 101 --class new --first --note Rebuild: PR #71 could not merge within 60 min' "$(cat "$QLOG")"
+want "  queued once"                             "1" "$(adds 101)"
+echo "  no self-hosted runners (total_count 0): rebuilt as before"
+fresh; printf '{"total_count":0,"runners":[]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  closed once"                             "1" "$(closes 71)"
+want_in "  queued with a Rebuild: brief"         '^add 101 --class new --first --note Rebuild: PR #71 could not merge within 60 min' "$(cat "$QLOG")"
+want "  queued once"                             "1" "$(adds 101)"
+echo "  the time CI was down is not counted: down at +30 and +50, up at +70"
+fresh; printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+age 0; pass
+printf '{"total_count":1,"runners":[{"id":1,"status":"offline"}]}\n' > "$RUNNERS"
+age 30; pass; age 50; pass
+printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+age 70; pass
+want "  at +70, 30 counted min: not closed"      "0" "$(closes 71)"
+want_in "  it says how long CI was down"         'rebuild: CI was down 40 min' "$OUT"
+age 100; pass
+want "  at +100, 60 counted min: closed once"    "1" "$(closes 71)"
+echo "  a runner list not read is no outage: unread at +30 and +50, online at +70, nothing slides"
+fresh; printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+age 0; pass
+: > "$FIX/gh/runners-unread"
+age 30; pass; age 50; pass
+rm -f "$FIX/gh/runners-unread"
+age 70; pass
+want_not_in "  it does not say CI was down"      'CI was down' "$OUT"
+want "  at +70, 70 counted min: closed once"     "1" "$(closes 71)"
+echo "  a head that waited on a red develop, develop green again, every runner offline: not re-run"
+fresh; base unit:failure lint:success; rm -f "$RUNNERS"
+pr 74 101 head4 BLOCKED '[]' unit:FAILURE:7007 lint:SUCCESS:7008
+age 0; pass
+want_in "  it waits on develop first"            'rebuild: PR #74 waits — base-red on unit' "$OUT"
+base unit:success lint:success; : > "$GH_LOG"
+printf '{"total_count":1,"runners":[{"id":1,"status":"offline"}]}\n' > "$RUNNERS"
+age 10; pass
+want "  no re-run asked for"                     "0" "$(grep -c '^run rerun 7007' "$GH_LOG")"
+want_in "  it says why"                          'not re-run: every CI runner is offline' "$OUT"
+printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+age 20; pass
+want "  runners back: re-run once"               "1" "$(grep -c '^run rerun 7007 --failed' "$GH_LOG")"
+rm -f "$RUNNERS"
 
 fi
 if suite_case "the rebuild off, a required check red on the PR's own code: back to its builder, on its branch"; then
@@ -560,12 +650,13 @@ plant_cases() { # <plant> — the cases that pin it, as a SUITE_ONLY pattern
     counted)        echo '^a thrown-away change is counted' ;;
     cap)            echo '^built twice already' ;;
     fix-base-red)   echo '^never sent for a fix' ;;
+    runners|pause)  echo '^every CI runner offline' ;;
     fix-*)          echo '^the rebuild off, a required check red|^a fix round that ended without a push|^a round is spent only once|^a started round whose run is gone' ;;
   esac
 }
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ] && [ -z "${SUITE_ONLY:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
+  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark runners pause; do
     only=$(plant_cases "$p")
     PLANT=$p SUITE_ONLY="$only" bash "$0" >"$FIX/plant.out" 2>&1; rc=$?
     want "plant $p: its case fails"              "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"

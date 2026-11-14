@@ -767,3 +767,6 @@ coord_snap_load() {
 }
 
 export COORD_DIR COORD_QUEUE COORD_EVENTS COORD_ACTIONS COORD_NEEDS_YOU COORD_LOG COORD_SHADOW
+
+# From beside this file, not KIT_ROOT: a caller may point KIT_ROOT at an older install without it.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-runners.sh" || return 1 2>/dev/null || exit 1

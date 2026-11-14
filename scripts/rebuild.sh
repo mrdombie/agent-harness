@@ -59,6 +59,9 @@
 #     a person's label put on since the tick's read is left exactly as it is.
 #
 # WHAT IS NEVER REBUILT.
+#   - anything, while every CI runner is offline or the runner list cannot be read (ci-runners.sh):
+#     no close, rebuild, fix round or re-run. A draft is still resumed, a clash still gets its
+#     one update from its base, and a held ticket's clock still stops.
 #   - a person owns it: the hold label, do-not-merge, a person's own draft (person-stop.sh),
 #     or a ticket waiting on a person (needs-human, owner or PM decision, parked, blocked,
 #     gated, batched). It is left exactly as it is, clock and all.
@@ -87,6 +90,7 @@ declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
 REBUILD_CLOCK="$COORD_DIR/rebuild-clock.$(coord_mode).tsv"   # pr \t epoch first seen stuck \t why
+REBUILD_CI_DOWN="$COORD_DIR/rebuild-ci-down.$(coord_mode).tsv"   # epoch every CI runner was first seen down
 # A ticket built this many times already parks for the PM instead of building again
 # (coordinator.rebuildMax; 0 is no cap). Measured 2026-11-09: one ticket rebuilt 12
 # times in a week, 568 PRs thrown away against 478 merged. Each build left a
@@ -188,6 +192,7 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
   # The base passes again: a head that waited on it is re-run once before its clock runs.
   awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null || return 0
   [ -n "$rids" ] || return 0
+  if [ -n "${REBUILD_CI_HOLD:-}" ]; then echo "PR #$n waited on $base, which passes $notred now — not re-run: $REBUILD_CI_HOLD"; return 1; fi
   if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would re-run its failed jobs ($rids) first"; return 1; fi
   did=$(pr_red_rerun "$n" "$head" "$rids" "$REBUILD_BASE_RERUNS" 1) || return 0
   echo "PR #$n waited on $base, which passes $notred now — $did, its failed jobs, first"; return 1
@@ -216,7 +221,8 @@ rebuild_pr_state() {
     finish) printf 'stuck\ta draft nothing is building, its checks settled\n' ;;
     rerun)
       local did
-      if coord_shadow; then did="would re-run ${ids:-nothing named}"
+      if [ -n "${REBUILD_CI_HOLD:-}" ]; then did="not re-run: $REBUILD_CI_HOLD"
+      elif coord_shadow; then did="would re-run ${ids:-nothing named}"
       else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$REBUILD_RERUNS" "$COORD_RERUN_MAX"); fi
       say "rebuild: PR #$n $why — $did" >&2
       printf 'stuck\t%s\n' "$why" ;;
@@ -257,6 +263,26 @@ rebuild_clock_start() { # <pr> <why> — the epoch the clock started, set now if
   local s; s=$(rebuild_clock_since "$1")
   case "$s" in ''|*[!0-9]*) s=$(swarm_now); printf '%s\t%s\t%s\n' "$1" "$s" "$(printf '%s' "$2" | tr '\t\n' '  ')" >> "$REBUILD_CLOCK" ;; esac
   printf '%s' "$s"
+}
+# rebuild_clock_pause <runner state> — offline: the epoch CI went down is kept; up again: every
+# clock moves on by the time it was down, so a stuck PR is not charged for an outage. Unread
+# is no outage: it marks nothing and slides nothing, or a flaky read would push every clock back.
+rebuild_clock_pause() {
+  local now down slide; now=$(swarm_now)
+  case "$1" in
+    offline) [ -s "$REBUILD_CI_DOWN" ] || printf '%s\n' "$now" > "$REBUILD_CI_DOWN"; return 0 ;;
+    unread) return 0 ;;
+  esac
+  [ -f "$REBUILD_CI_DOWN" ] || return 0
+  down=$(head -1 "$REBUILD_CI_DOWN" 2>/dev/null)
+  case "$down" in ''|*[!0-9]*) rm -f "$REBUILD_CI_DOWN"; return 0 ;; esac
+  slide=$(( now - down )); [ "$slide" -gt 0 ] || slide=0
+  if [ -f "$REBUILD_CLOCK" ]; then
+    awk -F'\t' -v s="$slide" 'BEGIN { OFS = "\t" } $2 ~ /^[0-9]+$/ { $2 += s; } { print }' "$REBUILD_CLOCK" > "$REBUILD_CLOCK.$$" 2>/dev/null \
+      && mv -f "$REBUILD_CLOCK.$$" "$REBUILD_CLOCK" || return 0
+  fi
+  rm -f "$REBUILD_CI_DOWN"
+  say "rebuild: CI was down $(( slide / 60 )) min — every stuck clock moves on by that"
 }
 rebuild_clock_stop() { # <pr>
   [ -f "$REBUILD_CLOCK" ] || return 0
@@ -575,6 +601,24 @@ $fails}" >/dev/null 2>&1 || say "rebuild: #$t could not be told why it parked"
   say "rebuild: parked #$t for the PM — $n fix round(s), PR #$pr left open ($why)"
 }
 
+# rebuild_clash_update <pr-json> <why> — a clashing PR's one update from its base: 0 when it
+# was made (or would be, in shadow), 1 when it was made before or is refused.
+rebuild_clash_update() {
+  local pj="$1" why="$2" pr base
+  ! declare -F coord_sheet_role >/dev/null 2>&1 || [ "$(coord_sheet_role)" != reader ] || return 1
+  pr=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null); [ -n "$pr" ] || return 1
+  base=$(jq -r '.baseRefName // empty' <<<"$pj" 2>/dev/null); base="${base:-$INTEGRATION_BRANCH}"
+  ! awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$CLASH_UPDATES" 2>/dev/null || return 1
+  if coord_shadow; then say "rebuild: would update PR #$pr from $base once ($why) before any fix round"; return 0; fi
+  printf '%s\t%s\n' "$pr" "$(swarm_now)" >> "$CLASH_UPDATES"
+  if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT >/dev/null 2>&1; then
+    say "rebuild: PR #$pr updated from $base ($why) — its one automatic update"
+    return 0
+  fi
+  say "rebuild: PR #$pr's update from $base was refused — the clash counts as a fix round"
+  return 1
+}
+
 # rebuild_fix <ticket> <pr-json> <why> <kind> — 0 when the fix path took the PR this tick
 # (queued, waiting on its round, updated from its base, or parked); 1 when it is not the fix
 # path's: coordinator.fixRounds 0, or a stuck that is neither the PR's own red nor a clash.
@@ -620,15 +664,7 @@ rebuild_fix() {
   [ "$(jq -r '.isDraft // false' <<<"$pj" 2>/dev/null)" != true ] || [ -f "${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json" ] \
     || say "rebuild: PR #$pr is a draft and #$t's build record is not on this host — whether its build is unfinished could not be seen; treated as any stuck PR"
   # A clash is updated from its base once per PR before any builder is sent.
-  if [ "$kind" = clash ] && ! awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$CLASH_UPDATES" 2>/dev/null; then
-    if coord_shadow; then say "rebuild: would update PR #$pr from $base once ($why) before any fix round"; return 0; fi
-    printf '%s\t%s\n' "$pr" "$(swarm_now)" >> "$CLASH_UPDATES"
-    if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT >/dev/null 2>&1; then
-      say "rebuild: PR #$pr updated from $base ($why) — its one automatic update"
-      return 0
-    fi
-    say "rebuild: PR #$pr's update from $base was refused — the clash counts as a fix round"
-  fi
+  if [ "$kind" = clash ] && rebuild_clash_update "$pj" "$why"; then return 0; fi
   if [ "$rounds" -ge "$FIX_ROUNDS" ]; then
     rebuild_park_open "$t" "$why" "$pj" "$rounds" || true
     return 0
@@ -673,6 +709,15 @@ rebuild_pass() {
       > "$led.$$" 2>/dev/null && mv -f "$led.$$" "$led"
   done
   [ -n "$rows" ] || return 0
+  # No runner to run a check: a red, a cancel or a never-run is not the PR's, so nothing is sent
+  # or closed. What does not wait on CI still runs: resumes, clash updates, holds, the ledgers.
+  local runners REBUILD_CI_HOLD=""; runners=$(ci_runners_state)
+  rebuild_clock_pause "$runners"
+  case "$runners" in
+    offline) REBUILD_CI_HOLD="every CI runner is offline" ;;
+    unread)  REBUILD_CI_HOLD="the CI runner list could not be read" ;;
+  esac
+  [ -z "$REBUILD_CI_HOLD" ] || say "rebuild: $REBUILD_CI_HOLD — no PR is closed, rebuilt or sent back to its builder this tick"
   tickets=$(jq -r '.t' <<<"$rows" | sort -un | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   metas=$(gh_issues_batch $tickets 2>/dev/null) || metas="{}"
@@ -698,6 +743,11 @@ rebuild_pass() {
         [ -z "$since" ] || say "rebuild: PR #$pr $st ($why) — its clock runs, $(( (now - since) / 60 )) of $REBUILD_AFTER_MIN min"
         continue ;;
     esac
+    if [ -n "$REBUILD_CI_HOLD" ]; then
+      # A clash is the base's doing, not CI's: its one update from the base still goes.
+      if [ "$kind" = clash ] && [ "$FIX_ROUNDS" -gt 0 ] && rebuild_clash_update "$pj" "$why"; then continue; fi
+      say "rebuild: PR #$pr waits — $REBUILD_CI_HOLD ($why)"; continue
+    fi
     since=$(rebuild_clock_start "$pr" "$why"); age=$(( (now - since) / 60 ))
     if [ "$REBUILD_AFTER_MIN" -eq 0 ] || [ "$age" -lt "$REBUILD_AFTER_MIN" ]; then
       # The fix path replaces the wait: the PR's own red, or a clash, goes back to its builder.
@@ -759,7 +809,7 @@ rebuild_in_clone() {
   (
     ISSUE_REF="$queue"; ISSUE_SLUG="$queue"; REPO_SLUG="$slug"; INTEGRATION_BRANCH="$trunk"; OPEN_WORK_REPO="$slug"
     REBUILD_CLONE="$name"
-    for f in REBUILD_CLOCK FIX_LEDGER CLASH_UPDATES STALE_UPDATES FIX_PARKS DRAFT_RESUMES REBUILD_BASE_RED REBUILD_BASE_RERUNS REBUILD_RERUNS OPEN_WORK_DRAFTED_CACHE; do
+    for f in REBUILD_CLOCK REBUILD_CI_DOWN FIX_LEDGER CLASH_UPDATES STALE_UPDATES FIX_PARKS DRAFT_RESUMES REBUILD_BASE_RED REBUILD_BASE_RERUNS REBUILD_RERUNS OPEN_WORK_DRAFTED_CACHE; do
       eval "$f=\"\${$f%.tsv}.$name.tsv\""
     done
     PR_RED_REQ_FILE="$PR_RED_REQ_FILE.$name"; REBUILD_BASE_CACHE="$REBUILD_BASE_CACHE.$name"
