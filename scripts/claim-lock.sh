@@ -252,21 +252,25 @@ cmd_acquire() {
   sha=$(make_claim_commit "$issue" "$branch" "$worktree" "$pid" "$at")
 
   # The CAS. An empty expect-value means "must not already exist".
-  if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
-    printf 'acquired #%s\n' "$issue"
-    note_run_worktree "$worktree"
-    poke_board
-    return 0
-  fi
-
-  if grep -qiE 'stale info|already exists|non-fast-forward|rejected' <<<"$out"; then
+  local try holder
+  for try in 1 2; do
+    if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
+      printf 'acquired #%s\n' "$issue"
+      note_run_worktree "$worktree"
+      poke_board
+      return 0
+    fi
+    grep -qiE 'stale info|already exists|non-fast-forward|rejected' <<<"$out" || break
     sync_cache
-    local holder
     holder=$(read_claim "$CACHE/$issue" 2>/dev/null || true)
-    printf 'lost the race for #%s\n' "$issue" >&2
-    [ -n "$holder" ] && printf 'held by: %s\n' "$holder" >&2
-    return 10
-  fi
+    if [ -n "$holder" ]; then
+      printf 'lost the race for #%s\n' "$issue" >&2
+      printf 'held by: %s\n' "$holder" >&2
+      return 10
+    fi
+    # A refusal with no holder is origin's, never a lost race; live ones have cleared on retry.
+    [ "$try" = 1 ] && sleep "${CLAIM_RETRY_DELAY:-2}"
+  done
 
   printf '%s\n' "$out" >&2
   die "push failed for #$issue"
