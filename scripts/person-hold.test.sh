@@ -56,6 +56,15 @@ rm -f "$FIX/gh/issue-504.json"
 check 504 >/dev/null; rc=$?
 want "unread labels: exit 2"           2 "$rc"
 
+echo "--- tickets in another repo's queue (issueRepo): who and when are read there ---"
+wearing 505 "status:ready,status:blocked"
+put_on 505 status:blocked harness-bot 2026-11-01T08:00:00Z
+mv "$FIX/gh/api-repos_acme_widgets_issues_505_timeline_per_page_100.json" "$FIX/gh/api-repos_acme_queue_issues_505_timeline_per_page_100.json"
+jq '.issueRepo = "acme/queue"' "$HARNESS_CFG_PATH" > "$FIX/cfg-queue.json"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-queue.json" check 505); rc=$?
+want "held"                            1 "$rc"
+want_in "  named from the queue's timeline" '^status:blocked put on by harness-bot at 2026-11-01T08:00:00Z$' "$out"
+
 echo "--- the lists ---"
 lists=$(cd "$REPO" && bash -c '. "$1/coordinator-env.sh" && . "$1/pr-red.sh" && . "$1/issue-status.sh" && . "$1/rebuild.sh" && . "$1/person-hold.sh" \
   && echo "P:$(person_hold_labels | sort | tr "\n" " ")" && echo "R:$(rebuild_person_labels | sort | tr "\n" " ")" \

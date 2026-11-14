@@ -243,4 +243,15 @@ out=$(run); rc=$?
 want_not_in "an unread timeline releases nothing"  '^unblocked #20022$' "$out"
 want "  and is a failed read"                      "1" "$rc"
 
+echo "--- tickets in another repo's queue (issueRepo): the block's timeline is read there ---"
+fresh
+waiting 20023 status:blocked "Blocked until #19700 merges."
+jq -n '[{event:"labeled", label:{name:"status:blocked"}, actor:{login:"dom"}, created_at:"2026-11-01T10:00:00Z"}]' \
+  > "$FIX/gh/api-repos_acme_queue_issues_20023_timeline_per_page_100.json"
+listing status:blocked 20023; closed 19700
+jq '.issueRepo = "acme/queue"' "$HARNESS_CFG_PATH" > "$FIX/cfg-queue.json"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-queue.json" run)
+want_not_in "the person's block in the queue's repo is not released" '^unblocked #20023$' "$out"
+want_in "  it names who put it on there" '^held: #20023 — @dom put status:blocked on at 2026-11-01T10:00:00Z' "$out"
+
 suite_end "$FAILED"
