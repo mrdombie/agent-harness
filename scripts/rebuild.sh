@@ -83,6 +83,7 @@ _REBUILD_SH=1
 : "${FINDING_CLASS:=$KIT_ROOT/scripts/finding-class.sh}"
 declare -F say >/dev/null || say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work.sh" || return 1
+declare -F person_hold_labels >/dev/null || . "$(dirname "${BASH_SOURCE[0]}")/person-hold.sh" || return 1
 
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
@@ -226,9 +227,9 @@ rebuild_pr_state() {
 }
 
 # The ticket labels that mean a person acts next: a PR under one is theirs, never closed.
+# A parked, gated or batched ticket's PR is left as it is too.
 rebuild_person_labels() {
-  printf '%s\n' "$LBL_NEEDS_HUMAN" "$LBL_OWNER_DECISION" "${LBL_PM_DECISION:-}" "$LBL_PARKED" "$LBL_BLOCKED" \
-    "$LBL_EXTERNAL_BLOCKED" "$LBL_GATED" "${LBL_BATCHED:-}" "$HOLD_LABEL" $DECISION_LABELS | awk 'NF && !seen[$0]++'
+  { person_hold_labels; printf '%s\n' "${LBL_PARKED:-}" "${LBL_GATED:-}" "${LBL_BATCHED:-}"; } | awk 'NF && !seen[$0]++'
 }
 # rebuild_held <ticket> <pr-json> <ticket-labels-csv> — 0 when a person owns the PR or its
 # ticket; echoes why. An unreadable draft timeline is held too: unknown is never "the machine's".
