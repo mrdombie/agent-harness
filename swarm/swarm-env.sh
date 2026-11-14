@@ -612,7 +612,7 @@ swarm_auth_hold_write() {
 }
 
 # swarm_auth_hold — 0, printing `<text> (since <iso>)`, while the auth hold file exists.
-# It never expires by time: a lost login comes back only when someone logs in again.
+# It never expires by time: only a re-probe that is answered (swarm_auth_check) clears it.
 swarm_auth_hold() {
   local f="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" since
   [ -f "$f" ] || return 1
@@ -620,17 +620,38 @@ swarm_auth_hold() {
   printf '%s (since %s)' "$(swarm_usage_hold_field "$f" 2)" "$(swarm_iso "$since")"
 }
 
+# swarm_auth_hold_aside <why> — move an auth hold that no longer binds to logs/, and say so.
+swarm_auth_hold_aside() {
+  local f="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" e to
+  e=$(swarm_usage_hold_field "$f" 1); case "$e" in ''|*[!0-9]*) e=$(swarm_now) ;; esac
+  to=$(swarm_usage_hold_field "$f" 3); to=$(printf '%s' "${to:-unknown}" | tr -c 'A-Za-z0-9@._-' '_' | cut -c1-80)
+  to="$SWARM_LOGS/auth-hold.cleared-$to-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$SWARM_LOGS" 2>/dev/null && mv -f "$f" "$to" 2>/dev/null || return 1
+  printf 'auth: the auth hold since %s no longer applies — %s; moved aside to %s\n' "$(swarm_iso "$e")" "$1" "$to"
+}
+
 # swarm_auth_check [--now] — 1, printing the CLI's words, when one small probe call
 # (SWARM_AUTH_PROBE_CMD, bounded by swarm.authProbeTimeout, in an empty dir) reads as a lost
 # login, writing the auth hold; 0 otherwise: a probe that hangs or fails another way proves
 # nothing. Reused for swarm.authCheckMin (10) min unless --now; kept in logs/.auth-check
 # as `<epoch>\t<ok|failed>\t<text>`. The probe's log is deleted: it records no usage reading.
+# While the auth hold stands it is re-probed once per swarm.authProbeMin (5) min, timed from
+# the hold's last write: only a clean answer moves it aside; anything else keeps it.
 swarm_auth_check() {
-  local f="$SWARM_LOGS/.auth-check" now at v t ttl tmo dir said cmd
+  local f="$SWARM_LOGS/.auth-check" hf="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" now at v t ttl tmo dir said cmd held="" every
   now=$(swarm_now)
+  if [ -f "$hf" ]; then
+    held=1
+    every=$(swarm_opt swarm.authProbeMin 5); case "$every" in ''|*[!0-9]*) every=5 ;; esac
+    every="${SWARM_AUTH_PROBE_EVERY:-$(( every * 60 ))}"; case "$every" in ''|*[!0-9]*) every=300 ;; esac
+    at=$(swarm_mtime "$hf")
+    if [ "${1:-}" != --now ] && [ $(( now - ${at:-0} )) -lt "$every" ]; then
+      printf '%s' "$(swarm_usage_hold_field "$hf" 2)"; return 1
+    fi
+  fi
   ttl=$(swarm_opt swarm.authCheckMin 10); case "$ttl" in ''|*[!0-9]*) ttl=10 ;; esac
   ttl="${SWARM_AUTH_CHECK_TTL:-$(( ttl * 60 ))}"; case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
-  if [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
+  if [ -z "$held" ] && [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
     case "$at" in ''|*[!0-9]*) at=0 ;; esac
     if [ $(( now - at )) -lt "$ttl" ]; then
       case "$v" in ok) return 0 ;; failed) printf '%s' "$t"; return 1 ;; esac
@@ -647,6 +668,13 @@ swarm_auth_check() {
     rm -rf "$dir" "$dir.log"
     printf '%s' "$said"
     return 1
+  fi
+  if [ -n "$held" ]; then
+    if ! grep -F '"type":"result"' "$dir.log" 2>/dev/null | jq -e -s '[.[] | select(.type == "result")] | last | .is_error == false' >/dev/null 2>&1; then
+      rm -rf "$dir" "$dir.log"; touch "$hf" 2>/dev/null
+      printf '%s' "$(swarm_usage_hold_field "$hf" 2)"; return 1
+    fi
+    swarm_auth_hold_aside "a probe call taken to re-check it was answered" >&2 || { rm -rf "$dir" "$dir.log"; return 1; }
   fi
   printf '%s\tok\t\n' "$now" > "$f" 2>/dev/null
   rm -rf "$dir" "$dir.log"
