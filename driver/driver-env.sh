@@ -420,6 +420,34 @@ driver_gates_local_set() {
     "$HARNESS_CFG" >/dev/null 2>&1
 }
 
+# driver_gate_rows — the gates self-check runs, one `name<TAB>command` per line on
+# stdout, from whichever shape harness.json wrote; sets DRIVER_GATE_ROWS_FROM to
+# local|changed|legacy. rc 1 when there is no row. A non-string legacy value is kept
+# as an empty command so the caller's empty-gate refusal counts it by name.
+driver_gate_rows() {
+  DRIVER_GATE_ROWS_FROM=""
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  local rows="" from=""
+  if driver_gates_local_set; then
+    from=local
+  elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    from=changed
+  elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    from=local
+  else
+    from=legacy
+  fi
+  case "$from" in
+    local|changed)
+      rows=$(jq -r --arg f "$from" '.gates[$f] | to_entries[] | "\($f) \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null) ;;
+    legacy)
+      rows=$(jq -r '.gates | del(.prePush, .ratchets, .localOnly) | to_entries[] | "\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null) ;;
+  esac
+  [ -n "$rows" ] || return 1
+  DRIVER_GATE_ROWS_FROM=$from
+  printf '%s\n' "$rows"
+}
+
 # driver_gates_reads_local — 0 when self-check runs gates.local: it is the local set, or
 # the project names no gates.changed list and gates.local is a non-empty list.
 driver_gates_reads_local() {
