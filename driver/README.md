@@ -200,9 +200,13 @@ nobody has to answer them and a later run clears them:
   an expired or revoked OAuth token or session, `authentication_error` or `run /login`,
   or carrying status 401; `swarm_api_auth_log`). It is the host's, not the ticket's: no
   call is retried or waited for. `$STATE_DIR/auth-hold` (`SWARM_AUTH_HOLD_FILE`) records
-  `<since>\t<error>\t<host>\t<account>`, keeping the first since, and holds until
-  someone logs in again and removes it — never by time. The ticket requeues with its
-  claim released and its requeue count untouched (step exit 27, run exit 28).
+  `<since>\t<error>\t<host>\t<account>`, keeping the first since. It stands until a
+  re-probe is answered: once per `swarm.authProbeMin` (5) minutes one small call, bounded
+  by `swarm.authProbeTimeout` (60) seconds, asks again, and a clean answer moves the hold
+  aside to `logs/`. It never lapses by time alone. A passing check is reused for
+  `swarm.authCheckMin` (10) minutes; a hold removed by hand forces a fresh probe. The
+  ticket requeues with its claim released and its requeue count untouched (step exit 27,
+  run exit 28).
 - **A GitHub read that failed in `start` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
