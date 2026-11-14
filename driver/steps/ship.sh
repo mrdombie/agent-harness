@@ -480,6 +480,13 @@ _driver_ship_person_stop() {
     0) return 0 ;;
     1) driver_say "✋ ship: a person has stopped this${pr:+ (PR #$pr)}, and a person's stop wins over the machine — nothing is readied, armed or pushed onto it:"
        printf '%s\n' "$out" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
+       # A hold label parks on the hold: its removal resumes the run, which a PM marker would not.
+       local held; held=$(printf '%s\n' "$out" | grep -E '^[^ ]+ put on by .+ at ' | head -1)
+       if [ -n "$held" ]; then
+         driver_state_set "$t" park_note "$held"
+         driver_state_set "$t" park_cause hold
+         return "$DRIVER_E_REFUSED"
+       fi
        driver_state_set "$t" park_note "Needs the person who stopped it: $(printf '%s' "$out" | tr '\n' ' ')— fix what they named and have them clear it (a '## PM answer' or a comment starting 'Cleared:'), take the label off, or ready the PR themselves."
        driver_state_set "$t" park_cause pm
        return "$DRIVER_E_REFUSED" ;;
