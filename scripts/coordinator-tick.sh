@@ -180,6 +180,7 @@ no_progress() { # <ticket> <run-id> <exit> <result line> <secs> — notes the ru
   issue_status_set "$t" "$LBL_PARKED" --also "$LBL_PM_DECISION" >/dev/null 2>&1 || say "no progress: #$t could not be labelled $LBL_PARKED"
   say "no progress: #$t parked for the PM — $q"
 }
+CPS_FILE="$COORD_DIR/claim-push-streak"; CPS_ROWS=""
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)
@@ -197,6 +198,9 @@ for ended in "$RUNS_DIR"/*.ended; do
       else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
+  cps_err=""
+  case "$code:$last" in "${DRIVER_E_MACHINE:-33}:"*"machine fault: cannot claim: "*) cps_err="${last#*cannot claim: }"; cps_err="${cps_err%% — *}" ;; esac
+  CPS_ROWS="$CPS_ROWS$(jq -r '.ended_at // ""' "$ended" 2>/dev/null)"$'\t'"$rid"$'\t'"$cps_err"$'\n'
   case "$code" in
     ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}"|"${DRIVER_E_ELSEWHERE:-36}") ;;
     # A claim lost to another machine's coordinator is the race's, not the ticket's.
@@ -239,6 +243,9 @@ for ended in "$RUNS_DIR"/*.ended; do
           bash "$NOTIFY" --class owner "host-tools:$(swarm_day)" "A build host is missing tools the builds need: ${last#*machine fault: }"
         fi
         say "machine: run $rid did not start #${ticket:-?} — ${last#*machine fault: }" ;;
+      *"machine fault: cannot claim: "*)
+        cerr="${last#*cannot claim: }"
+        say "machine: run $rid cannot claim #${ticket:-?}: ${cerr%% — *}" ;;
       *) say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again" ;;
     esac
   elif [ "$code" = 26 ]; then
@@ -248,6 +255,28 @@ for ended in "$RUNS_DIR"/*.ended; do
     event "stood-down:$rid" stood-down true "$ticket" "" "run $rid ended exit $code: ${last:-no result line}"
   fi
 done
+
+# Claim pushes failing in a row on this host, in the order the runs ended (the loop above is glob order).
+CPS_N=0; CPS_ERR=""; CPS_RID=""
+[ -f "$CPS_FILE" ] && IFS=$'\t' read -r CPS_N CPS_ERR CPS_RID < "$CPS_FILE"
+case "$CPS_N" in ''|*[!0-9]*) CPS_N=0 ;; esac
+if [ -n "$CPS_ROWS" ]; then
+  while IFS=$'\t' read -r _ cps_r cps_e; do
+    [ -n "$cps_r" ] || continue
+    if [ -n "$cps_e" ]; then
+      CPS_N=$((CPS_N+1)); CPS_ERR="$cps_e"
+      [ "$CPS_N" -lt 3 ] || [ -n "$CPS_RID" ] || CPS_RID="$cps_r"
+    else CPS_N=0; CPS_ERR=""; CPS_RID=""; fi
+  done < <(printf '%s' "$CPS_ROWS" | sort -t$'\t' -k1,1)
+  printf '%s\t%s\t%s\n' "$CPS_N" "$CPS_ERR" "$CPS_RID" > "$CPS_FILE"
+fi
+CLAIM_HOLD=""
+if [ "$CPS_N" -ge 3 ]; then
+  CLAIM_HOLD="3 claim pushes in a row failed on this host ($CPS_N so far; last: $CPS_ERR)"
+  if event "claim-push-fails:$COORD_HOST:${CPS_RID:-?}" claim-push-fails false "" "" "$COORD_HOST takes no builds: $CLAIM_HOLD"; then
+    bash "$NOTIFY" --class owner "claim-push-fails:$COORD_HOST:${CPS_RID:-?}" "claim-push-fails: $COORD_HOST starts no builds: $CPS_N claim pushes in a row failed — git said: $CPS_ERR. Repair that clone, then rm $CPS_FILE"
+  fi
+fi
 
 # ---- 3. live and frozen runs -------------------------------------------------
 # A run's last sign of progress: its log, and any progress_paths its record names
@@ -1004,6 +1033,10 @@ if [ -n "$COORD_CAP_BAD" ]; then
 elif [ -n "$DISK_HOLD" ]; then
   say "spawn: starting nothing new — $DISK_HOLD"
   coord_act_log disk-hold - "$DISK_HOLD"
+  held_view
+elif [ -n "$CLAIM_HOLD" ]; then
+  say "spawn: starting nothing new — $CLAIM_HOLD"
+  coord_act_log claim-push-hold - "$CLAIM_HOLD"
   held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"

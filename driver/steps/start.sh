@@ -119,13 +119,19 @@ _driver_start_cut() {
 
 # _driver_start_acquire <ticket> <branch> — the claim's compare-and-swap, handed the PRs
 # that close the ticket from the run's copy of it rather than a read of its own.
+# Returns the lock's code (10 only for a lost race); its stderr is left in
+# DRIVER_START_ACQUIRE_ERR.
 _driver_start_acquire() {
-  local closing
+  local closing ef rc
+  ef=$(mktemp "${TMPDIR:-/tmp}/start-acquire.XXXXXX") || ef=/dev/null
   if closing=$(driver_ticket_view "$1" closedByPullRequestsReferences '[.closedByPullRequestsReferences[]?.number] | join(" ")' 2>/dev/null); then
-    CLAIM_CLOSING_PRS="$closing" bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+    CLAIM_CLOSING_PRS="$closing" bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>"$ef"; rc=$?
   else
-    bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+    bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>"$ef"; rc=$?
   fi
+  DRIVER_START_ACQUIRE_ERR=$(cat "$ef" 2>/dev/null)
+  [ "$ef" = /dev/null ] || rm -f "$ef"
+  return "$rc"
 }
 
 # _driver_start_stranded <ticket> <record's branch> — the branch a dead run left on origin
@@ -145,7 +151,7 @@ _driver_start_stranded() {
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
-  local meta st labels repo slug branch wt sha l hrc cw cb ow ob
+  local meta st labels repo slug branch wt sha l hrc cw cb ow ob arc aerr
   # A start has built nothing yet: on a spent allowance it gives up in seconds and the
   # ticket goes back on the queue (DRIVER_E_UNREAD), rather than hold a builder's place
   # asleep until the reset. Only the later steps wait a spent allowance out.
@@ -382,11 +388,20 @@ driver_step_start() { # <ticket>
         driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
         return "$DRIVER_E_BUSY" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
-        # settles it, and losing it means a peer won between the two calls.
-        if ! _driver_start_acquire "$t" "$branch"; then
+        # settles it: exit 10 means a peer won between the two calls; any other failure
+        # is the push itself (a corrupt clone, a dead remote) and blames no peer.
+        _driver_start_acquire "$t" "$branch"; arc=$?
+        if [ "$arc" = 10 ]; then
           driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
           driver_state_set "$t" park_note "a peer took the claim on #$t first"
           return "$DRIVER_E_BUSY"
+        elif [ "$arc" != 0 ]; then
+          aerr=$(printf '%s\n' "$DRIVER_START_ACQUIRE_ERR" | sed '/^[[:space:]]*$/d')
+          l=$(printf '%s\n' "$aerr" | head -1); [ -n "$l" ] || l="claim-lock exit $arc"
+          driver_state_set "$t" machine_fault "cannot claim: $l"
+          driver_say "✋ start: machine fault: cannot claim: $l (claim-lock exit $arc on #$t). Nothing was claimed or cut."
+          driver_state_set "$t" park_note "machine fault, nothing to answer: the claim push for #$t failed (exit $arc): $(printf '%s' "$aerr" | tr '\n' ' ' | cut -c1-600)"
+          return "$DRIVER_E_MACHINE"
         fi ;;
   esac
   driver_state_set "$t" branch "$branch"
