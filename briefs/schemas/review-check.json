@@ -30,7 +30,8 @@
         "required": [
           "id",
           "real",
-          "reason"
+          "reason",
+          "rule"
         ],
         "properties": {
           "id": {
@@ -46,6 +47,27 @@
             "description": "After the verdict, one line quoting the exact code, with its line number, that shows the finding is real or not real.",
             "type": "string",
             "minLength": 1
+          },
+          "rule": {
+            "description": "Last, the one rule the claim breaks, from this list, so the same mistake counts as one thing across changes whatever its wording: failure-shown-as-success: a failed read, write or step reads as success, as empty, or as nothing; wrong-source-of-truth: a value read, counted, dated or credited from the wrong place; one-path-of-several: a rule or change applied on one path, screen or caller, and missing on the others; race-or-unlocked-write: two things at once collide: a read-then-write with no lock, a stale answer landing late; screen-out-of-step: what the screen shows disagrees with the saved state: a stale label, a wrong undo, an early success; dead-or-unwired: a control or behaviour that does nothing, or was never connected; ticket-part-missing: something the ticket or plan asked for is not in the change; access-or-privacy: data or an action reaches someone it should not; data-lost-or-stranded: data dropped, overwritten, or left where a later step or a deletion cannot reach it; edge-case-unhandled: a boundary not handled: a timezone, a page break, an empty list, a retry, old saved data; test-proves-nothing: a test that cannot fail, or that checks the wording of a file and not the behaviour; docs-out-of-step: a doc, prompt or comment that says something the code no longer does; reimplements-existing: hand-writes what a helper or kit part already does; off-design-kit: a raw colour, size or layout outside the kit; overflow, wrapping or spacing slips; unbounded-cost: slow or costly as it grows: unbounded reads, a query per row, a call that repeats; other: none of these.",
+            "enum": [
+              "failure-shown-as-success",
+              "wrong-source-of-truth",
+              "one-path-of-several",
+              "race-or-unlocked-write",
+              "screen-out-of-step",
+              "dead-or-unwired",
+              "ticket-part-missing",
+              "access-or-privacy",
+              "data-lost-or-stranded",
+              "edge-case-unhandled",
+              "test-proves-nothing",
+              "docs-out-of-step",
+              "reimplements-existing",
+              "off-design-kit",
+              "unbounded-cost",
+              "other"
+            ]
           }
         }
       }
