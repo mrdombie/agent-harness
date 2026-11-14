@@ -337,7 +337,7 @@ DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Faile
 _driver_proof_machine() { # <proof fn> <repo> <args…>
   local fn="$1" repo="$2" out rc try=0 behind mod
   shift 2
-  local t0 slow=0 secs mem=""
+  local t0 slow=0 secs mem
   while :; do
     t0=$(date +%s)
     rc=0; out=$("$fn" "$repo" "$@") || rc=$?
@@ -348,8 +348,6 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
     # once more with twice the limit, and only then is it the command's.
     if [ "$rc" -eq 4 ] && [ "$slow" -eq 0 ]; then
       slow=1
-      # Read before the gate wait, which waits for memory to come back.
-      mem=$(_driver_proof_mem) || mem=""
       driver_say "⏳ proof: out of time after ${secs}s (limit ${DRIVER_CMD_TIMEOUT}s a half, load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for the machine, then taken once more with twice the limit" >&2
       if _driver_proof_gate; then
         t0=$(date +%s)
@@ -358,7 +356,8 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
         machine_gate_release 2>/dev/null || true
         if [ "$rc" -eq 4 ]; then
           out="$out It was taken twice, the second time alone in a machine gate slot with twice the limit (${secs}s)."
-          [ -n "$mem" ] || mem=$(_driver_proof_mem) || mem=""
+          # Read now: the gate waited for memory, so the first timeout's reading is stale.
+          mem=$(_driver_proof_mem) || mem=""
           [ -z "$mem" ] || out="$out When it ran out of time the machine was out of memory ($mem) — not a hang in the command."
         fi
       else
