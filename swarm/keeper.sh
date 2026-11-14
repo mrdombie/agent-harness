@@ -106,7 +106,8 @@ pass() {
   start=$(date +%s)
   printf '\n=== %s resume %s in %s\n' "$(swarm_stamp)" "$id" "$cwd" >> "$KEEP_OUT"
   # An alarm set before exec survives it: no watchdog left to kill a reused pid.
-  ( cd "$cwd" && exec perl -e 'alarm shift; exec @ARGV or exit 127' "$KEEP_TIMEOUT" \
+  # The keeper's config pin is its own: the session reads its settings from the trunk.
+  ( cd "$cwd" && unset HARNESS_CFG_PATH HARNESS_CFG HARNESS_CFG_REF HARNESS_CFG_FROM && exec perl -e 'alarm shift; exec @ARGV or exit 127' "$KEEP_TIMEOUT" \
       "$KEEP_CLAUDE" -p --resume "$id" --permission-mode "$KEEP_MODE" "$prompt" ) >> "$KEEP_OUT" 2>&1 < /dev/null
   rc=$?
   decide revived "$id" "exit $rc after $(( $(date +%s) - start ))s$([ "$rc" -ge 128 ] && echo ", stopped at the ${KEEP_TIMEOUT}s limit"), output in $KEEP_OUT"
