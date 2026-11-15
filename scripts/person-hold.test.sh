@@ -51,6 +51,24 @@ for l in status:parked status:gated status:batched; do
   want "  says nothing"                  "" "$out"
 done
 
+echo "--- a label the machine put on is the machine's park, not a person's hold ---"
+jq '.driver = {accounts: ["driver-bot-user"]}' "$HARNESS_CFG_PATH" > "$FIX/cfg-drivers.json"
+for who in driver-bot-user "harness-app[bot]"; do
+  rm -f "$FIX/gh/api-repos_acme_widgets_issues_506_timeline_per_page_100.json"
+  wearing 506 "status:parked,status:pm-decision"
+  put_on 506 status:pm-decision dom 2026-11-01T08:00:00Z
+  put_on 506 status:pm-decision "$who" 2026-11-01T09:00:00Z
+  out=$(HARNESS_CFG_PATH="$FIX/cfg-drivers.json" check 506); rc=$?
+  want "$who put status:pm-decision on last: free" 0 "$rc"
+  want "  says nothing"                  "" "$out"
+done
+wearing 506 "status:parked,status:pm-decision,status:blocked"
+put_on 506 status:blocked dom 2026-11-01T10:00:00Z
+out=$(HARNESS_CFG_PATH="$FIX/cfg-drivers.json" check 506); rc=$?
+want "a person's hold beside the machine's: held" 1 "$rc"
+want_in "  names the person's"            '^status:blocked put on by dom at 2026-11-01T10:00:00Z$' "$out"
+rm -f "$FIX/gh/api-repos_acme_widgets_issues_506_timeline_per_page_100.json"
+
 echo "--- a failed read is never free ---"
 rm -f "$FIX/gh/issue-504.json"
 check 504 >/dev/null; rc=$?
