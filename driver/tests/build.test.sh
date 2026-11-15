@@ -528,14 +528,10 @@ want "out of memory under an ordinary exit code is the machine's too" "8" "$rc"
 rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
 rc=0; out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bash tc.test.sh" 2>&1) || rc=$?
 want "the planted-break proof reads a dead typecheck the same way" "8" "$rc"
-# Planted: a copy of the kit with the rule taken out. The dead-twice case must go red.
-PK="$FIX/kit-crash"; mkdir -p "$PK"
-for d in driver scripts tests hooks swarm briefs shared rules; do [ -d "$HERE/../../$d" ] && cp -R "$HERE/../../$d" "$PK/"; done
-CRASH_RULE='  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }'
-grep -vxF -- "$CRASH_RULE" "$HERE/../steps/build.sh" > "$PK/driver/steps/build.sh"
-want "the plant took the rule out of both proofs"        "2 0" "$(grep -cxF -- "$CRASH_RULE" "$HERE/../steps/build.sh") $(grep -cxF -- "$CRASH_RULE" "$PK/driver/steps/build.sh")"
+# Planted: the typecheck is run as it was before, once, with a death never told apart.
+# The dead-twice case must then be read as the change's again.
 rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
-rc=0; ( . "$PK/driver/steps/build.sh" >/dev/null 2>&1 || exit 99
+rc=0; ( _driver_typecheck_run() { tc_crash=0; ( cd "$1" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$2" ) >"$3" 2>&1; tc_rc=$?; return 0; }
         driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" >/dev/null 2>&1 ) || rc=$?
 want "planted → a dead typecheck is the change's fault again (6, not 8)" "6" "$rc"
 cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$TC" '$c')"
