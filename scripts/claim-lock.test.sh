@@ -208,6 +208,38 @@ ls "$SB/state/runs" 2>/dev/null | grep -q 781 \
   || ok "a claim taken outside a spawned run writes no run note"
 gh_run -- release 781 --force
 
+# --- 7b. Release leaves a ready ticket ready, draft PR or not ------------------
+# 2026-11-15: two builds stopped by a full disk were set ready by the park, then set
+# in review ten seconds later by the release, because their draft PR closes them. No
+# retry reads in review, so both sat until a person moved them.
+cat > "$SB/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+case "$1 $2" in
+  "issue view")
+    case "$*" in
+      *state,labels*) echo "${FAKE_STATE_LABELS:-}" ;;
+      *) [ -n "${FAKE_PR_NUM:-}" ] && echo "$FAKE_PR_NUM" ;;
+    esac; exit 0 ;;
+  "pr view")    [ -n "${FAKE_PR_HEAD:-}" ] && echo "$FAKE_PR_HEAD"; exit 0 ;;
+  *) exit 0 ;;
+esac
+GH
+gh_run -- acquire 783 --branch tkt-783/x --worktree "$SB/wt11" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|st:ready' FAKE_PR_NUM=830 FAKE_PR_HEAD=tkt-783/x \
+  -- release 783 --force
+[ "$RC" -eq 0 ] && grep -q 'state,labels' "$SB/gh.log" && ! grep -q 'st:review' "$SB/gh.log" "$SB/out" \
+  && ok "release leaves a ready ticket ready when its draft PR is open" \
+  || bad "release moved a ready ticket to in review behind its draft PR (rc $RC: $(grep -h 'st:review' "$SB/gh.log" "$SB/out" | head -1))"
+gh_run -- acquire 784 --branch tkt-784/x --worktree "$SB/wt12" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_PR_NUM=831 FAKE_PR_HEAD=tkt-784/x \
+  -- release 784 --force
+grep -q 'st:review' "$SB/gh.log" "$SB/out" \
+  && ok "release still marks a ticket with no status and an open PR as in review" \
+  || bad "release no longer marks a status-less ticket with an open PR as in review"
+
 # --- 8. A refused push with nobody holding the claim is no lost race ----------
 # 2026-11-04: start parked tickets ten requeues running on "a peer took the claim
 # first" while `show` said "not claimed". Any `[remote rejected]` push was read as
