@@ -4,7 +4,8 @@
 #   . scripts/person-hold.sh          (after coordinator-env.sh)
 #   person_hold_labels                the labels a person puts on or takes off, one a line
 #   person_hold_check <ticket>        0 free; 1 held, printing "<label> put on by <login> at <iso>";
-#                                     2 its labels could not be read
+#                                     2 its labels could not be read. A label a bot or a
+#                                     driver.accounts login put on last is the machine's, not a hold
 #   person-hold.sh check <ticket>     the same, as a command
 #
 # The labels are read fresh from GitHub on every check, never from a run's ticket snapshot:
@@ -22,17 +23,23 @@ person_hold_labels() {
 }
 
 person_hold_check() { # <ticket>
-  local t="${1:?person_hold_check: which ticket}" labs l tl who
+  local t="${1:?person_hold_check: which ticket}" labs l tl="" tl_read=0 who drivers
   labs=$(gh_read "#$t's labels" issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[].name] | join(",")') || return 2
+  drivers=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "${HARNESS_CFG:-/dev/null}" 2>/dev/null) || drivers='[]'
+  [ -n "$drivers" ] || drivers='[]'
   while read -r l; do
     [ -n "$l" ] || continue
     case ",$labs," in *",$l,"*) ;; *) continue ;; esac
-    who="someone at an unknown time"
-    if tl=$(gh_read "#$t's timeline" api "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$t/timeline?per_page=100" --paginate); then
-      who=$(jq -rs --arg l "$l" '[(.[] | if type == "array" then .[] else . end) | select(.event? == "labeled" and .label.name? == $l)]
-              | last | if . == null then empty else "\(.actor.login // "someone") at \(.created_at)" end' <<<"$tl" 2>/dev/null)
-      [ -n "$who" ] || who="someone at an unknown time"
-    fi
+    [ "$tl_read" = 1 ] || { tl=$(gh_read "#$t's timeline" api "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$t/timeline?per_page=100" --paginate) || tl=""; tl_read=1; }
+    who=""
+    [ -z "$tl" ] || who=$(jq -rs --arg l "$l" --argjson drivers "$drivers" '[(.[] | if type == "array" then .[] else . end) | select(.event? == "labeled" and .label.name? == $l)]
+              | last | if . == null then empty
+                elif (.actor.type // "") == "Bot" or ((.actor.login // "") | endswith("[bot]"))
+                     or ((.actor.login // "") as $u | $drivers | index([$u]) != null) then "-machine"
+                else "\(.actor.login // "someone") at \(.created_at)" end' <<<"$tl" 2>/dev/null)
+    # The driver's own park label (a PM park, an owner hold it could not hand on): start refuses those.
+    [ "$who" = "-machine" ] && continue
+    [ -n "$who" ] || who="someone at an unknown time"
     printf '%s put on by %s\n' "$l" "$who"
     return 1
   done <<< "$(person_hold_labels)"
@@ -44,6 +51,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     check) case "${2:-}" in ''|*[!0-9]*) echo "usage: person-hold.sh check <ticket>" >&2; exit 64 ;; esac
            person_hold_check "$2"; exit $? ;;
-    *) sed -n '4,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 64 ;;
+    *) sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 64 ;;
   esac
 fi
