@@ -261,7 +261,7 @@
       }
     },
     "trunkMerge": {
-      "description": "A task whose only commit merges the trunk into the branch. It needs no test pair: the driver requires `commit` to be a merge this task made (one already on the branch when the task started is refused), whose second parent is on the trunk and whose tree is exactly what a conflict-free `git merge` gives, and the task to have committed nothing else. A merge with a conflict resolved by hand, or any other edit, is a change and is refused here.",
+      "description": "A task whose only commit merges the trunk into the branch. It needs no test pair: the driver requires `commit` to be a merge this task made (one already on the branch when the task started is refused), whose second parent is on the trunk and whose tree is what `git merge` gives, and the task to have committed nothing else. A conflict resolved by hand is accepted when no marker remains, only the conflicted files differ from the clean merge, and self-check's gates then judge it on the same head; any other edit is a change and is refused here.",
       "type": "object",
       "additionalProperties": false,
       "required": [
