@@ -71,4 +71,16 @@ want "the check passes" "0" "$rc"
 want "one probe ran" "1" "$(probes)"
 want "the kept check now reads ok" "ok" "$(cut -f2 "$SWARM_LOGS/.auth-check")"
 
+echo "--- one lost-login reader: the CLI's auth event and its result line read the same ---"
+lost() { env_do "$T" "$FIX/ok.jsonl" "$@" "$FIX/r.jsonl"; }
+cp "$FIX/expired.jsonl" "$FIX/r.jsonl"
+lost swarm_login_log_lost >/dev/null; want "a result line naming a failed authentication is a lost login" "0" "$?"
+jq -nc '{type:"assistant", error:"authentication_failed", message:{model:"<synthetic>", content:[{type:"text", text:"Not logged in"}]}}' > "$FIX/r.jsonl"
+a=$(lost swarm_api_auth_log); rc=$?
+want "the CLI's authentication_failed event alone is a lost login" "0" "$rc"
+want "and it prints the event's words" "Not logged in" "$a"
+{ cat "$FIX/r.jsonl"; cat "$FIX/ok.jsonl"; } > "$FIX/r2.jsonl"; mv "$FIX/r2.jsonl" "$FIX/r.jsonl"
+lost swarm_login_log_lost >/dev/null; want "an auth event the CLI then answered past is not" "1" "$?"
+lost swarm_api_auth_log >/dev/null; want "for either name of the reader" "1" "$?"
+
 suite_end "$FAILED"
