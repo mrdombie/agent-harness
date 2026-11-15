@@ -36,9 +36,10 @@ LINE=$(printf '%s' "$LINE" | tr '\n\t' '  ')
 # names a choice only the owner can make, a build host missing tools only the owner
 # can install, a PR red past coordinator.redReportMin with nothing working it (a
 # person holds it, or its base is red: the rebuild pass leaves it), and a host whose
-# claim pushes keep failing (only the owner repairs its clone).
+# claim pushes keep failing (only the owner repairs its clone), and a host paused for
+# its lost Claude login (only the owner logs in there).
 # A kind a `--class owner` caller sends must be here (owner-kinds.test.sh).
-OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools red-2h claim-push-fails"
+OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools red-2h claim-push-fails auth-hold"
 KIND="${KEY%%:*}"
 case " $OWNER_KINDS " in *" $KIND "*) ;; *) CLASS=agent ;; esac
 AGENT_WORK="$COORD_DIR/agent-work.log"
