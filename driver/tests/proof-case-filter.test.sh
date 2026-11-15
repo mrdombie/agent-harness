@@ -43,10 +43,13 @@ git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: a file with no filter"
 
 # slow_script — slow for its first SLOW_RUNS runs; into SLOW_MEM_FILE when set it writes 5%
 # free for its first SLOW_TIGHT_RUNS runs and 60% after, as a build beside it takes the memory
-# and gives it back (a proof drops SWARM_*).
+# and gives it back (a proof drops SWARM_*). With SLOW_GIVE_BACK set, a run that is stopped
+# writes 60% as it goes: the run itself held the memory.
 slow_script() {
-  printf '#!/usr/bin/env bash\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\nif [ -n "${SLOW_MEM_FILE:-}" ]; then if [ "$n" -lt "${SLOW_TIGHT_RUNS:-99}" ]; then echo 5; else echo 60; fi > "$SLOW_MEM_FILE"; fi\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || sleep 30\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
+  printf '#!/usr/bin/env bash\nn=$(cat "$COUNT_FILE"); echo $((n + 1)) > "$COUNT_FILE"\nif [ -n "${SLOW_MEM_FILE:-}" ]; then if [ "$n" -lt "${SLOW_TIGHT_RUNS:-99}" ]; then echo 5; else echo 60; fi > "$SLOW_MEM_FILE"; fi\n[ -z "${SLOW_GIVE_BACK:-}" ] || trap '"'"'echo 60 > "$SLOW_MEM_FILE"; exit 143'"'"' TERM\n[ "$n" -ge "${SLOW_RUNS:-2}" ] || { sleep 30 & wait; }\ngrep -q yes slow.txt\n' > "$REPO/slow.test.sh"
 }
+# Memory is sampled while a take runs; a second a sample keeps the cases quick.
+export MACHINE_GATE_MEM_SAMPLE=1
 # slow_commits — S_TEST and S_IMPL: the slow suite, made once.
 slow_commits() {
   S_TEST=$(git -C "$REPO" log --format=%H --grep='^test: slow' -1); S_IMPL=$(git -C "$REPO" log --format=%H --grep='^feat: slow' -1)
@@ -142,6 +145,18 @@ want "taken twice and no more" "4" "$(cat "$FIX/count")"
 want_in "the retry waited on memory" 'machine busy \(free memory 5%' "$out"
 want_in "and that it was taken twice" 'taken twice, the second time alone in a machine gate slot with twice the limit' "$out"
 want_not_in "the second timeout had memory to spare: memory is not named" 'out of memory' "$out"
+fi
+
+if suite_case "out of memory while the second take ran, memory back once it was stopped: back on the queue, naming memory"; then
+printf '0\n' > "$FIX/count"; export COUNT_FILE="$FIX/count"
+slow_commits
+printf '60\n' > "$FIX/mem-pct"
+out=$(unset SWARM_FREE_MEM_PCT; SLOW_MEM_FILE="$FIX/mem-pct" SLOW_GIVE_BACK=1 SWARM_FREE_MEM_PCT_FILE="$FIX/mem-pct" SWARM_SWAP_PCT=0 MACHINE_GATE_POLL=0 \
+  SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
+want "the machine's, not the change's: back on the queue" "8" "$rc"
+want "taken twice and no more" "4" "$(cat "$FIX/count")"
+want "stopped, the run gave its memory back" "60" "$(cat "$FIX/mem-pct")"
+want_in "the note names the memory seen while it ran" 'the machine was out of memory \(free memory 5%, floor 10%\)' "$out"
 fi
 
 if suite_case "every step is told which test files take a filter"; then
