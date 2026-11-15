@@ -1115,6 +1115,7 @@ want_in "the owner hears that only a /login fixes it" "/login" "$(cat "$FIX/noti
 want "a login stop is not a stand-down"    "0" "$(grep -c '"kind":"stood-down".*"809"' "$C/events.did.jsonl")"
 
 fresh
+want "the next case starts with no auth hold" "" "$(cat "${SWARM_AUTH_HOLD_FILE:-$STATE/auth-hold}" 2>/dev/null)"
 fix_issue 810 OPEN "status:ready"
 cut_run 810 "$wall" "$said"
 out=$(tick)
