@@ -216,4 +216,32 @@ want "the account is recorded" "acct-1" "$(cut -f4 "$SWARM_AUTH_HOLD_FILE")"
 SWARM_NOW=$(( SWARM_NOW + 86400 * 30 )) swarm_auth_hold >/dev/null; want "a month later it still holds" "0" "$?"
 rm -f "$SWARM_AUTH_HOLD_FILE"; swarm_auth_hold >/dev/null; want "no file holds nothing" "1" "$?"
 
+echo "--- an expired login at the pre-push reviewer, its verdict re-ask and the size call ---"
+. "$HERE/../push-requires.sh" || exit 1
+. "$HERE/../steps/size.sh" || exit 1
+reset_case 708
+expired > "$FIX/ai/attest-ui-gate.jsonl"
+rc=0; out=$(_driver_attest_agent 708 ui-gate agent-harness:frontend-gate "$REPO" develop "$FIX/verdict-708.txt" 2>&1) || rc=$?
+want "the reviewer's lost login requeues" "$DRIVER_E_USAGE" "$rc"
+want "the auth hold is written" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
+want_not_in "never a machine fault" 'machine fault' "$out $(driver_state_get 708 park_note)"
+want_not_in "and no API retry" 'Trying once more' "$out"
+
+reset_case 709
+mkdir -p "$(driver_state_dir 709)/steps"; driver_lean_args "$REPO" attest
+jq -nc '{type:"result", is_error:false, session_id:"s-709", result:"findings only"}' > "$FIX/r709.jsonl"
+printf 'findings only\n' > "$FIX/verdict-709.txt"
+expired > "$FIX/ai/attest-ui-gate-verdict.jsonl"
+rc=0; out=$(_driver_attest_ask_verdict 709 ui-gate agent-harness:frontend-gate "$REPO" attest-ui-gate "$FIX/r709.jsonl" "$FIX/verdict-709.txt" 2>&1) || rc=$?
+want "the verdict re-ask's lost login requeues" "$DRIVER_E_USAGE" "$rc"
+want "and writes the auth hold" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
+
+reset_case 710
+jq '.number = 710 | .title = "Tidy util" | .body = "nowhere/gone.ts is hard to read."' "$FIX/gh/issue-710.json" > "$FIX/i.tmp" && mv "$FIX/i.tmp" "$FIX/gh/issue-710.json"
+expired > "$FIX/ai/size.jsonl"
+rc=0; out=$(driver_step_size 710 2>&1) || rc=$?
+want "the size call's lost login requeues" "$DRIVER_E_USAGE" "$rc"
+want "and writes the auth hold" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
+want_not_in "never 'no readable answer'" 'no readable answer' "$out"
+
 suite_end "$FAILED"
