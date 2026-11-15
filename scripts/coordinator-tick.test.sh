@@ -69,6 +69,8 @@ export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat
 export COORDINATOR_FIX_ROUNDS=0
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
+# The lost-login case writes this hold; fresh() clears it so no later case inherits it.
+export SWARM_AUTH_HOLD_FILE="$FIX/auth-hold"
 # The disk guard has its own suite (disk-guard.test.sh); here it never holds and never cleans
 # this machine's real temp dir, whatever free space a case plants for the housekeeping pass.
 cat > "$BIN/diskguard" <<'SH'
@@ -91,6 +93,7 @@ export COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
 
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
+  rm -f "$SWARM_AUTH_HOLD_FILE" "$STATE/logs/.auth-check"
   : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claude.log"; : > "$FIX/notify.log"; : > "$FIX/claims.txt"
   printf '[]\n' > "$FIX/gh/prs-all.json"; rm -f "$STATE/swarm/prs.json"
   unset SWARM_NOW
