@@ -85,7 +85,8 @@ want_not_in "no draft pull request, no park comment" 'pr create|issue comment' "
 echo "--- the other host's reading counts: its heartbeat in the fleet file ---"
 reset_case 705; reading 0.30
 mkdir -p "$STATE/coordinator"
-jq -nc --argjson r "$RESET" '{hosts:[{host:"yomato", usage:{five_hour:{u:0.96, reset:$r}}}]}' > "$STATE/coordinator/fleet.json"
+# Read after this host's own log: the newest reading in a window is the one that counts.
+jq -nc --argjson r "$RESET" --argjson at "$(( $(date +%s) + 60 ))" '{hosts:[{host:"yomato", usage:{five_hour:{u:0.96, reset:$r, at:$at}}}]}' > "$STATE/coordinator/fleet.json"
 out=$(WAIT_CLEARS=0 DRIVER_USAGE_WAIT_MAX_SEC=60 bash "$BT" 705 --steps "plan" 2>&1)
 want_in "this host's logs say 30%, the other host's heartbeat 96%: the step holds" '⏸ plan: usage hold — the five_hour window is at 96%' "$out"
 rm -f "$STATE/coordinator/fleet.json"

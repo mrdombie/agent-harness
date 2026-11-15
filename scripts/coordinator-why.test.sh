@@ -173,7 +173,7 @@ want_not_in "no < or > inside the heartbeat comment"  '[<>]' "$(jq -r '.why | ..
 
 echo "--- with a reading on the sheet, the reader paces by the owner's fresher one ---"
 world 0.10; printf '%s\tmac\tbuild\n' 13001 13002 13003 > "$FIX/claims.tsv"
-sheet '{"usage":{"five_hour":{"u":0.60,"reset":'"$(( NOWE + 10166 ))"',"at":'"$NOWE"'}},"settings":{"factor":0.95}}'
+sheet '{"usage":{"five_hour":{"u":0.60,"reset":'"$(( NOWE + 10166 ))"',"at":'"$(( $(date +%s) + 60 ))"'}},"settings":{"factor":0.95}}'
 out=$(vm_tick)
 want "the owner's 60% puts it ahead: only the process fixes start" "13621 13788" "$(spawned)"
 want_in "the pacing line reads the owner's reading"   'pacing: ahead — 5h window 60%' "$out"
