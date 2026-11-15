@@ -191,6 +191,7 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.minFreeMemPct` | 10 | `scripts/machine-gate.sh` holds below this share of RAM available (`SWARM_MIN_FREE_MEM_PCT`; `kern.memorystatus_level` on macOS, `MemAvailable` on Linux). An unread reading is clear |
 | `swarm.maxSwapPct` | 90 | The machine gate also holds above this share of swap in use (`SWARM_MAX_SWAP_PCT`), but only while free memory is under 25%: macOS leaves swap parked, 11.5 GB of it at 71% available on 2026-10-19 |
+| `swarm.memMaxWaitSec` | 1800 | A memory hold alone goes ahead after this long, and says so (`SWARM_MEM_MAX_WAIT_SEC`; 0 is no bound), so a lasting shortage cannot hold a claimed ticket for ever |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.ownerName` | — | Who a finished row's "Waiting on …" names; unset reads "the owner" |
 | `swarm.progressSince` | 2026-10-13 | The day "Progress to launch" counts done tickets from (local midnight) |

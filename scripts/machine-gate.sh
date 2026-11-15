@@ -33,6 +33,8 @@
 #   SWARM_MIN_FREE_MEM_PCT  the free-memory floor (else swarm.minFreeMemPct, else 10)
 #   SWARM_MAX_SWAP_PCT   the swap-used limit, counted only while free memory is under 25%
 #                        (else swarm.maxSwapPct, else 90)
+#   SWARM_MEM_MAX_WAIT_SEC  how long a memory hold alone may last before it goes ahead
+#                        (else swarm.memMaxWaitSec, else 1800; 0 is no bound)
 #   HARNESS_GATE_SLOTS   gate runs at once, machine-wide (else swarm.gateSlots, else 2)
 #   HARNESS_GATE_SLOT_DIR  where the slots live (default ~/.cache/agent-harness/gate-slots:
 #                        one per MACHINE, not per project — the cores are shared)
@@ -74,6 +76,8 @@ machine_gate_init() {
   MG_MIN_FREE_MEM="${SWARM_MIN_FREE_MEM_PCT:-$(_mg_cfg .swarm.minFreeMemPct)}"; MG_MIN_FREE_MEM="${MG_MIN_FREE_MEM:-10}"
   MG_MAX_SWAP="${SWARM_MAX_SWAP_PCT:-$(_mg_cfg .swarm.maxSwapPct)}"; MG_MAX_SWAP="${MG_MAX_SWAP:-90}"
   case "$MG_MIN_FREE_MEM" in *[!0-9]*) echo "machine-gate: free-memory floor '$MG_MIN_FREE_MEM' is not a whole percent — using 10" >&2; MG_MIN_FREE_MEM=10 ;; esac
+  MG_MEM_MAX_WAIT="${SWARM_MEM_MAX_WAIT_SEC:-$(_mg_cfg .swarm.memMaxWaitSec)}"
+  case "$MG_MEM_MAX_WAIT" in ''|*[!0-9]*) MG_MEM_MAX_WAIT=1800 ;; esac
   case "$MG_MAX_SWAP" in *[!0-9]*) echo "machine-gate: swap limit '$MG_MAX_SWAP' is not a whole percent — using 90" >&2; MG_MAX_SWAP=90 ;; esac
   SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(_mg_cfg .swarm.idleSamples)}"
   SWARM_IDLE_MAX_AGE="${SWARM_IDLE_MAX_AGE:-$(_mg_cfg .swarm.idleMaxAgeSec)}"
@@ -101,7 +105,13 @@ machine_gate_wait_load() { # [max-seconds]
   start=$(date +%s)
   while :; do
     if why=$(swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD"); then :
-    elif mem=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then why="$mem"; memheld=1
+    elif mem=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then
+      why="$mem"; memheld="${memheld:-$(date +%s)}"
+      # A shortage that lasts hours must not hold a claimed ticket for ever.
+      if [ "$MG_MEM_MAX_WAIT" -gt 0 ] && [ $(( $(date +%s) - memheld )) -ge "$MG_MEM_MAX_WAIT" ]; then
+        echo "machine still out of memory after ${MG_MEM_MAX_WAIT}s ($why), going ahead" >&2
+        return 0
+      fi
     else
       [ -z "$memheld" ] || why="$why, free memory $(swarm_free_mem_pct)%, swap $(s=$(swarm_swap_pct); echo "${s:-unread}")%"
       [ -n "$said" ] && echo "machine clear ($why), going ahead" >&2
