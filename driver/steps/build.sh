@@ -36,8 +36,9 @@
 #   5  a proof tree could not be prepared — the measurement was never made
 #   6  red then green, and the tree with the change does not type-check
 #   7  the command cannot be run as given (a placeholder, no such program) — never run
-#   8  it failed on a missing module from an install behind its lockfile, installed again and
-#      taken again, and the install is still behind — the machine's, never the change's
+#   8  the machine's, never the change's: it failed on a missing module from an install behind
+#      its lockfile, installed again and taken again, and the install is still behind; or a
+#      half ran out of time twice while the machine was out of memory
 #   9  a half could not reach the app (no server runs in a proof tree) — never run there
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
@@ -358,7 +359,7 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
           out="$out It was taken twice, the second time alone in a machine gate slot with twice the limit (${secs}s)."
           # Read now: the gate waited for memory, so the first timeout's reading is stale.
           mem=$(_driver_proof_mem) || mem=""
-          [ -z "$mem" ] || out="$out When it ran out of time the machine was out of memory ($mem) — not a hang in the command."
+          [ -z "$mem" ] || { out="$out When it ran out of time the machine was out of memory ($mem) — not a hang in the command, so back on the queue."; rc=8; }
         fi
       else
         out="$out The machine's gate could not be waited for, so it was not taken again."
