@@ -1,0 +1,9 @@
+{
+  "step": "account-tests",
+  "skills": [],
+  "replacedTests": [
+    {
+      "file": "src/compose/pinned.test.ts"
+    }
+  ]
+}

@@ -58,9 +58,9 @@ its command, the item as written. Never tick one: it is ticked when the PR merge
 
 ## A test you reword or remove is accounted for
 
-If you remove, reword or skip an `it(`/`test(` case, list its file in
-`replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
-a bare path to the test that now pins it, or `removedBecause`.
+If you delete a test file, or remove, reword or skip a case, list its repo-relative path in
+`replacedTests` with exactly one of `coveredBy`, a bare path to the test that now
+pins it, or `removedBecause`.
 
 **Git your permission mode refuses** (a reset, dropping commits origin already has,
 finishing a merge) is never run and never a question: list it in `gitActions`, and
@@ -150,7 +150,7 @@ fail, removes it, and requires the test to pass.
 is refused.
 
 **When the task only merges the trunk**, return `trunkMerge` with its `commit`.
-Any edit beyond the clean merge is refused.
+Only marker-free edits to conflicted files are accepted.
 
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both

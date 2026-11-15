@@ -78,6 +78,16 @@
         "DIFF": "the change under review, against the trunk it will merge into — the same diff the hunter was given"
       }
     },
+    "account-tests": {
+      "brief": "account-tests.md",
+      "schema": "schemas/account-tests.json",
+      "skills": [],
+      "tools": ["Read", "Grep", "Glob"],
+      "facts": {
+        "FILES": "the deleted-tests check's refusal at ship, verbatim: each test file the branch deletes or that loses cases with nothing accounting for it, the cases it lost, and a ready-to-paste line per file",
+        "DIFF": "git diff --stat of the branch from its merge-base with the trunk, then the full diff of every test file in it"
+      }
+    },
     "fix": {
       "brief": "fix.md",
       "schema": "schemas/fix.json",
