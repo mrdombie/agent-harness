@@ -504,6 +504,40 @@ out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bas
 want "a break-proved test that does not compile"        "6" "$rc"
 want_in "is refused, saying so"                         'does not type-check' "$out"
 
+echo "--- a typecheck that dies is the machine's, never a finding ---"
+# 2026-11-14: tsc out of heap (exit 134) was read as a type error 19 times across 4 builders.
+CRASH_N="$FIX/tc-crash.count"
+crash_tc() { # <times it dies before it passes> [exit code]
+  printf 'n=$(cat %q 2>/dev/null || echo 0); echo $((n + 1)) > %q; if [ "$n" -lt %s ]; then echo "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"; exit %s; fi' \
+    "$CRASH_N" "$CRASH_N" "$1" "${2:-134}"
+}
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 1)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "dead once, alive when taken again: proved"        "0" "$rc"
+want "  it was run twice"                                "2" "$(cat "$CRASH_N")"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "dead twice: the machine's (8), not a type error (6)" "8" "$rc"
+want_in "  saying it is not the change"                  'machine fault, not the change: the typecheck' "$out"
+want_in "  with the exit code"                           'exit 134' "$out"
+want_not_in "  and never as a type error"                'does not type-check' "$out"
+want "  taken twice and no more"                         "2" "$(cat "$CRASH_N")"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9 1)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "out of memory under an ordinary exit code is the machine's too" "8" "$rc"
+# Planted: the out-of-memory wording matches nothing. The same run must then be the change's again.
+rm -f "$CRASH_N"
+# Asked of the one-commit proof: the outer one takes a 6 again at a later commit of the fixture.
+rc=0; out=$(DRIVER_TOOL_CRASH_RE='^no tool says this$' _driver_prove_red_green_at "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "planted → out of memory unread is the change's fault again (6, not 8)" "6" "$rc"
+[ "$rc" = 6 ] || printf '   the planted run said: %s\n' "$out"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
+rc=0; out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bash tc.test.sh" 2>&1) || rc=$?
+want "the planted-break proof reads a dead typecheck the same way" "8" "$rc"
+cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$TC" '$c')"
+rc=0; driver_prove_red_green "$REPO" tc.test.sh "$TC_TEST" "$TC_IMPL" "bash tc.test.sh" >/dev/null 2>&1 || rc=$?
+want "a real type error is still the change's"          "6" "$rc"
+
 echo "--- the build step sends it back, and the next try is told why ---"
 export DRIVER_TICKET=141
 driver_state_init 141 --worktree "$REPO" --repo "$REPO"
