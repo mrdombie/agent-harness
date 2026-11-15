@@ -328,12 +328,6 @@ _driver_proof_gate() {
   declare -F machine_gate_acquire >/dev/null 2>&1 || . "$KIT_ROOT/scripts/machine-gate.sh" 2>/dev/null || return 1
   machine_gate_wait_load 0 >&2 && machine_gate_acquire 0 "proof #${DRIVER_TICKET:-?}" >&2
 }
-# _driver_proof_mem — the machine gate's memory reason when memory is tight now. 1 when not.
-_driver_proof_mem() {
-  declare -F machine_gate_init >/dev/null 2>&1 || . "$KIT_ROOT/scripts/machine-gate.sh" 2>/dev/null || return 1
-  machine_gate_init
-  swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"
-}
 DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Failed to resolve import|Failed to load url"
 _driver_proof_machine() { # <proof fn> <repo> <args…>
   local fn="$1" repo="$2" out rc try=0 behind mod
@@ -352,13 +346,13 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
       driver_say "⏳ proof: out of time after ${secs}s (limit ${DRIVER_CMD_TIMEOUT}s a half, load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for the machine, then taken once more with twice the limit" >&2
       if _driver_proof_gate; then
         t0=$(date +%s)
+        machine_gate_mem_watch_start 2>/dev/null || true
         rc=0; out=$(DRIVER_CMD_TIMEOUT=$(( DRIVER_CMD_TIMEOUT * 2 )) "$fn" "$repo" "$@") || rc=$?
+        mem=$(machine_gate_mem_watch_stop 2>/dev/null) || mem=""
         secs=$(( $(date +%s) - t0 ))
         machine_gate_release 2>/dev/null || true
         if [ "$rc" -eq 4 ]; then
           out="$out It was taken twice, the second time alone in a machine gate slot with twice the limit (${secs}s)."
-          # Read now: the gate waited for memory, so the first timeout's reading is stale.
-          mem=$(_driver_proof_mem) || mem=""
           [ -z "$mem" ] || { out="$out When it ran out of time the machine was out of memory ($mem) — not a hang in the command, so back on the queue."; rc=8; }
         fi
       else

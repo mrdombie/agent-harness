@@ -127,6 +127,33 @@ machine_gate_wait_load() { # [max-seconds]
   done
 }
 
+# machine_gate_mem_watch_start — sample memory in the background while heavy work runs.
+# Read after the work is stopped, its memory is back and a shortage it caused is gone.
+machine_gate_mem_watch_start() {
+  machine_gate_mem_watch_stop >/dev/null 2>&1
+  machine_gate_init
+  MG_MEM_SEEN=$(mktemp "${TMPDIR:-/tmp}/mg-mem.XXXXXX") || { MG_MEM_SEEN=""; return 1; }
+  local parent=$$ every="${MACHINE_GATE_MEM_SAMPLE:-5}" seen="$MG_MEM_SEEN"
+  (
+    while kill -0 "$parent" 2>/dev/null && [ -f "$seen" ]; do
+      if [ ! -s "$seen" ] && r=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then printf '%s' "$r" > "$seen"; fi
+      sleep "$every"
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  MG_MEM_WATCH_PID=$!
+}
+
+# machine_gate_mem_watch_stop — stop sampling; print the first memory shortage seen while it
+# ran. 1 when memory was never tight.
+machine_gate_mem_watch_stop() {
+  local seen=""
+  [ -z "${MG_MEM_WATCH_PID:-}" ] || kill "$MG_MEM_WATCH_PID" 2>/dev/null
+  [ -z "${MG_MEM_SEEN:-}" ] || { seen=$(cat "$MG_MEM_SEEN" 2>/dev/null); rm -f "$MG_MEM_SEEN"; }
+  MG_MEM_WATCH_PID=""; MG_MEM_SEEN=""
+  [ -n "$seen" ] || return 1
+  printf '%s' "$seen"
+}
+
 # Clear a slot whose holder is gone. The pid read first can be stale: its holder
 # may have let go and exited, and a live taker made the slot again. So the
 # verdict is taken again under a per-slot reap lock, and the slot is removed in

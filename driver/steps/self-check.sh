@@ -386,11 +386,21 @@ _driver_selfcheck_moot() {
   return "$DRIVER_E_REQUEUE"
 }
 
-# _driver_gate_mem_tight — the machine gate's memory reason when memory is tight now.
+# _driver_gate_watched <cmd…> — run it with memory sampled while it runs. DRIVER_GATE_MEM is
+# the shortage seen then, empty when there was none.
+_driver_gate_watched() {
+  local rc=0
+  declare -F machine_gate_mem_watch_start >/dev/null 2>&1 && machine_gate_mem_watch_start 2>/dev/null
+  "$@" || rc=$?
+  DRIVER_GATE_MEM=$(machine_gate_mem_watch_stop 2>/dev/null) || DRIVER_GATE_MEM=""
+  return "$rc"
+}
+_driver_gate_run() { ( cd "$1" && driver_run_project "$2" "$3" ); } # <tree> <secs> <cmd>
+
+# _driver_gate_mem_tight — the memory shortage seen while the last gate command ran.
 _driver_gate_mem_tight() {
-  type swarm_mem_tight >/dev/null 2>&1 || return 1
-  machine_gate_init
-  swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"
+  [ -n "${DRIVER_GATE_MEM:-}" ] || return 1
+  printf '%s' "$DRIVER_GATE_MEM"
 }
 
 # _driver_gate_timed_out <label> <secs> <cmd> <loaded> — the second try ran out too.
@@ -505,12 +515,12 @@ _driver_prepush_gate() {
     driver_say "   self-check: $owed is owed on this diff — running gates.prePushOwed, the push's checks without that verdict"
   fi
   local pscale psecs; pscale=$(_driver_gate_scale); psecs=$(_driver_gate_secs "$pscale")
-  DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+  DRIVER_GATE_SECS="$psecs" _driver_gate_watched _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
   if [ "$prc" -eq 124 ]; then
     _driver_gate_quiet_retry pre-push "$psecs"
     psecs="$DRIVER_GATE_RETRY_SECS"; prc=0
     [ "$(_driver_gate_scale)" -le 1 ] || pscale=2
-    DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+    DRIVER_GATE_SECS="$psecs" _driver_gate_watched _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
     if [ "$prc" -eq 124 ]; then
       pushran=1
       _driver_gate_timed_out pre-push "$psecs" "$DRIVER_PREPUSH_CMD" "$([ "$pscale" -gt 1 ] && echo 1 || echo 0)"
@@ -524,7 +534,7 @@ _driver_prepush_gate() {
   pushran=1
   if [ "$prc" -ne 0 ] && [ "$prc" -ne 124 ] \
      && { _driver_ratchet_tighten "$t" "$wt" "$pout" pre-push || driver_format_changed "$t" "$wt" "self-check: pre-push"; }; then
-    prc=0; DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+    prc=0; DRIVER_GATE_SECS="$psecs" _driver_gate_watched _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
   fi
   if [ "$prc" -eq 0 ]; then
     driver_say "   self-check: pre-push ok"
@@ -697,7 +707,7 @@ driver_step_self_check() { # <ticket>
     # Its own command, its own exit code, nothing batched with it. The limit is
     # scaled by the machine's load, read now.
     gscale=$(_driver_gate_scale); gsecs=$(_driver_gate_secs "$gscale")
-    ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+    _driver_gate_watched _driver_gate_run "$wt" "$gsecs" "$cmd" > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
     rc=$?
     if [ "$rc" -eq 124 ]; then
       # Its own outcome, not a red gate: it says nothing about the change. One more
@@ -706,13 +716,13 @@ driver_step_self_check() { # <ticket>
       if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
       gsecs="$DRIVER_GATE_RETRY_SECS"
       [ "$(_driver_gate_scale)" -le 1 ] || gscale=2
-      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      _driver_gate_watched _driver_gate_run "$wt" "$gsecs" "$cmd" > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
        && { _driver_ratchet_tighten "$t" "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$name" \
             || driver_format_changed "$t" "$wt" "self-check: $name"; }; then
-      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      _driver_gate_watched _driver_gate_run "$wt" "$gsecs" "$cmd" > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
@@ -722,7 +732,7 @@ driver_step_self_check() { # <ticket>
       { machine_gate_wait_load 0 && machine_gate_acquire 0 "self-check #$t"; } || mrc=$?
       if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
       gsecs=$(_driver_gate_secs)
-      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      _driver_gate_watched _driver_gate_run "$wt" "$gsecs" "$cmd" > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
     # A package the branch declares that the install does not have: installed again once
@@ -732,7 +742,7 @@ driver_step_self_check() { # <ticket>
       relinked=1
       driver_say "⏳ self-check: $name could not find $missing, which this branch's package.json declares — a stale install, not the change. Installing it again (machine setup, not a fix round) and running $name again."
       driver_own_install "$wt" || driver_say "   self-check: the install failed — the reason is above."
-      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      _driver_gate_watched _driver_gate_run "$wt" "$gsecs" "$cmd" > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
       # Still missing after the tree's own install from its own lockfile: the lockfile
       # does not name it, or this host cannot fetch it. The machine's, never a fix round.
