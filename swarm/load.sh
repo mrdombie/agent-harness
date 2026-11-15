@@ -213,9 +213,12 @@ swarm_free_mem_gb() {
 # _swarm_seam <file-var> <fixed-var> — a seam's reading, or 1 when neither is set.
 _swarm_seam() {
   local file="${!1:-}" fixed="${!2:-}" f
-  if [ -n "$file" ] && [ -f "$file" ]; then f=$(head -1 "$file" 2>/dev/null); printf '%s' "${f%%.*}"; return 0; fi
-  if [ -n "$fixed" ]; then printf '%s' "${fixed%%.*}"; return 0; fi
-  return 1
+  if [ -n "$file" ] && [ -f "$file" ]; then f=$(head -1 "$file" 2>/dev/null)
+  elif [ -n "$fixed" ]; then f="$fixed"
+  else return 1; fi
+  f="${f//[[:space:]]/}"; f="${f%%.*}"
+  case "$f" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$f"
 }
 
 # The available share of RAM in percent, or nothing when unread.
@@ -256,6 +259,8 @@ swarm_swap_pct() {
 swarm_mem_tight() {
   local min="${1:-10}" max="${2:-90}" free swap below="${SWARM_SWAP_COUNTS_BELOW:-25}"
   case "$below" in ''|*[!0-9]*) below=25 ;; esac
+  case "$min" in ''|*[!0-9]*) min=10 ;; esac
+  case "$max" in ''|*[!0-9]*) max=90 ;; esac
   free=$(swarm_free_mem_pct); swap=$(swarm_swap_pct)
   [ -n "$free" ] || return 1
   if [ "$free" -lt "$min" ]; then printf 'free memory %s%%, floor %s%%' "$free" "$min"; return 0; fi

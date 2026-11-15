@@ -73,6 +73,8 @@ machine_gate_init() {
   MG_MAX_LOAD="${SWARM_MAX_LOAD:-$(_mg_cfg .swarm.maxLoad)}"; MG_MAX_LOAD="${MG_MAX_LOAD:-$(swarm_default_max_load)}"
   MG_MIN_FREE_MEM="${SWARM_MIN_FREE_MEM_PCT:-$(_mg_cfg .swarm.minFreeMemPct)}"; MG_MIN_FREE_MEM="${MG_MIN_FREE_MEM:-10}"
   MG_MAX_SWAP="${SWARM_MAX_SWAP_PCT:-$(_mg_cfg .swarm.maxSwapPct)}"; MG_MAX_SWAP="${MG_MAX_SWAP:-90}"
+  case "$MG_MIN_FREE_MEM" in *[!0-9]*) echo "machine-gate: free-memory floor '$MG_MIN_FREE_MEM' is not a whole percent — using 10" >&2; MG_MIN_FREE_MEM=10 ;; esac
+  case "$MG_MAX_SWAP" in *[!0-9]*) echo "machine-gate: swap limit '$MG_MAX_SWAP' is not a whole percent — using 90" >&2; MG_MAX_SWAP=90 ;; esac
   SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(_mg_cfg .swarm.idleSamples)}"
   SWARM_IDLE_MAX_AGE="${SWARM_IDLE_MAX_AGE:-$(_mg_cfg .swarm.idleMaxAgeSec)}"
   MG_SLOTS="${HARNESS_GATE_SLOTS:-$(_mg_cfg .swarm.gateSlots)}"; MG_SLOTS="${MG_SLOTS:-2}"
