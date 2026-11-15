@@ -150,9 +150,7 @@ fail, removes it, and requires the test to pass.
 is refused.
 
 **When the task only merges the trunk**, return `trunkMerge` with its `commit`.
-A conflict you resolve by hand is accepted when no marker remains and only the
-conflicted files differ from the clean merge; self-check's gates then judge it.
-Any other edit beyond the merge is refused.
+Only marker-free edits to conflicted files are accepted.
 
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
