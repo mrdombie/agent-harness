@@ -707,6 +707,45 @@ sleep 1
 [ ! -f "$OUT/seen" ] && [ ! -f "$OUT/driver-seen" ] && ok "no build session starts" || bad "a build session started"
 [ -f "$OUT/auth-hold" ] && ok "the auth hold is written" || bad "no auth hold was written"
 
+# 12b. a live run on this host still holds #42: the gate keeps that claim, and only refuses.
+sleep 60 & LIVE_PID=$!
+cat > "$AK/scripts/claim-lock.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$SPAWN_TEST_CLAIMLOCK"
+case "\$1" in
+  list) echo '[{"issue":42,"agent":"tester@here","mine":true,"pid":$LIVE_PID}]'; exit 0 ;;
+  release) echo "released #\$2"; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$AK/scripts/claim-lock.sh"
+authgate() { # <args…> — spawn-claim on the auth kit, its probe recording itself and reading as lost
+  rm -f "$OUT/probes" "$OUT/claimlock" "$OUT/auth-hold"; rm -rf "$OUT/auth-logs"; RC=0
+  out=$(SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_CLAIMLOCK="$OUT/claimlock" SWARM_PLUGIN_REGISTRY="$SB/no-registry.json" \
+    PATH="$SB/bin:$PATH" HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
+    HARNESS_CFG_PATH="$STORE/.claude/harness.json" HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
+    SWARM_ACCOUNT=acct-test SWARM_LOGS="$OUT/auth-logs" SWARM_AUTH_HOLD_FILE="$OUT/auth-hold" \
+    SWARM_AUTH_PROBE_CMD="echo x >> '$OUT/probes'; cat '$OUT/expired.jsonl'" \
+    SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" SPAWN_CLAIM_CANONICAL= TMPDIR="$SB" \
+    bash "$AK/scripts/spawn-claim.sh" "$@" 2>&1 </dev/null) || RC=$?
+}
+probed() { [ -s "$OUT/probes" ]; }
+authgate 42
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+[ "$RC" = 77 ] && ok "a live run's ticket: spawn-claim 42 still refuses with 77" || bad "a live run's ticket: exited $RC"
+grep -qx 'release 42' "$OUT/claimlock" 2>/dev/null && bad "the live run's claim on #42 was released" \
+  || ok "the claim a live run on this host holds is kept"
+
+# 12c. --help, a call naming no ticket, and --fg never wait on the login probe.
+authgate --help
+[ "$RC" = 0 ] && ! probed && ok "--help prints help and never probes the login" || bad "--help: rc=$RC, probed=$(probed && echo yes || echo no)"
+authgate
+[ "$RC" = 2 ] && ! probed && ok "a call naming no ticket is refused as one, with no probe" || bad "no ticket: rc=$RC, probed=$(probed && echo yes || echo no)"
+authgate --fg 42
+! probed && ! grep -qx 'release 42' "$OUT/claimlock" 2>/dev/null && ! printf '%s' "$out" | grep -q 'paused for auth' \
+  && ok "--fg skips the auth gate, as it skips the usage gate: no probe, no release" \
+  || bad "--fg: rc=$RC, probed=$(probed && echo yes || echo no), claim-lock: $(tr '\n' ';' < "$OUT/claimlock" 2>/dev/null)"
+
 # 13. a login that works: the passing check is kept for swarm.authCheckMin (10) minutes, so two
 # spawns seven minutes apart probe once; a probe that hangs, or fails with a 529, is no auth verdict.
 cat > "$AK/scripts/claim-lock.sh" <<'STUB'
@@ -719,7 +758,7 @@ chmod +x "$AK/scripts/claim-lock.sh"
 jq -nc '{type:"result", subtype:"success", is_error:false, num_turns:1, result:"ok", usage:{input_tokens:9, output_tokens:1}}' > "$OUT/okprobe.jsonl"
 jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:1, terminal_reason:"api_error", api_error_status:529,
   result:"API Error: 529 Overloaded", usage:{input_tokens:0, output_tokens:0}}' > "$OUT/overloaded.jsonl"
-authrun() { # <now> <probe cmd> [extra env…] — spawn-claim --fg 42 on the auth kit
+authrun() { # <now> <probe cmd> [extra env…] — a detached spawn-claim 42 on the auth kit, waited out
   local now="$1" cmd="$2"; shift 2
   rm -f "$OUT/driver-seen"; RC=0
   out=$(env "$@" SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_CLAIMLOCK="$OUT/claimlock" SWARM_PLUGIN_REGISTRY="$SB/no-registry.json" \
@@ -727,7 +766,8 @@ authrun() { # <now> <probe cmd> [extra env…] — spawn-claim --fg 42 on the au
     HARNESS_CFG_PATH="$STORE/.claude/harness.json" HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
     SWARM_NOW="$now" SWARM_ACCOUNT=acct-test SWARM_LOGS="$OUT/auth-logs" SWARM_AUTH_HOLD_FILE="$OUT/auth-hold" SWARM_AUTH_PROBE_CMD="$cmd" \
     SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" SPAWN_CLAIM_CANONICAL= TMPDIR="$SB" \
-    bash "$AK/scripts/spawn-claim.sh" --fg 42 2>&1) || RC=$?
+    bash "$AK/scripts/spawn-claim.sh" 42 2>&1) || RC=$?
+  for _ in $(seq 1 30); do [ -f "$OUT/driver-seen" ] && break; sleep 0.5; done
 }
 gate_passed() { [ "$RC" != 77 ] && ! printf '%s' "$out" | grep -q 'paused for auth' && [ -f "$OUT/driver-seen" ]; }
 rm -f "$OUT/claimlock" "$OUT/auth-hold" "$OUT/probes"; rm -rf "$OUT/auth-logs"
