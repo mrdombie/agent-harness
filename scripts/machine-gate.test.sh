@@ -117,6 +117,11 @@ printf '5\r\n' > "$T/mem-cr"
 out=$(SWARM_FREE_MEM_PCT_FILE="$T/mem-cr" SWARM_IDLE=80 SWARM_LOAD=1 bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'free memory 5%, floor 10%' && ok "a seam reading of 5 with a CR holds as 5" || fail "seam 5\\r: rc $rc $out"
 
+echo "--- after a memory wait the clear line carries the memory reading ---"
+echo 5 > "$T/mem-pct"
+out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT_FILE="$T/mem-pct" SWARM_SWAP_PCT=3 MACHINE_GATE_ON_WAIT="$T/mem-raise" bash "$SUT" wait --max 5 2>&1); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'machine clear (cpu idle 80%, load 1, free memory 60%, swap 3%), going ahead' && ok "the clear line names free memory and swap" || fail "clear line: rc $rc $out"
+
 echo "--- the load average is only a runaway guard, at 20 x cores ---"
 out=$(SWARM_IDLE=41 SWARM_LOAD=140 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 0 ] && ok "measured 2026-10-16: load 140 at 41% idle on 10 cores goes ahead" || fail "load 140: rc $rc $out"
