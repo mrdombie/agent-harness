@@ -130,6 +130,12 @@ final_line() { # <log> — the run's own last word
   printf '%s' "$r" | tr '\t\n' '  ' | cut -c1-240
 }
 limit_hit() { swarm_usage_log_limited "$1"; }
+# A lost login, read off the CLI's lines or the driver's own requeue for one: the host's, not the ticket's.
+auth_stop() { # <log> [last line]
+  swarm_login_log_lost "$1" && return 0
+  case "${2:-}" in *"Claude login"*"is gone"*) return 0 ;; esac
+  return 1
+}
 # Runs the wall cut off mid-work, waiting to go back on the queue: <ticket> \t <run-id> \t <log> \t <why>
 CUT_PENDING="$COORD_DIR/cut.$(coord_mode)"
 cut_off() { [ -n "$1" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$CUT_PENDING"; }
@@ -204,8 +210,8 @@ for ended in "$RUNS_DIR"/*.ended; do
   case "$code" in
     ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}"|"${DRIVER_E_ELSEWHERE:-36}") ;;
     # A claim lost to another machine's coordinator is the race's, not the ticket's.
-    "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
-    *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
+    "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || auth_stop "$log" "$last" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
+    *) limit_hit "$log" || auth_stop "$log" "$last" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
   esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
   if [ -n "$ticket" ]; then
@@ -223,9 +229,8 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif swarm_login_log_lost "$log"; then
     event "login-lost:$rid" login-lost false "$ticket" "" "run $rid stopped: the CLI is not logged in"
     cut_off "$ticket" "$rid" "$log" "a lost login"
-    if event "login-lost:$(swarm_day)" login-lost false "" "" "the agents' CLI is not logged in"; then
-      bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
-    fi
+    # One outage, one owner notice: the auth hold's, raised below under any hold.
+    coord_shadow || swarm_auth_hold >/dev/null || swarm_auth_hold_write "$(swarm_api_auth_log "$log") (run $rid)"
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
     # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
@@ -721,6 +726,11 @@ say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 # A host whose builds cannot run their step's skill takes none, and says why on the sheet.
 COORD_CLI_VERSION=$(harness_claude_cli_version)
 SKILL_HOLD=$(coord_skill_hold "$COORD_CLI_VERSION" "$HARNESS_RUNNING") || SKILL_HOLD=""
+# A host whose Claude login is lost starts nothing: every build would die at its first call.
+# A shadow tick only reads the hold: a probe is a paid call and can move the real hold.
+coord_shadow || swarm_auth_check >/dev/null || true
+AUTH_HOLD=$(swarm_auth_hold) && AUTH_HOLD=$(printf '%s' "$AUTH_HOLD" | cut -c1-240) || AUTH_HOLD=""
+AUTH_SINCE=$(swarm_usage_hold_field "${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" 1 2>/dev/null)
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -1031,6 +1041,13 @@ if [ -n "$DISK_HOLD" ]; then
   event "disk-hold:$(swarm_day)" disk-low false "" "" "$DISK_HOLD" || true
 fi
 
+# Raised under any hold: the owner clearing a disk hold must not learn of the login a tick later.
+if [ -n "$AUTH_HOLD" ]; then
+  if event "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" auth-hold false "" "" "$COORD_HOST is paused for auth: $AUTH_HOLD"; then
+    bash "$NOTIFY" --class owner "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" "$COORD_HOST lost its Claude login ($AUTH_HOLD) — it starts nothing until someone runs /login there" || true
+  fi
+fi
+
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true
@@ -1051,6 +1068,9 @@ elif [ -n "$SKILL_HOLD" ]; then
   say "spawn: starting nothing new — $SKILL_HOLD"
   coord_act_log skill-hold - "$SKILL_HOLD"
   event "skill-hold:$COORD_HOST:${COORD_CLI_VERSION:-?}:$HARNESS_RUNNING" skill-hold false "" "" "$COORD_HOST takes no builds: $SKILL_HOLD" || true
+elif [ -n "$AUTH_HOLD" ]; then
+  say "spawn: paused for auth — $AUTH_HOLD; it takes work again once someone logs in on $COORD_HOST"
+  coord_act_log auth-hold - "$AUTH_HOLD"
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"
