@@ -459,6 +459,27 @@ _driver_fix_drop_nonblocking() {
   driver_say "   fix: $(jq -r 'length' <<<"$dropped") deferred finding(s) do not block in review round $round ($late) — $(jq -r '[.[] | "\(.blockerId) (\(.grade))"] | join(", ")' <<<"$dropped"): a Minor was dropped or sent to the sweep, a Nit was dropped; no refusal"
 }
 
+# _driver_fix_whole_ids <answer> <review> — an answered id that is short for exactly one of the
+# review's finding ids (R1 for R1-undone-note, or the same id in another case) is rewritten
+# to that id. Short for two, or for none, is left as written and refused as unanswered.
+_driver_fix_whole_ids() {
+  local ans="$1" review="$2" ids
+  ids=$(jq -c '[.findings[]? | (.id // empty) | tostring]' "$review" 2>/dev/null) || return 0
+  [ -n "$ids" ] && [ "$ids" != "[]" ] || return 0
+  jq --argjson ids "$ids" '
+    def whole: . as $a
+      | if ($a | type) != "string" or ($ids | index($a)) != null then $a
+        else ($a | ascii_downcase) as $l
+          | [ $ids[] | select((ascii_downcase) as $i
+              | $i == $l or (($i | startswith($l)) and ($i[($l | length):($l | length) + 1] | test("^[-_.: ]$")))) ] as $m
+          | if ($m | length) == 1 then $m[0] else $a end
+        end;
+    reduce ("cleared", "pmProofs", "autoProofs", "bodyProofs", "deferred") as $k (.;
+      if (.[$k] | type) == "array"
+      then .[$k] |= map(if type == "object" and has("blockerId") then .blockerId |= whole else . end)
+      else . end)' "$ans" > "$ans.ids" 2>/dev/null && mv "$ans.ids" "$ans" || rm -f "$ans.ids"
+}
+
 driver_step_fix() { # <ticket>
   local t="${1:?driver_step_fix: need a ticket}"
   local d review round wt trunk r diff blockers n rc ans i ncleared
@@ -575,6 +596,7 @@ $basenote"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix
   ans="$d/steps/fix.json"
+  _driver_fix_whole_ids "$ans" "$review"
   # The tests this round reworded or removed, on the same ledger build appends to.
   jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
 
@@ -603,7 +625,7 @@ EOB
   [ -z "$pb" ] || { jq --argjson d "$pb" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"; }
   _driver_fix_drop_nonblocking "$t" "$ans" "$graded" "$fround"
   if [ -n "$unanswered" ]; then
-    driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships."
+    driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships. The review's ids, to be answered as written: $(jq -r '[.findings[]? | (.id // empty)] | join(", ")' "$review" 2>/dev/null)"
     driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a blocking finding is neither cleared nor deferrable"
     return "$DRIVER_E_REFUSED"
   fi
