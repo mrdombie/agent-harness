@@ -527,7 +527,8 @@ rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SH
 want "out of memory under an ordinary exit code is the machine's too" "8" "$rc"
 # Planted: the out-of-memory wording matches nothing. The same run must then be the change's again.
 rm -f "$CRASH_N"
-rc=0; out=$(DRIVER_TOOL_CRASH_RE='^no tool says this$' driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+# Asked of the one-commit proof: the outer one takes a 6 again at a later commit of the fixture.
+rc=0; out=$(DRIVER_TOOL_CRASH_RE='^no tool says this$' _driver_prove_red_green_at "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
 want "planted → out of memory unread is the change's fault again (6, not 8)" "6" "$rc"
 [ "$rc" = 6 ] || printf '   the planted run said: %s\n' "$out"
 rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
