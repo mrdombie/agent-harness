@@ -97,12 +97,13 @@ _mg_time_left() { [ "${2:-0}" -le 0 ] && return 0; [ $(( $(date +%s) - $1 )) -lt
 # Wait until the machine is not busy. 0 when clear, 75 when --max ran out, 76 when moot.
 machine_gate_wait_load() { # [max-seconds]
   machine_gate_init
-  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why mem said=""
+  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why mem said="" memheld=""
   start=$(date +%s)
   while :; do
     if why=$(swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD"); then :
-    elif mem=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then why="$mem"
+    elif mem=$(swarm_mem_tight "$MG_MIN_FREE_MEM" "$MG_MAX_SWAP"); then why="$mem"; memheld=1
     else
+      [ -z "$memheld" ] || why="$why, free memory $(swarm_free_mem_pct)%, swap $(s=$(swarm_swap_pct); echo "${s:-unread}")%"
       [ -n "$said" ] && echo "machine clear ($why), going ahead" >&2
       return 0
     fi
