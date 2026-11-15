@@ -755,9 +755,10 @@ swarm_blocking_labels() {
 swarm_hold_parked() { # <ticket> — its run record, or on another host its newest park comment, says a person's hold parked it
   local f="${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json"
   [ -f "$f" ] && jq -e '(.held_by // "") != ""' "$f" >/dev/null 2>&1 && return 0
-  swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments \
-    -q '[.comments[]? | .body // "" | select(startswith("**Parked —"))] | last // "" | contains("<!-- driver-park: hold -->")' 2>/dev/null \
-    | grep -qx true
+  local v
+  v=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments \
+    -q '[.comments[]? | .body // "" | select(startswith("**Parked —"))] | last // "" | contains("<!-- driver-park: hold -->")' 2>/dev/null)
+  [ "$v" = true ]
 }
 swarm_spawnable() { # <ticket>
   local t="$1" meta st lab l openpr
