@@ -504,6 +504,44 @@ out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bas
 want "a break-proved test that does not compile"        "6" "$rc"
 want_in "is refused, saying so"                         'does not type-check' "$out"
 
+echo "--- a typecheck that dies is the machine's, never a finding ---"
+# 2026-11-14: tsc out of heap (exit 134) was read as a type error 19 times across 4 builders.
+CRASH_N="$FIX/tc-crash.count"
+crash_tc() { # <times it dies before it passes> [exit code]
+  printf 'n=$(cat %q 2>/dev/null || echo 0); echo $((n + 1)) > %q; if [ "$n" -lt %s ]; then echo "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"; exit %s; fi' \
+    "$CRASH_N" "$CRASH_N" "$1" "${2:-134}"
+}
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 1)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "dead once, alive when taken again: proved"        "0" "$rc"
+want "  it was run twice"                                "2" "$(cat "$CRASH_N")"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "dead twice: the machine's (8), not a type error (6)" "8" "$rc"
+want_in "  saying it is not the change"                  'machine fault, not the change: the typecheck' "$out"
+want_in "  with the exit code"                           'exit 134' "$out"
+want_not_in "  and never as a type error"                'does not type-check' "$out"
+want "  taken twice and no more"                         "2" "$(cat "$CRASH_N")"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9 1)" '$c')"
+rc=0; out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1) || rc=$?
+want "out of memory under an ordinary exit code is the machine's too" "8" "$rc"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
+rc=0; out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bash tc.test.sh" 2>&1) || rc=$?
+want "the planted-break proof reads a dead typecheck the same way" "8" "$rc"
+# Planted: a copy of the kit with the rule taken out. The dead-twice case must go red.
+PK="$FIX/kit-crash"; mkdir -p "$PK"
+for d in driver scripts tests hooks swarm briefs shared rules; do [ -d "$HERE/../../$d" ] && cp -R "$HERE/../../$d" "$PK/"; done
+CRASH_RULE='  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }'
+grep -vxF -- "$CRASH_RULE" "$HERE/../steps/build.sh" > "$PK/driver/steps/build.sh"
+want "the plant took the rule out of both proofs"        "2 0" "$(grep -cxF -- "$CRASH_RULE" "$HERE/../steps/build.sh") $(grep -cxF -- "$CRASH_RULE" "$PK/driver/steps/build.sh")"
+rm -f "$CRASH_N"; cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$(crash_tc 9)" '$c')"
+rc=0; ( . "$PK/driver/steps/build.sh" >/dev/null 2>&1 || exit 99
+        driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" >/dev/null 2>&1 ) || rc=$?
+want "planted → a dead typecheck is the change's fault again (6, not 8)" "6" "$rc"
+cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$TC" '$c')"
+rc=0; driver_prove_red_green "$REPO" tc.test.sh "$TC_TEST" "$TC_IMPL" "bash tc.test.sh" >/dev/null 2>&1 || rc=$?
+want "a real type error is still the change's"          "6" "$rc"
+
 echo "--- the build step sends it back, and the next try is told why ---"
 export DRIVER_TICKET=141
 driver_state_init 141 --worktree "$REPO" --repo "$REPO"

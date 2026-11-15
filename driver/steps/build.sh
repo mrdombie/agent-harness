@@ -189,6 +189,38 @@ _driver_typecheck_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# A TOOL THAT DIED SAYS NOTHING ABOUT THE CHANGE. On 2026-11-14 tsc ran out of heap on a
+# loaded Mac (exit 134) 19 times across 4 builders; each was read as "the change does not
+# type-check" and sent back to build, where there was nothing to fix: one ticket took 10
+# build rounds in 3 hours. A command killed by a signal (128 and above), or one that says
+# it ran out of memory, is taken once more after the machine's gate; dead twice it is the
+# machine's (8: back on the queue, no try spent), never a finding.
+DRIVER_TOOL_CRASH_RE='JavaScript heap out of memory|Fatal error in |FATAL ERROR: '
+_driver_tool_crashed() { # <exit code> <output file>
+  [ "$1" -ge 128 ] && return 0
+  [ "$1" -ne 0 ] && [ "$1" -ne 124 ] && grep -qE -- "$DRIVER_TOOL_CRASH_RE" "$2" 2>/dev/null
+}
+# _driver_typecheck_run <tree> <command> <output file> — sets tc_rc, and tc_crash to 1 when
+# the command died and (taken once more, where the machine's gate could be waited for) died again.
+_driver_typecheck_run() {
+  local dir="$1" cmd="$2" outf="$3"
+  tc_crash=0
+  ( cd "$dir" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$outf" 2>&1
+  tc_rc=$?
+  _driver_tool_crashed "$tc_rc" "$outf" || return 0
+  driver_say "⏳ proof: the typecheck died (exit $tc_rc), which says nothing about the change — waiting for the machine, then once more" >&2
+  if _driver_proof_gate; then
+    ( cd "$dir" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$outf" 2>&1
+    tc_rc=$?
+    machine_gate_release 2>/dev/null || true
+  fi
+  ! _driver_tool_crashed "$tc_rc" "$outf" || tc_crash=1
+  return 0
+}
+_driver_typecheck_crash_line() { # <command> <exit code> <output lines>
+  printf 'machine fault, not the change: the typecheck (%s) died (exit %s) and died again when taken once more: %s\n' "$1" "$2" "$3"
+}
+
 # The runner's own failure lines when it printed any, else the tail. The first lines
 # are a runner's banner — a config warning on every run of some runners — so a reason
 # made of them named no case, and the fix round's one retry was handed nothing.
@@ -491,11 +523,10 @@ _driver_prove_red_green_at() {
   # test whose calls do not type-check passed this proof and then failed self-check's
   # typecheck on the same file. Only once the test is green — a red half is allowed to
   # be a compile error.
-  local tc_rc=0 tc_out="" tc
+  local tc_rc=0 tc_out="" tc tc_crash=0
   tc=$(driver_proof_typecheck_cmd)
   if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
-    ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
-    tc_rc=$?
+    _driver_typecheck_run "$tmp/after" "$tc" "$tmp/typecheck.out"
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
 
@@ -516,6 +547,7 @@ _driver_prove_red_green_at() {
   _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/before.out" "$(printf '%s' "$base" | cut -c1-8)" \
     "$rc_green" "$tmp/after.out" "$(printf '%s' "$asha" | cut -c1-8)"
   _driver_proof_rmtmp
+  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
@@ -617,11 +649,10 @@ _driver_prove_by_break_once() {
   rc_green=$?
   local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # The same compile check as the red/green proof, on the restored tree.
-  local tc_rc=0 tc_out="" tc
+  local tc_rc=0 tc_out="" tc tc_crash=0
   tc=$(driver_proof_typecheck_cmd)
   if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
-    ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
-    tc_rc=$?
+    _driver_typecheck_run "$tmp/tree" "$tc" "$tmp/typecheck.out"
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
   local dbwhy=""
@@ -639,6 +670,7 @@ _driver_prove_by_break_once() {
   if [ -n "$dbwhy" ]; then
     printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
   fi
+  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
