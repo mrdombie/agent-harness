@@ -247,10 +247,8 @@ swarm_usage_log_limited() { # <log>
   swarm_usage_cli_events "$1" \
     | awk -F'\t' '$2=="rejected" || ($2=="error" && $3 ~ /hit your (session|weekly) limit/){f=1} END{exit !f}'
 }
-# Did this run stop because the CLI lost its login.
-swarm_login_log_lost() { # <log>
-  swarm_usage_cli_events "$1" | awk -F'\t' '$2=="auth"{f=1} END{exit !f}'
-}
+# Did this run stop because the CLI lost its login: the one reader, swarm_api_auth_log.
+swarm_login_log_lost() { swarm_api_auth_log "$1" >/dev/null; } # <log>
 # When the plan's limit stopped this log, `<epoch>\t<text>` for a hold to wait out:
 # the rejection's own epoch, else the reset the error text names, else an hour.
 swarm_usage_log_reset() { # <log>
@@ -500,8 +498,9 @@ swarm_api_refusal_log() { # <log>
 # swarm_api_auth_log <log> — 0 when the host's Claude login is gone, so no call on this
 # host can run until someone logs in again: the last result is an error naming a failed
 # authentication, an expired or revoked OAuth token or session, authentication_error or
-# "run /login", or carrying status 401. Prints the CLI's words (200 chars). Read from the
-# CLI's own result line only, as swarm_api_refusal_log: an answer that quotes one is not.
+# "run /login", or carrying status 401; or the CLI's authentication_failed event with no
+# clean answer after it. Prints the CLI's words (200 chars). Read from the CLI's own lines
+# only, as swarm_api_refusal_log: an answer that quotes one is not. The one lost-login reader.
 swarm_api_auth_log() { # <log>
   local r
   [ -s "$1" ] || return 1
@@ -514,6 +513,11 @@ swarm_api_auth_log() { # <log>
           then (if $x == "" then "401 with no message" else ($x | .[0:200]) end)
           else empty end
       end' 2>/dev/null)
+  # The CLI's own authentication_failed event, unless a clean answer came after it.
+  if [ -z "$r" ] && ! grep -F '"type":"result"' "$1" 2>/dev/null \
+       | jq -e -s '[.[] | select(.type == "result")] | last | . != null and (.is_error // false) == false' >/dev/null 2>&1; then
+    r=$(swarm_usage_cli_events "$1" | awk -F'\t' '$2 == "auth" { t = $3; f = 1 } END { if (f) print (t == "" ? "authentication_failed" : substr(t, 1, 200)) }')
+  fi
   [ -n "$r" ] || return 1
   printf '%s' "$r"
 }
