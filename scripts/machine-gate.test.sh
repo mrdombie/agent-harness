@@ -122,6 +122,15 @@ echo 5 > "$T/mem-pct"
 out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT_FILE="$T/mem-pct" SWARM_SWAP_PCT=3 MACHINE_GATE_ON_WAIT="$T/mem-raise" bash "$SUT" wait --max 5 2>&1); rc=$?
 [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'machine clear (cpu idle 80%, load 1, free memory 60%, swap 3%), going ahead' && ok "the clear line names free memory and swap" || fail "clear line: rc $rc $out"
 
+echo "--- a memory hold alone is bounded: past its limit it goes ahead and says so ---"
+out=$(SWARM_MEM_MAX_WAIT_SEC=1 MACHINE_GATE_POLL=1 SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=5 bash "$SUT" wait --max 10 2>&1); rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'machine still out of memory after 1s (free memory 5%, floor 10%), going ahead' && ok "5% free for over 1s with a 1s bound goes ahead and says so" || fail "mem bound: rc $rc $out"
+printf '{"swarm":{"memMaxWaitSec":1}}' > "$T/memwait.json"
+out=$(HARNESS_CFG_PATH="$T/memwait.json" MACHINE_GATE_POLL=1 SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=5 bash "$SUT" wait --max 10 2>&1); rc=$?
+[ "$rc" = 0 ] && ok "swarm.memMaxWaitSec 1 bounds the memory wait" || fail "mem bound config: rc $rc $out"
+out=$(SWARM_MEM_MAX_WAIT_SEC=1 MACHINE_GATE_POLL=1 SWARM_IDLE=5 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=5 bash "$SUT" wait --max 3 2>&1); rc=$?
+[ "$rc" = 75 ] && ok "a busy CPU is still held past the memory bound" || fail "cpu past mem bound: rc $rc $out"
+
 echo "--- the load average is only a runaway guard, at 20 x cores ---"
 out=$(SWARM_IDLE=41 SWARM_LOAD=140 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 0 ] && ok "measured 2026-10-16: load 140 at 41% idle on 10 cores goes ahead" || fail "load 140: rc $rc $out"
