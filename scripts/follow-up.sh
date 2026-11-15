@@ -268,7 +268,7 @@ while IFS=$'\t' read -r n labels p pt; do
         [ "$r" -eq 0 ] || continue   # blocked on something else: not this pass's to lift
       fi
       say_do "set #$n back to $LBL_READY — its parent PR #$merged_as merged" || continue
-      issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_READY"; rc=1; continue; }
+      issue_status_set "$n" "$LBL_READY" --drop "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_READY"; rc=1; continue; }
       [ -f "$BLOCKED_LEDGER" ] && { awk -v n="$n" -v p="$p" '!($1 == n && $2 == p)' "$BLOCKED_LEDGER" > "$BLOCKED_LEDGER.t" && mv "$BLOCKED_LEDGER.t" "$BLOCKED_LEDGER"; }
       SWARM_GH="$GH" gh_call issue comment "$n" --repo "$REPO_SLUG" \
         --body "Unblocked: #$merged_as merged to $INTEGRATION_BRANCH, so the code this finding is on has landed. Ready to build as its own small change." >/dev/null 2>&1 \

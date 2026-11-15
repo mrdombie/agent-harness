@@ -73,7 +73,7 @@ Escalation moves the lock to `claims/.recovered/<TICKET>-<verdict>-<timestamp>` 
 
 ## Why `needs-human` and not `ready`
 
-The old recovery flipped straight back to `$LBL_READY` (ready), so the next agent picked the ticket up and — if the cause was the ticket rather than the agent — failed exactly the same way. `$LBL_NEEDS_HUMAN` (needs-human) stops that loop. Someone reads the escalation comment, works out the cause, and flips it back deliberately.
+The old recovery flipped straight back to `$LBL_READY` (ready), so the next agent picked the ticket up and — if the cause was the ticket rather than the agent — failed exactly the same way. `$LBL_NEEDS_HUMAN` (needs-human) stops that loop. Someone reads the escalation comment, works out the cause, and flips it back deliberately with `bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set <n> "$LBL_READY" --drop "$LBL_NEEDS_HUMAN"`: a plain `set` keeps needs-human on.
 
 ## What it does NOT do
 
