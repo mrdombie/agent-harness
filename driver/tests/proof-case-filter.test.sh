@@ -123,7 +123,7 @@ printf '#!/usr/bin/env bash\necho 60 > "%s"\n' "$FIX/mem-pct" > "$FIX/mem-raise"
 printf '60\n' > "$FIX/mem-pct"
 out=$(unset SWARM_FREE_MEM_PCT; SLOW_MEM_FILE="$FIX/mem-pct" SWARM_FREE_MEM_PCT_FILE="$FIX/mem-pct" SWARM_SWAP_PCT=0 MACHINE_GATE_ON_WAIT="$FIX/mem-raise" MACHINE_GATE_POLL=0 \
   SLOW_RUNS=99 DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" slow.test.sh "$S_TEST" "$S_IMPL" "bash slow.test.sh" 2>&1); rc=$?
-want "still out of time: its own refusal" "4" "$rc"
+want "the machine's, not the change's: back on the queue" "8" "$rc"
 want "taken twice and no more" "4" "$(cat "$FIX/count")"
 want_in "the retry waited on memory" 'machine busy \(free memory 5%' "$out"
 want_in "the note names memory" 'the machine was out of memory \(free memory 5%, floor 10%\)' "$out"
