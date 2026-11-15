@@ -365,11 +365,12 @@ swarm_account_since() {
 # The window is the account's, so any host's reading counts. The NEWEST observed
 # reading names the window by its reset: a reading with another reset is another
 # window (the account was switched, or the window reset) and is dropped, never
-# compared. Only inside that one window does utilization only rise, so the highest
-# of its readings wins. Resets within 10 min are one window. A reading with no `at`
-# (an older harness's heartbeat) is the oldest. Except after a probe call: its log is one
-# call, so its reading is dated exactly and everything observed before it is superseded
-# (2026-11-11: one week read 99%, then 56% with the same reset, and the 99% kept winning).
+# compared. Inside that one window the NEWEST observed reading wins, never the highest,
+# and it keeps its own observed time: a week can fall with its reset unchanged
+# (2026-11-11: 99% then 56%; 2026-11-15: 95% held for hours while the CLI read 13%), and
+# the highest reading paired with the newest time was re-stamped by every heartbeat.
+# Resets within 10 min are one window. A reading with no `at` (an older harness's
+# heartbeat) is the oldest. A probe call still supersedes everything observed before it.
 swarm_usage_freshest_at() {
   local w="${1:-five_hour}" extra="${2:-[]}" now files f m best acct since p
   now=$(swarm_now); acct=$(swarm_account); since=$(swarm_account_since)
@@ -395,8 +396,8 @@ swarm_usage_freshest_at() {
               if (n == 1 || A[n] > na || (A[n] == na && R[n] > nr)) { na = A[n]; nr = R[n] }
             }
             END { for (i = 1; i <= n; i++) { d = R[i] - nr; if (d < 0) d = -d
-                    if (d <= 600 && A[i] >= pa && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] } }
-                  if (p) printf "%s\t%d\t%d", bu, br, na }')
+                    if (d <= 600 && A[i] >= pa && (!p || A[i] >= ba)) { p = 1; bu = U[i]; br = R[i]; ba = A[i] } }
+                  if (p) printf "%s\t%d\t%d", bu, br, ba }')
   [ -n "$best" ] || return 1
   printf '%s' "$best"
 }

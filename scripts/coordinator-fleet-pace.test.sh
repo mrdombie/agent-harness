@@ -40,15 +40,16 @@ LATE=$(( NOWE + 3600 ))     # 1 h left: 80% gone
 
 # The owner: the reader's fresh heartbeat in fleet.json.
 fleet() { # <yomato capacity> <yomato tick> [yomato 5h use]
-  jq -nc --argjson c "$1" --argjson t "$2" --arg u "${3:-}" --argjson r "$EARLY" \
+  # Read after this host's own log: the newest reading in a window is the one that counts.
+  jq -nc --argjson c "$1" --argjson t "$2" --arg u "${3:-}" --argjson r "$EARLY" --argjson at "$(( $(date +%s) + 60 ))" \
     '{hosts:[{host:"yomato", capacity:$c, builds:0, tick:$t}
-             + (if $u == "" then {} else {usage:{five_hour:{u:($u|tonumber), reset:$r}}} end)]}' > "$C/fleet.json"
+             + (if $u == "" then {} else {usage:{five_hour:{u:($u|tonumber), reset:$r, at:$at}}} end)]}' > "$C/fleet.json"
 }
 reader() { ( export SHEET_PACE='{"settings":{"factor":0.95}}' COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato; pace "$@" ); }
 
 echo "--- the freshest reading wins, from either host ---"
 clean; win 0.05 "$EARLY" > "$STATE/logs/claim-1-a.log"
-out=$( export SHEET_FLEET='[{"host":"here","tick":'"$NOWE"',"usage":{"five_hour":{"u":0.40,"reset":'"$EARLY"'}}}]'; reader 0 "" 14 )
+out=$( export SHEET_FLEET='[{"host":"here","tick":'"$NOWE"',"usage":{"five_hour":{"u":0.40,"reset":'"$EARLY"',"at":'"$(( $(date +%s) + 60 ))"'}}}]'; reader 0 "" 14 )
 want_in "the owner's heartbeat at 40% outranks this host's 5%" '5h window 40%' "$out"
 want_in "it is ahead of the line by the same rule" 'pacing: ahead' "$out"
 clean; win 0.05 "$EARLY" > "$STATE/logs/claim-1-a.log"; fleet 14 "$NOWE" 0.50
