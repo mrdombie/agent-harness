@@ -17,6 +17,12 @@ export SWARM_MIN_FREE_MEM_PCT=10 SWARM_MAX_SWAP_PCT=90
 unset SWARM_FREE_MEM_PCT_FILE SWARM_SWAP_PCT_FILE SWARM_SWAP_COUNTS_BELOW 2>/dev/null
 CMD='npm run typecheck:changed'
 
+if suite_case "the fixture fakes memory: a host short of memory does not hold a driver test"; then
+  printf 'MemTotal:       1000 kB\nMemAvailable:     50 kB\nSwapTotal:         0 kB\nSwapFree:          0 kB\n' > "$FIX/tight-meminfo"
+  rc=0; ( SWARM_MEM_OS=Linux SWARM_MEMINFO="$FIX/tight-meminfo" machine_gate_wait_load 2 ) >/dev/null 2>&1 || rc=$?
+  want "the gate goes ahead on the fixture's reading" 0 "$rc"
+fi
+
 if suite_case "out of memory: a second timeout requeues and names memory"; then
   driver_state_init 1
   rc=0; out=$(SWARM_FREE_MEM_PCT=5 _driver_gate_timed_out typecheck 900 "$CMD" 0 2>&1) || rc=$?
