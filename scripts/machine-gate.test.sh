@@ -108,6 +108,15 @@ out=$(HARNESS_CFG_PATH="$T/swapcfg.json" SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_M
 out=$(SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=10 bash "$SUT" status 2>&1)
 printf '%s' "$out" | grep -q 'free memory 60% (floor 10%) · swap 10% (limit 90%)' && ok "status names free memory and swap with their limits" || fail "status: $out"
 
+echo "--- a memory threshold or reading that is not a whole number never reads as clear ---"
+out=$(SWARM_MIN_FREE_MEM_PCT=12.5 SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=5 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'free memory 5%, floor 10%' && ok "a floor of 12.5 falls back to 10 and holds at 5% free" || fail "floor 12.5: rc $rc $out"
+out=$(SWARM_MAX_SWAP_PCT=abc SWARM_IDLE=80 SWARM_LOAD=1 SWARM_FREE_MEM_PCT=20 SWARM_SWAP_PCT=97 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'swap 97% used, limit 90%' && ok "a swap limit of abc falls back to 90 and holds at 97%" || fail "swap abc: rc $rc $out"
+printf '5\r\n' > "$T/mem-cr"
+out=$(SWARM_FREE_MEM_PCT_FILE="$T/mem-cr" SWARM_IDLE=80 SWARM_LOAD=1 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'free memory 5%, floor 10%' && ok "a seam reading of 5 with a CR holds as 5" || fail "seam 5\\r: rc $rc $out"
+
 echo "--- the load average is only a runaway guard, at 20 x cores ---"
 out=$(SWARM_IDLE=41 SWARM_LOAD=140 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 0 ] && ok "measured 2026-10-16: load 140 at 41% idle on 10 cores goes ahead" || fail "load 140: rc $rc $out"
