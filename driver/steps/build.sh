@@ -401,11 +401,12 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
   return "$rc"
 }
 driver_prove_red_green() { _driver_proof_machine _driver_prove_red_green_once "$@"; }
-driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_once "$@"; }
+driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_latest "$@"; }
 
 # A FIX COMMITTED AFTER THE CHANGE COUNTS. A rework keeps reporting its first pair, so a
 # green or typecheck failure at the change is proved once more at the latest branch commit
 # touching the test's or the change's files; the red half stays at the change's parent.
+# A typecheck failure with no such commit is proved once more at the branch head.
 _driver_prove_red_green_once() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5" out rc=0 lsha ffile
   local -a ffiles=()
@@ -418,8 +419,15 @@ _driver_prove_red_green_once() {
     [ "${#ffiles[@]}" -eq 0 ] \
       || lsha=$(git -C "$repo" log -1 --format=%H "$isha..HEAD" -- "${ffiles[@]}" 2>/dev/null)
   fi
+  # The compile error can sit in a file neither commit touched, so its fix moves no
+  # feature file: a typecheck failure alone is then proved again at the branch head.
+  local where="the latest commit on the feature's files"
+  if [ -z "${lsha:-}" ] && [ "$rc" -eq 6 ] && git -C "$repo" merge-base --is-ancestor "$isha" HEAD 2>/dev/null \
+     && [ "$(git -C "$repo" rev-parse HEAD)" != "$(git -C "$repo" rev-parse "$isha")" ]; then
+    lsha=$(git -C "$repo" rev-parse HEAD); where="the branch head"
+  fi
   [ -n "${lsha:-}" ] || { printf '%s\n' "$out"; return "$rc"; }
-  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), the latest commit on the feature's files" >&2
+  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), $where" >&2
   _driver_prove_red_green_at "$repo" "$tfile" "$tsha" "$isha" "$cmd" "$lsha"
 }
 
@@ -599,6 +607,19 @@ _driver_prove_red_green_at() {
 # 4 out of time · 5 the tree could not be prepared · 6 it does not type-check ·
 # 7 the command cannot be run as given · 8 a machine fault: an install behind its lockfile ·
 # 9 a half could not reach the app — never run there
+# A planted break is proved on a copy of the commit named as holding the test. When only
+# the typecheck fails there and the branch has moved on, it is proved once more at the head.
+_driver_prove_by_break_latest() {
+  local repo="$1" tfile="$2" tsha="$3" out rc=0 head
+  out=$(_driver_prove_by_break_once "$@") || rc=$?
+  head=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+  if [ "$rc" -ne 6 ] || [ -z "$head" ] || [ "$head" = "$(git -C "$repo" rev-parse "$tsha" 2>/dev/null)" ] \
+     || ! git -C "$repo" merge-base --is-ancestor "$tsha" HEAD 2>/dev/null; then
+    printf '%s\n' "$out"; return "$rc"
+  fi
+  driver_say "   proof: the typecheck failed at $(printf '%s' "$tsha" | cut -c1-8) — taken again at $(printf '%s' "$head" | cut -c1-8), the branch head" >&2
+  shift 3; _driver_prove_by_break_once "$repo" "$tfile" "$head" "$@"
+}
 _driver_prove_by_break_once() {
   local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
   local tmp n rc_red rc_green red_out green_out cwhy
