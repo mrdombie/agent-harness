@@ -278,6 +278,9 @@ EOF
 DRIVER_DB_TIMEOUT_RE="${DRIVER_DB_TIMEOUT_RE:-Transaction API error|Transaction already closed|Unable to start a transaction|timed out fetching a new connection|Timed out fetching a new connection|Can.t reach database server|canceling statement due to statement timeout|deadlock detected|Connection terminated unexpectedly|P1001|P2024|P2028}"
 # _driver_gate_db_flake <tree> <output> <secs> — 0 when that holds and every file passed alone
 # (DRIVER_FLAKE_FILES names them); 1 otherwise, and the red is read as before.
+# A test that ran out of its own clock on a loaded machine reads the same way (2026-11-16:
+# two rework rounds on a 20 s timeout in a scan test the change never touched).
+DRIVER_DB_TIMEOUT_RE="$DRIVER_DB_TIMEOUT_RE|${DRIVER_TEST_TIMEOUT_RE:-Test timed out in [0-9]+ ?ms|Hook timed out in [0-9]+ ?ms}"
 _driver_gate_db_flake() {
   local wt="$1" out="$2" secs="$3" failing branch f cmd
   DRIVER_FLAKE_FILES=""
