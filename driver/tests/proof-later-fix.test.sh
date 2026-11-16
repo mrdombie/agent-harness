@@ -63,6 +63,18 @@ HARNESS_CFG="$FIX/off.json" prove 6
 want "a head that does not compile still refuses" "6" "$RC"
 later_fix
 
+echo "--- a planted break: the commit holding the test does not compile, the head does ---"
+printf 'cast\n' > "$REPO/bad.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "chore: an unrelated file stops compiling"
+printf '#!/usr/bin/env bash\ngrep -q "f7=yes" f7.txt\n' > "$REPO/f7.test.sh"; printf 'f7=yes\n' > "$REPO/f7.txt"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: f7, on code already there"; TS=$(git -C "$REPO" rev-parse HEAD)
+brk() { OUT=$(HARNESS_CFG="$FIX/off.json" driver_prove_by_break "$REPO" f7.test.sh "$TS" f7.txt "f7=yes" "f7=no" "bash f7.test.sh" 2>&1); RC=$?; }
+brk
+want "the break proof refuses on the typecheck" "6" "$RC"
+later_fix; brk
+want "it proves once the other file is fixed"   "0" "$RC"
+want_in "and says it moved to the head"         "the branch head" "$OUT"
+want_in "naming the head commit"                "$(short)" "$OUT"
+
 echo "--- a later commit on other files does not make a named non-fix prove ---"
 printf '#!/usr/bin/env bash\ngrep -qs "f5=yes" f5.txt\n' > "$REPO/f5.test.sh"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: f5"; TS=$(git -C "$REPO" rev-parse HEAD)
