@@ -56,7 +56,7 @@ case_plain() { N=$((N + 1)); reset; echo 1 > "$FIX/busy"; : > "$FIX/plain"; bran
 echo "--- a test timeout outside the change, green alone: not counted, never parked ---"
 case_flake
 want "self-check is green"                    "rc=0 findings=absent" "$R"
-want_in "and says why"                        'a database timeout in t/agent.test.sh, outside this change; each passed run again alone' "$R_OUT"
+want_in "and says why"                        'a database or service timeout in t/agent.test.sh, outside this change; each passed run again alone' "$R_OUT"
 want "the files are on the record"            "t/agent.test.sh" "$(driver_state_get "$N" db_flake)"
 want "never parked"                           "" "$(driver_state_get "$N" park_note)"
 
