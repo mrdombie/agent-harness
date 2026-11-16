@@ -1048,6 +1048,20 @@ if [ -n "$AUTH_HOLD" ]; then
   fi
 fi
 
+# A CI lane with every runner offline holds every check that needs it; only the owner restarts that machine.
+RUNNER_LANES="${COORDINATOR_RUNNER_LANES:-$(swarm_opt coordinator.runnerLanes '')}"
+if [ -n "$RUNNER_LANES" ]; then
+  RUNNERS_JSON="$COORD_DIR/runners.json"
+  if swarm_gh api "repos/$REPO_SLUG/actions/runners?per_page=100" > "$RUNNERS_JSON" 2>/dev/null; then
+    while IFS=$'\t' read -r kind lane key msg; do
+      case "$kind" in
+        down) say "runners: $msg"; bash "$NOTIFY" --class owner "runners-offline:${key#runners-offline:}" "$msg" || true ;;
+        back) say "runners: the $lane lane has a runner online again" ;;
+      esac
+    done < <(bash "$SELF_DIR/runner-offline.sh" "$RUNNERS_JSON")
+  fi
+fi
+
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true

@@ -37,9 +37,10 @@ LINE=$(printf '%s' "$LINE" | tr '\n\t' '  ')
 # can install, a PR red past coordinator.redReportMin with nothing working it (a
 # person holds it, or its base is red: the rebuild pass leaves it), and a host whose
 # claim pushes keep failing (only the owner repairs its clone), and a host paused for
-# its lost Claude login (only the owner logs in there).
+# its lost Claude login (only the owner logs in there), and a CI lane with every runner
+# offline past coordinator.runnerOfflineMin (only the owner restarts that machine).
 # A kind a `--class owner` caller sends must be here (owner-kinds.test.sh).
-OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools red-2h claim-push-fails auth-hold"
+OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools red-2h claim-push-fails auth-hold runners-offline"
 KIND="${KEY%%:*}"
 case " $OWNER_KINDS " in *" $KIND "*) ;; *) CLASS=agent ;; esac
 AGENT_WORK="$COORD_DIR/agent-work.log"
