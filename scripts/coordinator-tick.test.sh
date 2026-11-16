@@ -477,13 +477,21 @@ for fn in swarm_cpu_idle swarm_load swarm_cores swarm_free_mem_gb; do
   want_in "$fn has a file seam"            'SWARM_[A-Z_]*_FILE' "$body"
 done
 seams=$(grep -o 'SWARM_[A-Z_]*_FILE' "$LOADSH" | sort -u)
-want "the seams found"                     "SWARM_CORES_FILE SWARM_FREE_MEM_FILE SWARM_IDLE_FILE SWARM_LOAD_FILE" "$(echo $seams)"
+want "the seams found"                     "SWARM_CORES_FILE SWARM_FREE_MEM_FILE SWARM_FREE_MEM_PCT_FILE SWARM_IDLE_FILE SWARM_LOAD_FILE SWARM_SWAP_PCT_FILE" "$(echo $seams)"
+# Read by the machine gate only, so unread is clear.
+gate_seams='SWARM_FREE_MEM_PCT_FILE SWARM_SWAP_PCT_FILE'
 : > "$FIX/unread"
 for seam in $seams; do
+  case " $gate_seams " in *" $seam "*) continue ;; esac
   fresh; queue 501
   out=$(env -u SWARM_MAX_LOAD "$seam=$FIX/unread" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
   want "$seam unread: no start"            "" "$(spawned)"
   want_in "$seam unread: the tick says unread" 'unread' "$out"
+done
+for seam in $gate_seams; do
+  fresh; queue 501
+  env -u SWARM_MAX_LOAD "$seam=$FIX/unread" COORDINATOR_SHADOW=0 bash "$T" >/dev/null 2>&1
+  want "$seam unread: the spawn decision does not take it" "501" "$(spawned)"
 done
 fresh; queue 501
 out=$(env -u SWARM_MAX_LOAD COORDINATOR_SHADOW=0 bash "$T" 2>&1)
