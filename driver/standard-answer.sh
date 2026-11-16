@@ -115,6 +115,13 @@ _driver_sa_already_done() {
   return 0
 }
 
+# _driver_sa_gate_green_on_trunk <findings> — 0, setting SA_GATE_GREEN, when a gate handed to
+# the fix step carries the trunk run that found it green there (fix.sh records it as baseWhy).
+_driver_sa_gate_green_on_trunk() {
+  SA_GATE_GREEN=$(jq -r '[.[] | select((.baseWhy // "") | test(" is green on ")) | .baseWhy] | join("; ")' "$1" 2>/dev/null)
+  [ -n "$SA_GATE_GREEN" ]
+}
+
 driver_standard_answer() { # <ticket> <step> <text> [kind]
   local t="$1" step="$2" q="$3" kind="${4:-}" s ctx cls how=mechanical d review ans br
   SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""; SA_HOOK_SKIP=""
@@ -177,6 +184,11 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
     if [ -n "$hwt" ] && [ -n "$(git -C "$hwt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
       SA_ACTION=commit-carry; SA_HOOK_SKIP="$HOOK_BR_CHECKS"
     fi
+  elif [ "$SA_CLASS" = g ] && [ "$step" = fix ] && _driver_sa_gate_green_on_trunk "$d/steps/self-check.findings.json"; then
+    # MEASURED, NOT TAKEN FROM THE WORDS: the driver ran this gate on the trunk and it passed there.
+    SA_NAME="not base red: it passes on the trunk"
+    SA_ANSWER="Not base-red. Before this gate was handed to you the driver ran it on the $INTEGRATION_BRANCH commit this branch merged, and it passes there ($SA_GATE_GREEN). So the red is this branch's own, even where it shows in files this branch did not edit: something this branch changed makes them fail. Repair it in this change and answer the gate in gateFixes with the files you changed and the commit."
+    driver_say "   base-red: claimed, and not so — $SA_GATE_GREEN; the step is told to repair it here"
   elif [ "$SA_CLASS" = g ]; then
     local gates sha
     gates=$(printf '%s' "$q" | grep -oE '\b(gate-[A-Za-z0-9_-]+|check:[A-Za-z0-9:_-]+)' | sort -u | paste -sd, - | sed 's/,/, /g')
