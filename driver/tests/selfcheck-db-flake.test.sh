@@ -74,7 +74,7 @@ STEP_U=1 case_flake
 want "self-check is green under set -u"       "rc=0 findings=absent" "$R"
 want_not_in "and no unbound variable"         'unbound variable' "$R_OUT"
 
-echo "--- a database timeout in a file the change touched still blocks ---"
+echo "--- a database or service timeout in a file the change touched still blocks ---"
 case_touched
 want "it goes to fix"                         "rc=$DRIVER_E_REWORK" "$R"
 want_not_in "and is not called the load's"    'service timeout in' "$R_OUT"
