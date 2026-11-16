@@ -325,6 +325,8 @@ for s in $DRIVER_STEPS; do
   command -v "$(step_fn "$s")" >/dev/null 2>&1 \
     || die "$f defines no $(step_fn "$s") — the step's file is there and the step is not."
 done
+# Dead runs' proof trees go before this run makes its own; behind the walk, never ahead of it.
+declare -F driver_proof_trees_sweep_dead >/dev/null && { driver_proof_trees_sweep_dead >/dev/null 2>&1 & }
 # AN ORDER THAT SIZES ITS TICKET may switch to the quick order, so its steps are loaded
 # now, refused by name like the rest: a switch to a step that is not there is a refusal
 # found before the work, not after the size call.
