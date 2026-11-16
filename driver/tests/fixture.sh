@@ -40,6 +40,7 @@ driver_fixture() {
   export HARNESS_LOCAL_EVIDENCE=1
   # The runner's own disk is no case's input: the guard's suite plants the free space it tests.
   export HARNESS_DISK_GUARD=off
+  export DRIVER_ALLOW_TEMP_CLONE=1   # the fixture repo lives in a temp dir by design
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"

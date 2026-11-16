@@ -500,4 +500,27 @@ want_in "and says a peer took it first"        'peer took the claim on #192 firs
 bash "$CL" release 192
 fi
 
+if suite_case "a build never starts from a clone in a temp area"; then
+echo "--- a clone in a temp area: nothing is claimed into a tree a restart would orphan ---"
+# A screen build was started from a PM session's clone under /private/tmp; a restart wiped the clone and orphaned its tree.
+fix_issue 195 OPEN "status:ready,type:feature"
+out=$(DRIVER_ALLOW_TEMP_CLONE= driver_step_start 195 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "and says why"                     'is in a temp area a restart wipes' "$out"
+want "no worktree is recorded"             "" "$(driver_state_get 195 worktree)"
+want_in "the park note says where to run it" "Start it from the project's own clone" "$(driver_state_get 195 park_note)"
+want "a home path is not a temp area"      "1" "$(DRIVER_ALLOW_TEMP_CLONE= _driver_start_temp_clone "$HOME"; echo $?)"
+want "the fixture's own clone is one"      "0" "$(DRIVER_ALLOW_TEMP_CLONE= _driver_start_temp_clone "$REPO"; echo $?)"
+fix_issue 196 OPEN "status:ready,type:feature"
+out=$(driver_step_start 196 2>&1); rc=$?
+want "with the fixture's leave, it starts" "0" "$rc"
+# Planted: with the temp roots matching nothing, the same start goes ahead.
+PK="$FIX/tc-kit"; mkdir -p "$PK"; cp -R "$HERE/../../driver" "$HERE/../../scripts" "$HERE/../../swarm" "$HERE/../../shared" "$HERE/../../briefs" "$PK/"
+python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = "/tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;"; n = s.count(o); open(p, "w").write(s.replace(o, "/nowhere/*) return 0 ;;")); sys.exit(0 if n == 1 else 1)' "$PK/driver/steps/start.sh" \
+  && { fix_issue 197 OPEN "status:ready,type:feature"
+       out=$( . "$PK/driver/steps/start.sh"; DRIVER_ALLOW_TEMP_CLONE= driver_step_start 197 2>&1 ); rc=$?
+       want "planted (no temp root matches): the build starts in the temp clone" "0" "$rc"; } \
+  || bad "plant: the edit did not land"
+fi
+
 suite_end "$FAILED"

@@ -105,6 +105,17 @@ _driver_start_clear_way() {
 
 # _driver_start_cut <ticket> <repo> <tree> <branch> <cut> — clear the way, add the
 # worktree, and retry once. 1 with DRIVER_START_WHY carrying git's own words.
+# _driver_start_temp_clone <repo> — 0 when the clone's real path is under a system temp root.
+# DRIVER_ALLOW_TEMP_CLONE=1 is for the test fixtures, which live there by design.
+_driver_start_temp_clone() {
+  [ "${DRIVER_ALLOW_TEMP_CLONE:-}" != 1 ] || return 1
+  local p; p=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  case "$p/" in
+    /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+  esac
+  return 1
+}
+
 _driver_start_cut() {
   local t="$1" repo="$2" wt="$3" b="$4" cut="$5" n=0 flag err
   while [ "$n" -lt 2 ]; do
@@ -417,6 +428,12 @@ driver_step_start() { # <ticket>
     fi
   else
     repo="$MAIN_REPO"
+    # A RESTART WIPES A TEMP AREA: a tree cut from a clone there loses its repository with it.
+    if _driver_start_temp_clone "$repo"; then
+      driver_say "✋ start: $repo is in a temp area a restart wipes, and the worktree cut from it would be orphaned with it. Run the build from the project's own clone."
+      driver_state_set "$t" park_note "the build was started from a clone in a temp area ($repo); nothing was cut. Start it from the project's own clone."
+      return "$DRIVER_E_REFUSED"
+    fi
     git -C "$repo" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
     sha=$(git -C "$repo" rev-parse --verify "origin/$INTEGRATION_BRANCH" 2>/dev/null) \
       || sha=$(git -C "$repo" rev-parse --verify "$INTEGRATION_BRANCH" 2>/dev/null)
