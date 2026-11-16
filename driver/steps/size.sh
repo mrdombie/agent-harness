@@ -108,6 +108,7 @@ driver_step_size() { # <ticket>
         asked=$(_driver_size_ask "$t" "$title
 $body" "$files") || rc=$?
         if driver_usage_wall "$t" size "$(driver_state_dir "$t")/steps/size.log"; then return "$DRIVER_E_USAGE"; fi
+        if driver_auth_lost "$t" size "$(driver_state_dir "$t")/steps/size.log"; then return "$DRIVER_E_USAGE"; fi
         if [ "$rc" -eq 0 ]; then
           by=model; size=${asked%%	*}; why="$why; the size call: ${asked#*	}"
           # The call never sees the fix rule: a fix it sizes small goes quick like one the rules size small.

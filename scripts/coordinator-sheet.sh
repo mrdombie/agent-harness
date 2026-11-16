@@ -221,7 +221,7 @@ coord_sheet_render() {
        else empty end),
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
-        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end)"
+        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end)\(if (.auth // "") != "" then " — **paused for auth**: " + (.auth | .[0:240]) else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
@@ -261,7 +261,7 @@ coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
-  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, cli, hold, behind, plugins}]}
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, cli, hold, auth, behind, plugins}]}
                                                 + (if .pace then {pace: (.pace | {pacing, settings})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
@@ -433,9 +433,10 @@ coord_heartbeat() {
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
      --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" --arg why "${why:-}" \
      --argjson plugins "$(harness_plugins_state)" --arg acct "$(swarm_account)" \
-     --arg cli "${COORD_CLI_VERSION:-}" --arg hold "${SKILL_HOLD:-}" \
+     --arg cli "${COORD_CLI_VERSION:-}" --arg hold "${SKILL_HOLD:-}" --arg auth "${AUTH_HOLD:-}" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role, account: $acct}
       + (if $cli == "" then {} else {cli: $cli} end) + (if $hold == "" then {} else {hold: $hold} end)
+      + (if $auth == "" then {} else {auth: ($auth | .[0:240])} end)
       + (if $plugins == {} then {} else {plugins: $plugins} end)
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
       + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
@@ -563,7 +564,7 @@ coord_heartbeat_post() {
   now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
   # Capacity and whole-percent usage too: the owner splits the fleet cap on them.
   # The allowance in tenths: a host going low reaches the others within a tick.
-  h=$(_sheet_hash "$(jq -cS '{version, installed, cli, hold, builds, role, capacity, plugins,
+  h=$(_sheet_hash "$(jq -cS '{version, installed, cli, hold, auth, builds, role, capacity, plugins,
                               usage: ((.usage // {}) | map_values((.u * 100 | round))),
                               gh: [(.gh // [])[] | {resource, reset, tenth: (if .limit > 0 then (.remaining * 10 / .limit | floor) else 0 end)}]}' <<<"$hb")")
   IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
@@ -572,7 +573,7 @@ coord_heartbeat_post() {
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end)\(if (.auth // "") != "" then " — **paused for auth**: " + (.auth | .[0:240]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
                 + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
                 + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                 + (why_words | if . == null then "" else "\n" + . end)' <<<"$hb")

@@ -206,8 +206,10 @@ elif which == "listing":
 '''
     new = '  ls -t "$@" 2>/dev/null | head -"$n"\n'
 elif which == "supersede":
-    old = 'if (d <= 600 && A[i] >= pa && (!p'
-    new = 'if (d <= 600 && (!p'
+    # Newest-wins and the probe's own precedence both keep a probe ahead of an older high
+    # reading; with both gone the old 95% wins again.
+    old = 'if (d <= 600 && A[i] >= pa && (!p || A[i] >= ba))'
+    new = 'if (d <= 600 && (!p || U[i] > bu))'
 elif which == "ceiling":
     old = '''    awk -v u="$u" -v c="$SWARM_USAGE_CEILING" 'BEGIN{exit !(u + 0 < c + 0)}' \\
       || { keep='''

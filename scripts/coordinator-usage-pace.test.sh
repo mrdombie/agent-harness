@@ -142,6 +142,7 @@ want "five hours behind, no week read: behind" "0" "$(pace 0 "" | cut -f1)"
 
 echo "--- every host draws the same line ---"
 clean; win 0.05 $((NOWE + 11700)) > "$STATE/logs/claim-1-a.log"
+python3 -c 'import os,sys; os.utime(sys.argv[1], (int(sys.argv[2]),) * 2)' "$STATE/logs/claim-1-a.log" "$((NOWE - 600))"
 out=$( export SHEET_FLEET='[{"host":"here","tick":'"$NOWE"',"usage":{"five_hour":{"u":0.40,"reset":'"$((NOWE + 11700))"',"at":'"$NOWE"'}}}]' \
               COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE='{"settings":{"factor":0.95}}'; pace 0 "" )
 want_in "the reader takes the owner's fresher 40%" '5h window 40%' "$out"

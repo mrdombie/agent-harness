@@ -93,6 +93,30 @@ want "the proof is taken and proved"             "0" "$rc"
 want "the named file ran in both halves"         "2" "$(grep -c '^proof-file$' "$FIX/ran")"
 want_not_in "and no changed-list test ran"       'TEST-CHANGED' "$(cat "$FIX/ran")"
 
+echo "--- driver_gate_rows: one name<TAB>command row per gate, and which list it read ---"
+T=$'\t'
+# rows <cfg> — runs in this shell so DRIVER_GATE_ROWS_FROM is seen; sets rows_out, rows_rc.
+rows() { rows_rc=0; DRIVER_GATE_ROWS_FROM=""; HARNESS_CFG="$1" driver_gate_rows > "$FIX/rows" 2>/dev/null || rows_rc=$?; rows_out=$(cat "$FIX/rows"); }
+cfg "$FIX/gr-lo.json" "$(jq -nc '{changed: ["c1", "c2"], local: ["l1", "l2"], localOnly: true}')"
+rows "$FIX/gr-lo.json"
+want "localOnly reads gates.local, not the changed list" "local 1${T}l1
+local 2${T}l2" "$rows_out"
+want "and says it read the local list"           "local" "$DRIVER_GATE_ROWS_FROM"
+want "it is rc 0"                                "0" "$rows_rc"
+cfg "$FIX/gr-ch.json" "$(jq -nc '{changed: ["c1", "c2"], local: ["WHOLE"]}')"
+rows "$FIX/gr-ch.json"
+want "a changed list beside a whole-app local runs the changed list" "changed 1${T}c1
+changed 2${T}c2" "$rows_out"
+want "and says it read the changed list"         "changed" "$DRIVER_GATE_ROWS_FROM"
+cfg "$FIX/gr-leg.json" "$(jq -nc '{lint: "npm run lint", prePush: "P", ratchets: "R", localOnly: false, typecheck: "tsc"}')"
+rows "$FIX/gr-leg.json"
+want "the legacy object's keys, less prePush, ratchets and localOnly" "lint${T}npm run lint
+typecheck${T}tsc" "$rows_out"
+want "and says it read the legacy object"        "legacy" "$DRIVER_GATE_ROWS_FROM"
+rows "$FIX/no-such-config.json"
+want "no config file prints nothing"          "" "$rows_out"
+want "and is rc 1"                               "1" "$rows_rc"
+
 echo "--- the push tells the hook the head the local set passed on ---"
 git init -q --bare "$FIX/origin.git"
 git -C "$REPO" remote add origin "$FIX/origin.git"

@@ -554,6 +554,23 @@ while [ "$i" -lt "$N" ]; do
     exit "$DRIVER_E_REQUEUE"
   fi
 
+  # A PERSON'S HOLD, read fresh from GitHub: one put on while the run works stops it here.
+  hold_rc=0
+  hold_who=$(bash "${DRIVER_PERSON_HOLD:-$KIT_ROOT/scripts/person-hold.sh}" check "$TICKET" 2>/dev/null) || hold_rc=$?
+  if [ "$hold_rc" -eq 1 ]; then
+    driver_park "$TICKET" "held by a person before $step" "$hold_who" hold
+    exit "$DRIVER_E_QUESTION"
+  elif [ "$hold_rc" -ne 0 ]; then
+    case "$step" in start) _keep=keep ;; *) _keep="" ;; esac
+    driver_requeue "$TICKET" "#$TICKET's hold labels could not be read before $step" "$_keep"
+    exit "$DRIVER_E_UNREAD"
+  fi
+  held_by=$(driver_state_get "$TICKET" held_by)
+  if [ -n "$held_by" ]; then
+    driver_say "▶ $step: resumed after the hold was cleared: $(printf '%s' "$held_by" | sed 's/ put on by /, put on by /')"
+    driver_state_set "$TICKET" held_by ""
+  fi
+
   # Its own command, and the exit code is the verdict. Never batched with
   # anything: a step batched with the next one reports on the shell reaching
   # that line, and a printed failure mid-batch has reached the trunk before.

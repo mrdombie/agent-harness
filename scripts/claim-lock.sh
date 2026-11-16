@@ -333,6 +333,9 @@ cmd_release() {
         *,"$LBL_NEEDS_HUMAN",*|*,"$LBL_BLOCKED",*) : ;;           # escalated
         *,"$LBL_DRAFTING",*|*,"$LBL_GATED",*) : ;;                # not claimable anyway
         *,"$LBL_PM_DECISION",*|*,"$LBL_EXTERNAL_BLOCKED",*|*,"$LBL_PM_TRACK",*) : ;;
+        # A park for the machine's own fault leaves it ready beside its draft PR; the
+        # catch-all below would read that PR and hide it from every retry as in review.
+        *,"$LBL_READY",*) : ;;
         *,"$LBL_CLAIMED",*)
           # A SHIPPED ticket is not an abandoned one. /finish releases (7a) BEFORE
           # it closes the issue (7d), so at this moment a just-merged ticket still

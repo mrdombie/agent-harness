@@ -190,6 +190,38 @@ _driver_typecheck_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# A TOOL THAT DIED SAYS NOTHING ABOUT THE CHANGE. On 2026-11-14 tsc ran out of heap on a
+# loaded Mac (exit 134) 19 times across 4 builders; each was read as "the change does not
+# type-check" and sent back to build, where there was nothing to fix: one ticket took 10
+# build rounds in 3 hours. A command killed by a signal (128 and above), or one that says
+# it ran out of memory, is taken once more after the machine's gate; dead twice it is the
+# machine's (8: back on the queue, no try spent), never a finding.
+DRIVER_TOOL_CRASH_RE='JavaScript heap out of memory|Fatal error in |FATAL ERROR: '
+_driver_tool_crashed() { # <exit code> <output file>
+  [ "$1" -ge 128 ] && return 0
+  [ "$1" -ne 0 ] && [ "$1" -ne 124 ] && grep -qE -- "$DRIVER_TOOL_CRASH_RE" "$2" 2>/dev/null
+}
+# _driver_typecheck_run <tree> <command> <output file> — sets tc_rc, and tc_crash to 1 when
+# the command died and (taken once more, where the machine's gate could be waited for) died again.
+_driver_typecheck_run() {
+  local dir="$1" cmd="$2" outf="$3"
+  tc_crash=0
+  ( cd "$dir" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$outf" 2>&1
+  tc_rc=$?
+  _driver_tool_crashed "$tc_rc" "$outf" || return 0
+  driver_say "⏳ proof: the typecheck died (exit $tc_rc), which says nothing about the change — waiting for the machine, then once more" >&2
+  if _driver_proof_gate; then
+    ( cd "$dir" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$outf" 2>&1
+    tc_rc=$?
+    machine_gate_release 2>/dev/null || true
+  fi
+  ! _driver_tool_crashed "$tc_rc" "$outf" || tc_crash=1
+  return 0
+}
+_driver_typecheck_crash_line() { # <command> <exit code> <output lines>
+  printf 'machine fault, not the change: the typecheck (%s) died (exit %s) and died again when taken once more: %s\n' "$1" "$2" "$3"
+}
+
 # The runner's own failure lines when it printed any, else the tail. The first lines
 # are a runner's banner — a config warning on every run of some runners — so a reason
 # made of them named no case, and the fix round's one retry was handed nothing.
@@ -497,11 +529,10 @@ _driver_prove_red_green_at() {
   # test whose calls do not type-check passed this proof and then failed self-check's
   # typecheck on the same file. Only once the test is green — a red half is allowed to
   # be a compile error.
-  local tc_rc=0 tc_out="" tc
+  local tc_rc=0 tc_out="" tc tc_crash=0
   tc=$(driver_proof_typecheck_cmd)
   if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
-    ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
-    tc_rc=$?
+    _driver_typecheck_run "$tmp/after" "$tc" "$tmp/typecheck.out"
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
 
@@ -522,6 +553,7 @@ _driver_prove_red_green_at() {
   _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/before.out" "$(printf '%s' "$base" | cut -c1-8)" \
     "$rc_green" "$tmp/after.out" "$(printf '%s' "$asha" | cut -c1-8)"
   _driver_proof_rmtmp
+  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
@@ -623,11 +655,10 @@ _driver_prove_by_break_once() {
   rc_green=$?
   local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # The same compile check as the red/green proof, on the restored tree.
-  local tc_rc=0 tc_out="" tc
+  local tc_rc=0 tc_out="" tc tc_crash=0
   tc=$(driver_proof_typecheck_cmd)
   if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
-    ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
-    tc_rc=$?
+    _driver_typecheck_run "$tmp/tree" "$tc" "$tmp/typecheck.out"
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
   local dbwhy=""
@@ -645,6 +676,7 @@ _driver_prove_by_break_once() {
   if [ -n "$dbwhy" ]; then
     printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
   fi
+  [ "$tc_crash" -eq 0 ] || { _driver_typecheck_crash_line "$tc" "$tc_rc" "$tc_out"; return 8; }
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
@@ -719,17 +751,20 @@ driver_prove_no_code() {
   return 0
 }
 
-# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit>
+# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit> [<resolved-out>]
 #
 # THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
 # were proved where they landed, so there is no red to show: what is checked is that
-# the commit is that merge and nothing more.
+# the commit is that merge and nothing more. A conflict resolved by hand is accepted
+# when no marker remains and only the conflicted files differ from git's own merge; the
+# conflicted files are written to <resolved-out>. Self-check's gates judge the resolution.
 #
-# 0 a clean trunk merge, made by this task and its only commit · 1 not a merge of the
-# trunk, or its tree is not the clean merge result · 2 the merge predates the task, or
-# the task changed something besides it · 3 the claim cannot be checked
+# 0 a trunk merge, made by this task and its only commit · 1 not a merge of the trunk,
+# its tree carries edits beyond the merge, or a conflict marker is left · 2 the
+# merge predates the task, or the task changed something besides it · 3 the claim
+# cannot be checked
 driver_prove_trunk_merge() {
-  local repo="$1" before="$2" after="$3" m="$4" sha p1 p2 r ontrunk="" tree mrc=0 got s8
+  local repo="$1" before="$2" after="$3" m="$4" gout="${5:-}" sha p1 p2 r ontrunk="" tree mrc=0 got s8 mt conflicted="" extra f
   sha=$(git -C "$repo" rev-parse --verify -q "$m^{commit}" 2>/dev/null) || { printf "trunkMerge.commit '%s' is not a commit here\n" "$m"; return 3; }
   s8=$(printf '%s' "$sha" | cut -c1-8)
   [ -n "$before" ] && [ -n "$after" ] || { printf 'the head around this task was not recorded, so its commits could not be measured\n'; return 3; }
@@ -741,19 +776,55 @@ driver_prove_trunk_merge() {
     git -C "$repo" merge-base --is-ancestor "$p2" "$r" 2>/dev/null && { ontrunk=1; break; }
   done
   [ -n "$ontrunk" ] || { printf "%s merges %s, which is not on the trunk (%s)\n" "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "${INTEGRATION_BRANCH:-develop}"; return 1; }
-  # The merge git makes by itself, with no hand: a conflict or any other tree is an edit.
-  tree=$(git -C "$repo" merge-tree --write-tree "$p1" "$p2" 2>/dev/null) || mrc=$?
-  tree=$(printf '%s\n' "$tree" | head -1)
-  if [ "$mrc" -eq 1 ]; then
-    printf '%s merged the trunk with conflicts, so its resolution is a change by hand — prove it with testFirst or testOnly\n' "$s8"; return 1
-  fi
-  if [ "$mrc" -ne 0 ] || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
+  # The merge git makes by itself: its tree, then each conflicted file up to an empty record.
+  # Paths are read NUL-separated throughout: a quoted name matches no file.
+  mt=$(mktemp) || { printf 'the clean merge of %s could not be computed here (no temp file)\n' "$s8"; return 3; }
+  git -C "$repo" merge-tree -z --write-tree --name-only "$p1" "$p2" > "$mt" 2>/dev/null || mrc=$?
+  local rec first=1 nl=""
+  while IFS= read -r -d '' rec; do
+    if [ -n "$first" ]; then tree=$rec; first=""; continue; fi
+    [ -n "$rec" ] || break
+    case $rec in *$'\n'*) nl=1 ;; esac
+    conflicted+="$rec"$'\n'
+  done < "$mt"
+  rm -f "$mt"
+  [ -z "$nl" ] || { printf 'a file %s conflicts on has a newline in its name, which cannot be checked here\n' "$s8"; return 3; }
+  conflicted=$(printf '%s' "$conflicted" | sort -u)
+  if { [ "$mrc" -ne 0 ] && [ "$mrc" -ne 1 ]; } || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
     printf 'the clean merge of %s could not be computed here (git merge-tree exit %s)\n' "$s8" "$mrc"; return 3
   fi
   got=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}" 2>/dev/null)
-  if [ "$got" != "$tree" ]; then
+  if [ "$mrc" -eq 1 ]; then
+    [ -n "$conflicted" ] || { printf 'git merge-tree reported conflicts in %s and named no file\n' "$s8"; return 3; }
+    extra=$(git -C "$repo" diff -z --name-only "$tree" "$got" 2>/dev/null | tr '\0' '\n' | grep -vxF -- "$conflicted")
+    if [ -n "$extra" ]; then
+      local mb sides untouched=""
+      mb=$(git -C "$repo" merge-base "$p1" "$p2" 2>/dev/null)
+      sides=$( { git -C "$repo" diff -z --name-only "$mb" "$p1"; git -C "$repo" diff -z --name-only "$mb" "$p2"; } 2>/dev/null | tr '\0' '\n' | sort -u)
+      while IFS= read -r f; do
+        printf '%s\n' "$sides" | grep -qxF -- "$f" || { untouched=$f; break; }
+      done <<<"$extra"
+      if [ -n "$mb" ] && [ -n "$untouched" ]; then
+        printf '%s resolves its conflicts and edits %s, which neither side changed — prove it with testFirst or testOnly\n' "$s8" "$untouched"
+      else
+        printf '%s resolves its conflicts and carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
+          "$s8" "$(printf '%s\n' "$extra" | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      fi
+      return 1
+    fi
+    # Only the conflicted files: the rest equal git's merge, and a repo may keep markers in fixtures.
+    # The whole of a conflicted file counts as its resolution, not only its conflict hunks.
+    local hit=""
+    hit=$(printf '%s\n' "$conflicted" | tr '\n' '\0' \
+      | xargs -0 git -C "$repo" --literal-pathspecs grep -z -nE '^(<{7}|>{7})( |$)|^={7}$' "$sha" -- 2>/dev/null \
+      | tr '\0' '\n' | head -2)
+    if [ -n "$hit" ]; then
+      f=$(printf '%s\n' "$hit" | head -1); f=${f#"$sha":}
+      printf '%s leaves a conflict marker in %s (line %s)\n' "$s8" "$f" "$(printf '%s\n' "$hit" | sed -n 2p)"; return 1
+    fi
+  elif [ "$got" != "$tree" ]; then
     printf '%s is a trunk merge that carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
-      "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      "$s8" "$(git -C "$repo" diff -z --name-only "$tree" "$got" 2>/dev/null | tr '\0' '\n' | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 1
   fi
   # The task made it: a merge already on the branch when the task started proves nothing done.
@@ -770,10 +841,18 @@ driver_prove_trunk_merge() {
   fi
   if ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
     printf 'the task left uncommitted edits beside the trunk merge %s (%s)\n' "$s8" \
-      "$(git -C "$repo" diff --name-only HEAD -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+      "$(git -C "$repo" diff -z --name-only HEAD -- 2>/dev/null | tr '\0' '\n' | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 2
   fi
-  printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+  if [ -z "$conflicted" ]; then
+    printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+    return 0
+  fi
+  # The gates are self-check's, which runs next on this head and blocks the push on a red.
+  f=$(printf '%s\n' "$conflicted" | head -5 | tr '\n' ' ' | sed 's/ $//')
+  [ -z "$gout" ] || printf '%s\n' "$conflicted" | jq -Rsc '{kind: "trunk-merge-resolved", files: (split("\n") | map(select(. != "")))}' > "$gout" 2>/dev/null
+  printf "%s merges %s and resolves its conflicts by hand (%s); self-check's gates judge it on this head\n" \
+    "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "$f"
   return 0
 }
 
@@ -792,7 +871,7 @@ _driver_build_task_start() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0 nresolved=0
   export DRIVER_TICKET="$t"
   whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
@@ -940,10 +1019,13 @@ driver_step_build() { # <ticket>
     # A TASK THAT ONLY MERGES THE TRUNK changes nothing of its own: the commit is checked, not a test.
     if jq -e '.trunkMerge | type == "object"' "$ans" >/dev/null 2>&1; then
       why=""; prc=0
-      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")") || prc=$?
+      rm -f "$proved.resolved"
+      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")" "$proved.resolved") || prc=$?
       if [ "$prc" -eq 0 ]; then
         tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
         rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
+        # A resolution by hand carries its files as the proof; a clean merge carries none.
+        [ ! -s "$proved.resolved" ] || { mv -f "$proved.resolved" "$proved.proof"; nresolved=$((nresolved+1)); }
         _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
         nmerge=$((nmerge+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
@@ -1052,7 +1134,11 @@ driver_step_build() { # <ticket>
 
   if [ "$bad" -eq 0 ]; then
     [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
-    [ "$nmerge" -eq 0 ] || driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
+    if [ "$nresolved" -gt 0 ]; then
+      driver_say "   build: $nmerge of $ntasks task(s) merged the trunk — $nresolved resolved by hand, judged by self-check's gates$([ "$nmerge" -eq "$nresolved" ] || echo ", $((nmerge - nresolved)) merged cleanly"); not a test pair"
+    elif [ "$nmerge" -gt 0 ]; then
+      driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
+    fi
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
     elif [ "$merged" -gt 0 ]; then

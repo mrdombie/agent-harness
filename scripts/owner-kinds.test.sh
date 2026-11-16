@@ -55,7 +55,7 @@ echo "--- the owner call sites, as read from the source ---"
 printf '%s\n' "$SITES"
 n=$(printf '%s\n' "$SITES" | grep -c .)
 want "the reader finds the known owner call sites, not none" "1" "$([ "$n" -ge 7 ] && echo 1 || echo "$n")"
-for k in red-2h disk-low login-lost blind decision signoff-batch host-tools; do
+for k in red-2h disk-low auth-hold blind decision signoff-batch host-tools; do
   want_in "a call site sending $k is read" $'\t'"$k"'$' "$SITES"
 done
 

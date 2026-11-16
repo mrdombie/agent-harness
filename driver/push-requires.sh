@@ -151,6 +151,7 @@ _driver_attest_agent() {
     ) > "$log" 2>"$log.err" || rc=$?
     driver_record_usage "$t" "$slot" "$log" "$prompt"
     driver_usage_wall "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
+    driver_auth_lost "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
     [ "$rc" -ne 124 ] || break
     err=$(driver_api_error "$log") || break
     if [ "$try" -eq 2 ]; then
@@ -199,6 +200,7 @@ _driver_attest_ask_verdict() {
   ) > "$alog" 2>"$alog.err" || true
   driver_record_usage "$t" "$slot-verdict" "$alog" "$ask"
   driver_usage_wall "$t" "$slot-verdict" "$alog" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$slot-verdict" "$alog" && return "$DRIVER_E_USAGE"
   line=$(jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$alog" 2>/dev/null \
     | grep -m1 -iE 'VERDICT:[^A-Za-z]*(SHIP|SPIT-BACK|SLOP)')
   [ -n "$line" ] || return 0

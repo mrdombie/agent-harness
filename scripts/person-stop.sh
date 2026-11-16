@@ -9,7 +9,7 @@
 #   person-stop.sh drafted <pr>
 #       0  a person put it back to draft (one sentence on stdout) · 1 not · 2 unread
 #
-# THREE STOPS, and mergeFirst relaxes none of them:
+# FOUR STOPS, and mergeFirst relaxes none of them:
 #   do-not-merge   the PR carries labels.doNotMerge ("do-not-merge").
 #   draft          the PR is a draft and the last convert_to_draft on its timeline was
 #                  a person's. The harness converts a PR to draft only when a run parks,
@@ -21,6 +21,9 @@
 #                  "## Parked", or one carrying the machine marker) within 5 minutes of
 #                  the conversion and no person commented from 5 minutes before it to an
 #                  hour after (PERSON_STOP_PARK_NEAR_SEC, PERSON_STOP_PARK_QUIET_SEC).
+#   a hold label   the ticket wears one of person-hold.sh's labels (needs:owner-decision,
+#                  the hold label, …): its line is person-hold.sh's own, "<label> put on by
+#                  <login> at <iso>", read fresh.
 #   a Critical     a comment by a person on the ticket or the PR, or a review on the PR,
 #                  newer than the driver's last hand-off (or --since), that GRADES a
 #                  Critical ("Critical:", "[Critical]", "Critical —", "grade: Critical";
@@ -104,6 +107,9 @@ check() {
   dnm="${LBL_DO_NOT_MERGE:-do-not-merge}"
   drivers=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "$HARNESS_CFG" 2>/dev/null) || drivers='[]'
   tc=$(ps_read "repos/$TICKET_REPO/issues/$t/comments?per_page=100") || { echo "could not read the comments on #$t"; return 2; }
+  local hold hrc=0
+  hold=$(bash "$SELF_DIR/person-hold.sh" check "$t" 2>/dev/null) || hrc=$?
+  case "$hrc" in 0) hold="" ;; 1) ;; *) echo "could not read the hold labels on #$t"; return 2 ;; esac
   if [ -n "$pr" ]; then
     pj=$(gh_read "pull request #$pr" api "repos/$REPO/pulls/$pr" 2>/dev/null) && jq -e '.number' >/dev/null 2>&1 <<<"$pj" \
       || { echo "could not read pull request #$pr"; return 2; }
@@ -149,6 +155,7 @@ check() {
       ] | .[]' "$f" 2>/dev/null) || rc=$?
   rm -rf "$d"
   [ "$rc" -eq 0 ] || { echo "could not read the comments and the timeline as JSON"; return 2; }
+  out=$(printf '%s\n%s\n' "$hold" "$out" | sed '/^$/d')
   [ -n "$out" ] || return 0
   printf '%s\n' "$out"
   return 1
