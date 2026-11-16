@@ -122,6 +122,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `tasks[].tests[].redWhen`: string
 - `tasks[].risks`: list of string
 - `tasks[].item`: string
+- `tasks[].group`: string
 - `question`: string
 - `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"

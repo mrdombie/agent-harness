@@ -148,6 +148,11 @@
             "description": "What this task builds: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so no task is a layer.",
             "type": "string",
             "pattern": "^(F[1-9][0-9]*|foundation|cleanup)$"
+          },
+          "group": {
+            "description": "Optional. The one area this task works in (a screen, a tab, a module), as a short slug. Neighbouring tasks naming the same group are built one after another in one session, so the second starts with what the first read; each is still proved on its own two commits. Leave it out when the task shares no files or reading with its neighbours.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
           }
         }
       }

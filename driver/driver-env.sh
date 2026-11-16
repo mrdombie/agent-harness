@@ -16,6 +16,9 @@
 #   DRIVER_VALIDATE  briefs/validate.sh — the one thing that reads a whole schema
 #   DRIVER_STEPS     the fixed order, one name per step
 #   DRIVER_MAX_BUILD_TRIES   red-before-green attempts before the ticket parks (5)
+#   DRIVER_BUILD_GROUP_MAX   tasks of one plan group built in one session (build.groupMax, 6)
+#   DRIVER_BUILD_GROUP_CTX   context, in tokens, past which a group starts a fresh session
+#                            (build.groupContextMax, 150000)
 #   DRIVER_MAX_REVIEW_ROUNDS review passes per change (review.maxRounds, 2); only the first
 #                            always calls the model (steps/review.sh)
 #
@@ -71,6 +74,12 @@ DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
 # Review rounds: a project fact (review.maxRounds), 2 when unset or not a whole number.
 DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-$(toolkit_cfg review.maxRounds 2>/dev/null)}"
 case "$DRIVER_MAX_REVIEW_ROUNDS" in ''|*[!0-9]*|0) DRIVER_MAX_REVIEW_ROUNDS=2 ;; esac
+# Tasks of one plan `group` share a build session: at most this many (build.groupMax, 6;
+# 1 is one fresh session a task), and none once its context passes build.groupContextMax.
+DRIVER_BUILD_GROUP_MAX="${DRIVER_BUILD_GROUP_MAX:-$(toolkit_cfg build.groupMax 2>/dev/null)}"
+case "$DRIVER_BUILD_GROUP_MAX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_MAX=6 ;; esac
+DRIVER_BUILD_GROUP_CTX="${DRIVER_BUILD_GROUP_CTX:-$(toolkit_cfg build.groupContextMax 2>/dev/null)}"
+case "$DRIVER_BUILD_GROUP_CTX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_CTX=150000 ;; esac
 # Red gates in the branch's own diff go back to fix this many times before a park.
 DRIVER_MAX_GATE_FIXES="${DRIVER_MAX_GATE_FIXES:-3}"
 
@@ -1127,6 +1136,7 @@ DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)
 DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
+export DRIVER_BUILD_GROUP_MAX DRIVER_BUILD_GROUP_CTX
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
