@@ -137,7 +137,7 @@ walk() { # <ticket> <step> <rc> <how: note|question> <text> [pr]
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; : > "$FIX/park.log"; : > "$GH_LOG"
   printf '#!/usr/bin/env bash\ndriver_park() { printf "PARK %%s | %%s | cause=%%s\\n" "$2" "${3:-}" "${4:-}" >> "$FIX/park.log"; return 20; }\n' > "$FAKE/park.sh"
   local s
-  for s in start size plan build fix compare self-check review record ship quick; do
+  for s in start size plan build fix compare self-check simplify review record ship quick; do
     printf '#!/usr/bin/env bash\ndriver_step_%s() { printf "%%s\\n" %s >> "$RAN"; return 0; }\n' "${s//-/_}" "$s" > "$FAKE/$s.sh"
   done
   jq -n --arg q "$5" '$q' > "$FIX/walk-q.json"
@@ -160,7 +160,7 @@ echo "--- on: a step's own refusal the critic answers carries on to the ship ---
 mf_on
 want "#12209's critic refusal at fix: the run finishes" "0" "$(walk_rc 701 fix 24 note "$Q12209C" 88)"
 want "nothing parked"                                  "" "$(cat "$FIX/park.log")"
-want "and every step after fix ran"                    "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and every step after fix ran"                    "start size plan build fix compare self-check simplify review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "the run log says which standard answer"      'standard answer: \(d\)' "$(cat "$FIX/walk.out")"
 want_in "and it is written on the PR"                  'pr comment 88 .*standard answer: \(d\)' "$(tr '\n' ' ' < "$GH_LOG")"
 want_not_in "no owner label"                           'needs:owner-decision' "$(cat "$GH_LOG")"

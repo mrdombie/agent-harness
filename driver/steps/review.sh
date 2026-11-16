@@ -270,7 +270,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   # Off until the release: a critic finding the reviewer copied off the PR is no finding.
   driver_drop_critic_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   # A finding that only says the branch clashes is the PR's repair, never a block or a ticket.
-  driver_drop_clash_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
+  driver_drop_clash_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
   local ground="$round"
@@ -478,22 +478,11 @@ $(_driver_review_context "$wt" "$fl" "$ln")
     '.panel = ((.panel // {skill: "code-review"}) + {effort: $e, checked: $c, kept: $k})' "$f" > "$f.t" && mv "$f.t" "$f"
 }
 
-# _driver_review_spawns <transcript> — how many subagents a reviewer started of its own: an
-# Agent or Task tool call at any depth, or a started task no Skill call opened. code-review
-# itself runs in the one context its Skill call forks (measured 2026-11-02 at high: one task,
-# spawn depth 1, opened by the Skill call, and no Agent call anywhere). A command the review
-# runs is a task too (task_type local_bash), never an agent: counting it parked 6 changes.
-_driver_review_spawns() {
-  driver_log_events "$1" 2>/dev/null | jq -s '
-    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $uses
-    | ([$uses[] | select(.name == "Skill") | .id // empty]) as $skills
-    | ([$uses[] | select(.name == "Agent" or .name == "Task") | (.id // "agent")]
-       + [.[] | select(.type == "system" and .subtype == "task_started")
-          | select((.task_type // "local_agent") | test("agent"))
-          | select(((.tool_use_id // "") as $i | $skills | index($i)) == null or (.spawn_depth // 1) > 1)
-          | (.tool_use_id // .task_id // "task")])
-    | unique | length' 2>/dev/null || echo 0
-}
+# _driver_review_spawns <transcript> — how many subagents a reviewer started of its own
+# (driver_log_spawns). code-review itself runs in the one context its Skill call forks
+# (measured 2026-11-02 at high: one task, spawn depth 1, opened by the Skill call, and no
+# Agent call anywhere). Counting a command the review runs parked 6 changes.
+_driver_review_spawns() { driver_log_spawns "$1"; }
 
 # _driver_review_capped <ticket> <slot> [who] — 0 when the slot's reviewer started no
 # subagent of its own. Else the step fails, loudly, parked as the driver's: an unbounded
@@ -697,6 +686,15 @@ _driver_review_defer() {
   [ "${nsweep:-0}" -eq 0 ] || _driver_review_to_sweep "$t" "$sweep" "$round"
   printf '%s' "$defer" | jq -c --argjson r "$round" '.[] | {id, grade, file, line, summary, round: $r,
       list: (if (.inChange // false) == true then "dropped" else "sweep" end)}' >> "$d/review.deferred.jsonl"
+  local x
+  while IFS= read -r x; do
+    [ -n "$x" ] || continue
+    if [ "$(jq -r '.inChange // false' <<<"$x")" = true ]; then
+      driver_finding_answer "$t" "$x" closed "graded $(jq -r '.grade // "?"' <<<"$x") in round $round, below its blocking set: dropped" deferred
+    else
+      driver_finding_answer "$t" "$x" closed "outside this change's files: to the nightly sweep" deferred
+    fi
+  done < <(jq -c '.[]' <<<"$defer")
   jq --arg late "$late" '
       ($late | split(" ")) as $L
       | .findings = [(.findings // [])[] | select((.sameChange // false) == true or ((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not))]' "$f" > "$f.t" && mv "$f.t" "$f"

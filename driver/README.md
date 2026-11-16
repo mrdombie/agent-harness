@@ -12,7 +12,7 @@ driver/
 ├── ai-step.sh      the one place control is handed to a model, and checked after
 ├── push-requires.sh  the reviews this project's own pre-push insists on
 ├── git-actions.sh  the git steps a model may not run, and driver_keep_ref (work kept under refs/stale/)
-├── steps/          start · plan · build · fix · self-check · compare · review · record · ship · park
+├── steps/          start · plan · build · fix · self-check · compare · simplify · review · record · ship · park
 └── tests/          every step and every refusal
 ```
 
@@ -43,6 +43,7 @@ thinking inside one step.
 | 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way; a self-check red is handed on only at the head it was read on, never a command `gates.localOnly` keeps for CI, and never one red on the merged trunk commit too (base-red: noted for the one develop-red ticket) |
 | 5 | `self-check` | driver | first, with no model, what the ticket names (`driver/ticket-parts.sh`): each file it names in backticks under its change or acceptance headings (or on a split part's `**Files:**` line) is on the branch or in its diff, and each numbered change item and acceptance item is in a passing feature's `covers` or named by its id in the list's `outside` (a `note` there names no item); a miss goes to fix once, named, and a second parks named. Then every gate run as its own command, read by exit code. When `gates.local` holds every `gates.changed` command (or there is none) it is the local set: that list alone, and CI runs the rest once. Otherwise the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it. A red also red on the trunk commit the branch merged (`driver/base-red.sh`, run there once per check and commit) is base-red: not counted, never parked, one develop-red ticket. A database or transaction timeout in test files the branch did not change is run again once, file by file alone: all green, the red was the load's, not counted |
 | 6 | `compare` | model | this run's renders held beside the approved design |
+| 6b | `simplify` | model | Claude Code's own `simplify`, once per change, in the build's last session (`--resume-of build`: the newest `steps/build-task-N.log`); its clean-up commits stay only while every `gates.local` command passes on the new head, else the branch is reset to where it was. Skipped on a repair, an empty diff or a project with no `gates.local`. The subagents it started are kept as `simplify_agents`, and the PR body states them (`Simplify: N subagent(s)`) |
 | 7 | `review` | model | `SHIP`, or findings with a file, a line, a grade, a tag and the panel's votes, from Claude Code's own `code-review` (finders in parallel, a verifier vote on each). Only agreed findings are kept; a pre-existing one goes to the sweep queue. Once per change: a later pass calls the model only when the fix round touched a file the first review never saw, graded Critical and Major only, and never past `review.maxRounds` |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
 | 9 | `ship` | driver | push, draft pull request carrying its proof, ready, auto-merge, hand off |

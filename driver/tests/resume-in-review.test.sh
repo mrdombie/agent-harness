@@ -41,7 +41,7 @@ parked_build() {
   local t="$1" b="tkt-$1/work"
   git -C "$REPO" worktree add -q "$FIX/wt$t" -b "$b" develop
   driver_state_init "$t" --worktree "$FIX/wt$t" --branch "$b"
-  local s; for s in start size plan build fix compare self-check; do driver_state_done "$t" "$s"; done
+  local s; for s in start size plan build fix compare self-check simplify; do driver_state_done "$t" "$s"; done
   jq -n --arg b "${2:-$b}" --arg h "$(git -C "$FIX/wt$t" rev-parse HEAD)" \
     '[{number:90, headRefName:$b, headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
   fix_issue "$t" OPEN "status:in-review,P1"
@@ -81,7 +81,7 @@ kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts
 fakes() {
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; : > "$FIX/park.log"
   local s
-  for s in size plan build fix compare self-check review record ship quick; do
+  for s in size plan build fix compare self-check simplify review record ship quick; do
     printf '#!/usr/bin/env bash\ndriver_step_%s() { printf "%%s\\n" %s >> "$RAN"; return 0; }\n' "${s//-/_}" "$s" > "$FAKE/$s.sh"
   done
   printf '#!/usr/bin/env bash\n. "%s/driver/steps/start.sh"\nCL="%s"\n' "$KIT" "$BIN/claim-lock" > "$FAKE/start.sh"

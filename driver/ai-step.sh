@@ -53,6 +53,22 @@
 # but it is no longer the only source, and it was never present on a shipped brief.
 driver_brief_skill() { sed -n '1,20{/^skill:[[:space:]]*/s///p;}' "$1" | head -1 | tr -d '[:space:]'; }
 
+# driver_log_spawns <transcript> — how many subagents a session started of its own: an Agent
+# or Task tool call at any depth, or a started task no Skill call opened. A skill's own forked
+# context (one task, depth 1, opened by its Skill call) is not one, and nor is a command
+# (task_type local_bash).
+driver_log_spawns() {
+  driver_log_events "$1" 2>/dev/null | jq -s '
+    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $uses
+    | ([$uses[] | select(.name == "Skill") | .id // empty]) as $skills
+    | ([$uses[] | select(.name == "Agent" or .name == "Task") | (.id // "agent")]
+       + [.[] | select(.type == "system" and .subtype == "task_started")
+          | select((.task_type // "local_agent") | test("agent"))
+          | select(((.tool_use_id // "") as $i | $skills | index($i)) == null or (.spawn_depth // 1) > 1)
+          | (.tool_use_id // .task_id // "task")])
+    | unique | length' 2>/dev/null || echo 0
+}
+
 # driver_record_usage <ticket> <slot> <log> <prompt> — what a step cost, how big its
 # context got, and how many words it was given, appended under .usage[<slot>] and
 # added to .spend. These are the shadow run's measurements (words per step, spend).
@@ -275,12 +291,13 @@ SHIM
   chmod +x "$dir/git"
 }
 
-driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
+driver_ai_step() { # <ticket> <step> [--as <slot>] [--resume-of <slot>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
-  local slot="$step"
+  local slot="$step" resume_of=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --as) slot="${2:?--as needs a name}"; shift 2 ;;
+      --resume-of) resume_of="${2:?--resume-of needs a slot}"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -412,8 +429,18 @@ SHIM
     before=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); brc=$?
   fi
 
+  # --resume-of: the last session another step's transcript names, so this step works in it.
+  # The build writes one log per task (build-task-N.log); the newest is the one that ran last.
+  local rsid="" rlog=""
+  if [ -n "$resume_of" ]; then
+    # argv-bounded: one ticket's steps dir, one log per plan task
+    rlog=$(ls -t "$d/steps/$resume_of.log" "$d/steps/$resume_of"-task-*.log 2>/dev/null | head -1)
+    [ -z "$rlog" ] || rsid=$(driver_log_events "$rlog" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+    [ -n "$rsid" ] || driver_say "   $step: no session in steps/$resume_of.log or steps/$resume_of-task-*.log — this call starts a fresh one"
+  fi
+
   local crc=0
-  _driver_ai_call "$prompt" "$log" || return $?
+  _driver_ai_call "$prompt" "$log" "$rsid" || return $?
 
   # ONE RE-ASK, WITH THE REASON, BEFORE A PARK. An answer the driver cannot read
   # parked the ticket outright, and the run's work with it (#13249, 2026-10-17); the

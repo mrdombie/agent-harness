@@ -26,6 +26,7 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/finding-answers.sh" || exit 1
 
 driver_fact_dir() { printf '%s' "$(driver_state_dir "$1")/steps/$2.facts"; }
 
@@ -387,15 +388,17 @@ driver_fact_critic_findings() { # <ticket>
 # 1 when nothing left it. A
 # review that copied a critic finding off the PR sent it to fix, the fix round could
 # only defer it, and the deferral parked for the owner (#12209, three times).
-# driver_drop_clash_findings <file> <list name> — a finding that only says the branch clashes
+# driver_drop_clash_findings <file> <list name> [ticket] — a finding that only says the branch clashes
 # with or is behind its base is no finding (clash-finding.sh): a clash the coordinator's rebuild pass settles.
-# 0 when it dropped one.
-driver_drop_clash_findings() { # <file> <list name>
+# 0 when it dropped one. Given a ticket, each one dropped is closed on its answer ledger.
+driver_drop_clash_findings() { # <file> <list name> [ticket]
   local f="$1" ids
   [ -s "$f" ] || return 1
   declare -F clash_finding_filter >/dev/null || . "$KIT_ROOT/scripts/clash-finding.sh" || return 1
   ids=$(jq -r "$CLASH_FINDING_JQ"' [.findings[]? | select(clash_only) | (.id // "?" | tostring)] | join(", ")' "$f" 2>/dev/null)
   [ -n "$ids" ] || return 1
+  [ -z "${3:-}" ] || driver_findings_answer_all "$3" "$(jq -c "$CLASH_FINDING_JQ"' [.findings[]? | select(clash_only)]' "$f" 2>/dev/null)" \
+    closed "a clash with ${INTEGRATION_BRANCH:-the trunk} only, the rebuild pass's: dropped"
   jq "$CLASH_FINDING_JQ"' .findings = [(.findings // [])[] | select(clash_only | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
   driver_say "   a clash with $INTEGRATION_BRANCH is the rebuild pass's, never a finding — dropped from the $2 list: $ids"
 }
@@ -405,6 +408,8 @@ driver_drop_critic_findings() { # <file> <list name> [ticket]
   [ -s "$f" ] && release_critic_paused "$(driver_critic_labels "${3:-}")" || return 1
   ids=$(jq -r --arg re "$RELEASE_CRITIC_ID_RE" '[.findings[]? | (.id // "" | tostring) | select(test($re; "i"))] | join(", ")' "$f" 2>/dev/null)
   [ -n "$ids" ] || return 1
+  [ -z "${3:-}" ] || driver_findings_answer_all "$3" "$(jq -c --arg re "$RELEASE_CRITIC_ID_RE" '[.findings[]? | select((.id // "" | tostring) | test($re; "i"))]' "$f" 2>/dev/null)" \
+    closed "the design critic's, off until the release: dropped"
   jq --arg re "$RELEASE_CRITIC_ID_RE" '.findings = [(.findings // [])[] | select((.id // "" | tostring) | test($re; "i") | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
   driver_say "   $RELEASE_CRITIC_OFF — dropped from the $2 list: $ids"
 }
