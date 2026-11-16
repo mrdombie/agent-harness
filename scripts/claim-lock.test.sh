@@ -222,6 +222,7 @@ case "$1 $2" in
       *) [ -n "${FAKE_PR_NUM:-}" ] && echo "$FAKE_PR_NUM" ;;
     esac; exit 0 ;;
   "pr view")    [ -n "${FAKE_PR_HEAD:-}" ] && echo "$FAKE_PR_HEAD"; exit 0 ;;
+  "pr list")    echo "${FAKE_MERGED:-0}"; exit 0 ;;
   *) exit 0 ;;
 esac
 GH
@@ -239,6 +240,23 @@ gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_PR_NUM=831 FAKE_P
 grep -q 'st:review' "$SB/gh.log" "$SB/out" \
   && ok "release still marks a ticket with no status and an open PR as in review" \
   || bad "release no longer marks a status-less ticket with an open PR as in review"
+
+# --- 7c. Release leaves a merged ticket alone, claimed label or not -----------
+# 2026-11-16: two merged tickets still open with no status were set ready by the
+# release and offered to builders again; only the claimed-label case checked for a merge.
+gh_run -- acquire 785 --branch tkt-785/x --worktree "$SB/wt13" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_MERGED=1 -- release 785 --force
+[ "$RC" -eq 0 ] && grep -q 'shipped, not abandoned' "$SB/out" \
+  && ! grep -qE 'issue edit.*st:(ready|review)' "$SB/gh.log" && ! grep -q 'had no status' "$SB/out" \
+  && ok "release leaves a merged ticket with no status alone" \
+  || bad "release put a merged ticket with no status back on the board (rc $RC: $(tail -1 "$SB/out"))"
+gh_run -- acquire 786 --branch tkt-786/x --worktree "$SB/wt14" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_MERGED=0 -- release 786 --force
+grep -q 'had no status — set st:ready' "$SB/out" \
+  && ok "release still puts an unmerged ticket with no status back on the board" \
+  || bad "release no longer readies an unmerged ticket with no status (rc $RC: $(tail -1 "$SB/out"))"
 
 # --- 8. A refused push with nobody holding the claim is no lost race ----------
 # 2026-11-04: start parked tickets ten requeues running on "a peer took the claim
