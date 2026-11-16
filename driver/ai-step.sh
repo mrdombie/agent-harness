@@ -2,7 +2,7 @@
 # ai-step.sh — the one place the driver hands control to a model, and therefore
 # the one place it has to be suspicious.
 #
-#   driver_ai_step <ticket> <step> [--as <slot>] [context-file…]
+#   driver_ai_step <ticket> <step> [--as <slot>] [--continue <log>] [context-file…]
 #
 # It fills the brief's placeholders, runs the step INSIDE the ticket's worktree,
 # keeps the transcript, and then checks four things before it believes the answer:
@@ -275,12 +275,13 @@ SHIM
   chmod +x "$dir/git"
 }
 
-driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
+driver_ai_step() { # <ticket> <step> [--as <slot>] [--continue <log>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
-  local slot="$step"
+  local slot="$step" cont_log=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --as) slot="${2:?--as needs a name}"; shift 2 ;;
+      --continue) cont_log="${2:-}"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -413,7 +414,28 @@ SHIM
   fi
 
   local crc=0
-  _driver_ai_call "$prompt" "$log" || return $?
+  # --continue <log>: the session that log ended in is resumed, so this call starts with
+  # what it already read. Both transcripts are judged, in order: the skills ran in the
+  # first. A resume that left no answer, whatever the cause, is a fresh call with the
+  # usual retries: never a lost task.
+  local csid_prev=""
+  [ -z "$cont_log" ] || [ ! -s "$cont_log" ] || [ "$cont_log" -ef "$log" ] \
+    || csid_prev=$(driver_log_events "$cont_log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+  if [ -n "$csid_prev" ]; then
+    { printf 'This session goes on to the next task of the same plan. What you read stays true except where a commit since changed it. The brief below is the whole brief of this task:\n\n---\n'; cat "$prompt"; } > "$prompt.cont"
+    _driver_ai_run "$prompt.cont" "$log.cont" "$csid_prev"
+    driver_record_usage "$t" "$slot" "$log.cont" "$prompt.cont"
+    if driver_usage_wall "$t" "$step" "$log.cont" || driver_auth_lost "$t" "$step" "$log.cont"; then
+      cp "$log.cont" "$log" 2>/dev/null; return "$DRIVER_E_USAGE"
+    fi
+    if [ -n "$(driver_log_events "$log.cont" | jq -c 'select(.type == "result" and .is_error != true)' 2>/dev/null | head -1)" ]; then
+      cat "$cont_log" "$log.cont" > "$log.joined" && mv -f "$log.joined" "$log"
+    else
+      driver_say "   $step: the session before could not be resumed — a fresh one for this task"
+      csid_prev=""
+    fi
+  fi
+  [ -n "$csid_prev" ] || _driver_ai_call "$prompt" "$log" || return $?
 
   # ONE RE-ASK, WITH THE REASON, BEFORE A PARK. An answer the driver cannot read
   # parked the ticket outright, and the run's work with it (#13249, 2026-10-17); the

@@ -935,7 +935,8 @@ driver_step_build() { # <ticket>
   # could read was refused by the validator. The same defect as the plan step's, in
   # the step the trial never reached.
   #
-  # Sequential, never parallel: each task is a fresh session of its own, followed by the
+  # Sequential, never parallel: each task is a call of its own, in a fresh session unless
+  # it goes on in its group's (_driver_build_group_goes_on), followed by the
   # review step. The driver never starts several agents on one ticket.
   ntasks=$(jq -r '[.tasks[]?] | length' "$(driver_state_dir "$t")/steps/plan.json" 2>/dev/null)
   if [ "${ntasks:-0}" -eq 0 ]; then
@@ -950,6 +951,7 @@ driver_step_build() { # <ticket>
   # a usage stop rebuilt five already proved. A task proved on an earlier pass, whose
   # plan entry is unchanged and whose commits are still on the branch, is kept.
   local keep kept=0
+  local grp cont g_name="" g_slot="" g_n=0
   keep=$(_driver_build_keepable "$t" "$repo" "$ntasks")
   if [ -n "$keep" ]; then
     driver_say "   build: $(printf '%s' "$keep" | wc -w | tr -d ' ') of $ntasks task(s) kept from an earlier pass (proved, commits still on the branch); building the rest again"
@@ -988,7 +990,17 @@ driver_step_build() { # <ticket>
     fi
     # The head this task started from: what a noCode or trunkMerge answer is measured against.
     before=$(_driver_build_task_start "$(driver_state_dir "$t")/steps/$slot.started" "$task" "$repo")
-    rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
+    # A task of the group the last call built goes on in that session.
+    grp=$(jq -r '.group // "" | strings' <<<"$task")
+    cont=""
+    if _driver_build_group_goes_on "$t" "$grp" "$g_name" "$g_slot" "$g_n"; then
+      cont="$(driver_state_dir "$t")/steps/$g_slot.log"; g_n=$((g_n+1))
+      driver_say "   build: task $i goes on in the session of its group '$grp' ($g_n of at most $DRIVER_BUILD_GROUP_MAX)"
+    else
+      g_n=1
+    fi
+    g_name="$grp"; g_slot="$slot"
+    rc=0; driver_ai_step "$t" build --as "$slot" --continue "$cont" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # A question, a skipped Skill or a broken answer is not a rework loop: those
       # park, and they park with their OWN reason. Running them through the ceiling
@@ -1187,6 +1199,20 @@ driver_step_build() { # <ticket>
   fi
   _driver_build_out_of_tries "$t" "$tries" "$ntasks" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_build_group_goes_on <ticket> <group> <last group> <last slot> <tasks in its session>
+# 0 when this task resumes the last call's session: the same named group, under
+# DRIVER_BUILD_GROUP_MAX tasks, and that call's context under DRIVER_BUILD_GROUP_CTX.
+# A context nobody measured is a fresh session.
+_driver_build_group_goes_on() {
+  local ctx
+  [ -n "$2" ] && [ "$2" = "$3" ] && [ -n "$4" ] || return 1
+  [ "$5" -lt "$DRIVER_BUILD_GROUP_MAX" ] || return 1
+  [ -s "$(driver_state_dir "$1")/steps/$4.log" ] || return 1
+  ctx=$(jq -r --arg s "$4" '.usage[$s] | last | .ctxMax // 0' "$(_driver_state_file "$1")" 2>/dev/null)
+  case "$ctx" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$ctx" -lt "$DRIVER_BUILD_GROUP_CTX" ]
 }
 
 # _driver_build_task_fact <ticket> <task> <whole> — the task as the brief reads it. A task of
