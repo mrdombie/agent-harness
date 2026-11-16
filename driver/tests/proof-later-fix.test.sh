@@ -48,6 +48,21 @@ later_fix; HARNESS_CFG="$FIX/off.json" prove 2
 want "round 2 with the same pair proves"        "0" "$RC"
 want_in "green is taken at the fixing commit"   "then green at $(short)" "$OUT"
 
+echo "--- the compile error is in a file neither commit touched; its fix moves no feature file ---"
+printf 'cast\n' > "$REPO/bad.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "chore: an unrelated file stops compiling"
+printf '#!/usr/bin/env bash\ngrep -q "f6=yes" f6.txt\n' > "$REPO/f6.test.sh"; printf 'f6=no\n' > "$REPO/f6.txt"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: f6"; TS=$(git -C "$REPO" rev-parse HEAD)
+printf 'f6=yes\n' > "$REPO/f6.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: f6"; IS=$(git -C "$REPO" rev-parse HEAD)
+HARNESS_CFG="$FIX/off.json" prove 6
+want "round 1 refuses on the typecheck"         "6" "$RC"
+later_fix; HARNESS_CFG="$FIX/off.json" prove 6
+want "round 2 proves once the other file is fixed" "0" "$RC"
+want_in "green is taken at the branch head"     "then green at $(short)" "$OUT"
+printf 'cast\n' > "$REPO/bad.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm "chore: it stops compiling again"
+HARNESS_CFG="$FIX/off.json" prove 6
+want "a head that does not compile still refuses" "6" "$RC"
+later_fix
+
 echo "--- a later commit on other files does not make a named non-fix prove ---"
 printf '#!/usr/bin/env bash\ngrep -qs "f5=yes" f5.txt\n' > "$REPO/f5.test.sh"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "test: f5"; TS=$(git -C "$REPO" rev-parse HEAD)

@@ -406,6 +406,7 @@ driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_once "$@
 # A FIX COMMITTED AFTER THE CHANGE COUNTS. A rework keeps reporting its first pair, so a
 # green or typecheck failure at the change is proved once more at the latest branch commit
 # touching the test's or the change's files; the red half stays at the change's parent.
+# A typecheck failure with no such commit is proved once more at the branch head.
 _driver_prove_red_green_once() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5" out rc=0 lsha ffile
   local -a ffiles=()
@@ -418,8 +419,15 @@ _driver_prove_red_green_once() {
     [ "${#ffiles[@]}" -eq 0 ] \
       || lsha=$(git -C "$repo" log -1 --format=%H "$isha..HEAD" -- "${ffiles[@]}" 2>/dev/null)
   fi
+  # The compile error can sit in a file neither commit touched, so its fix moves no
+  # feature file: a typecheck failure alone is then proved again at the branch head.
+  local where="the latest commit on the feature's files"
+  if [ -z "${lsha:-}" ] && [ "$rc" -eq 6 ] && git -C "$repo" merge-base --is-ancestor "$isha" HEAD 2>/dev/null \
+     && [ "$(git -C "$repo" rev-parse HEAD)" != "$(git -C "$repo" rev-parse "$isha")" ]; then
+    lsha=$(git -C "$repo" rev-parse HEAD); where="the branch head"
+  fi
   [ -n "${lsha:-}" ] || { printf '%s\n' "$out"; return "$rc"; }
-  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), the latest commit on the feature's files" >&2
+  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), $where" >&2
   _driver_prove_red_green_at "$repo" "$tfile" "$tsha" "$isha" "$cmd" "$lsha"
 }
 
