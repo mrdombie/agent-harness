@@ -71,6 +71,8 @@ _driver_fix_gate_reds() {
       driver_base_red_say "$t" fix "$id" "$bred"
       continue
     fi
+    # What the trunk run found goes with the gate: a later "it is the base's" is answered from it.
+    [ -z "$of" ] || [ ! -f "$of" ] || row=$(jq -c --arg w "$(driver_base_red_gate "$wt" "$cmd" "$of" >/dev/null 2>&1; printf '%s' "${DRIVER_BASE_RED_WHY:-}")" '. + {baseWhy: $w}' <<<"$row")
     keep="$keep$row"$'\n'
   done
   if [ -z "$keep" ]; then rm -f "$f" "$f.head"; return 1; fi
