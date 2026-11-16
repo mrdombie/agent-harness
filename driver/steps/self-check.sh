@@ -275,8 +275,8 @@ EOF
 # two files failed the same way for four other unrelated tickets that day. So when the
 # output carries a database or transaction timeout and every failing test file is outside
 # the change, each one is run once more, alone; all green, the red was the load's.
-# A local service that refused the connection (Redis stopped on the machine, 2026-11-16,
-# maktura #20163) reads the same way: green alone once it is back, the red was the machine's.
+# A local service that refused the connection (Redis stopped on the machine, 2026-11-16)
+# reads the same way: green alone once it is back, the red was the machine's.
 DRIVER_DB_TIMEOUT_RE="${DRIVER_DB_TIMEOUT_RE:-Transaction API error|Transaction already closed|Unable to start a transaction|timed out fetching a new connection|Timed out fetching a new connection|Can.t reach database server|canceling statement due to statement timeout|deadlock detected|Connection terminated unexpectedly|P1001|P2024|P2028|ECONNREFUSED|Command timed out|Connection is closed}"
 # _driver_gate_db_flake <tree> <output> <secs> — 0 when that holds and every file passed alone
 # (DRIVER_FLAKE_FILES names them); 1 otherwise, and the red is read as before.
