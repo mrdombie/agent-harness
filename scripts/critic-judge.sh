@@ -410,6 +410,14 @@ run() { # <pr>
     if [ "$rc" -eq 0 ]; then
       rc=0; miss=$(python3 -I "$PE" missing "${popt[@]}" --shots "$W/shots.tsv" "$W/pictures"/* 2>/dev/null) || rc=$?
       [ "$rc" -le 1 ] || { say "PR #$pr: the picture's regions could not be checked"; note_try "$pr" "$head"; return 2; }
+      # A DARK REGION THE PROJECT'S CAPTURE DOES NOT SHOOT YET IS NOT OWED. A project that
+      # takes dark shots only once its release is done (evidence.darkAfterRelease) pins
+      # light alone until then, so every dark region read as "nobody saw it" on every PR.
+      if [ -n "$miss" ] && jq -e '(.evidence.darkAfterRelease // false) == true and (.release.done // false) != true' "$HARNESS_CFG" >/dev/null 2>&1; then
+        local waived; waived=$(printf '%s\n' "$miss" | awk -F'\t' '$4 == "dark"' | grep -c . || true)
+        miss=$(printf '%s\n' "$miss" | awk -F'\t' 'NF && $4 != "dark"')
+        [ "${waived:-0}" -eq 0 ] || say "PR #$pr: $waived dark region(s) not owed — dark shots are taken once the release is done (evidence.darkAfterRelease)"
+      fi
       python3 -I "$PE" scope "${popt[@]}" --files "$W/changed.txt" "$W/pictures"/* > "$W/scope.tsv" 2>/dev/null || : > "$W/scope.tsv"
     elif [ "$rc" -ne 3 ]; then say "PR #$pr: the approved picture could not be read for regions"; note_try "$pr" "$head"; return 2; fi
   fi

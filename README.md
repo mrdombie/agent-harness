@@ -740,6 +740,10 @@ other item stays paused. A caller that knows its item asks with that item's labe
 (`release_labels_of`, one batched read, only when the list is set); labels that
 cannot be read keep the critic. No key, or an empty list, is exactly as before.
 
+**Dark after the release.** `evidence.darkAfterRelease: true` says the project's capture
+shoots dark only once `release.done` is true. Until then the critic owes no dark region of
+the approved picture a shot; light regions are owed as before, and dark ones again after.
+
 **Process fixes trump everything** (owner call 2026-10-20). A ticket wearing
 `coordinator.processLabel` (default `process`) starts first, in any free place:
 ahead of priority, kind order, polish and even an
