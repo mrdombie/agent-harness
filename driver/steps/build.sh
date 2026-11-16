@@ -156,6 +156,22 @@ driver_proof_trees_drop() {
   for t in "$d"/*; do [ -e "$t/.git" ] && git -C "$t" worktree remove --force "$t" >/dev/null 2>&1; done
   rm -rf "$d"
 }
+# driver_proof_trees_sweep_dead — the proof trees of runs that are gone, removed. A killed
+# run fires no exit trap, so its trees stay: 979 of them, ~4 GB each, on one Mac (2026-11-16).
+# The dir's name ends in its run's pid; a pid still alive keeps its dir, whoever holds it now.
+driver_proof_trees_sweep_dead() {
+  local d t pid
+  for d in "${TMPDIR:-/tmp}"/driver-proof-t*-run*; do
+    [ -d "$d" ] || continue
+    pid=${d##*-run}
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" = "$$" ] && continue
+    kill -0 "$pid" 2>/dev/null && continue
+    for t in "$d"/*; do [ -e "$t/.git" ] && git -C "$t" worktree remove --force "$t" >/dev/null 2>&1; done
+    rm -rf "$d"
+  done
+  return 0
+}
 
 # driver_proof_typecheck_cmd — the compile check a proof runs beside the test, or
 # nothing. `driver.proofTypecheck` names it outright ("" or "none" switches it off);
