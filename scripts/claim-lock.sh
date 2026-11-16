@@ -276,6 +276,13 @@ cmd_acquire() {
   die "push failed for #$issue"
 }
 
+# True when a merged PR names the ticket in its title: it shipped, it was not abandoned.
+shipped_by_merged_pr() {
+  gh_call pr list --repo "$REPO_SLUG" --state merged --limit 20 \
+    --search "$1 in:title" --json number --jq 'length' 2>/dev/null \
+    | grep -qv '^0$'
+}
+
 cmd_release() {
   local issue="$1" force=0
   shift || true
@@ -346,9 +353,7 @@ cmd_release() {
           #
           # A merged PR naming the ticket is the discriminator: abandoned claims
           # do not have one.
-          if gh_call pr list --repo "$REPO_SLUG" --state merged --limit 20 \
-               --search "$issue in:title" --json number --jq 'length' 2>/dev/null \
-               | grep -qv '^0$'; then
+          if shipped_by_merged_pr "$issue"; then
             printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"
           else
             issue_status_set "$issue" "$LBL_READY" >/dev/null 2>&1 \
@@ -358,11 +363,17 @@ cmd_release() {
         *)
           # No status label at all — the shape this guard exists to prevent. Ready,
           # unless an open PR already closes it: then it is in review, not free.
+          # A merged ticket whose claimed label is already gone reads the same as an
+          # abandoned one; the merged PR tells them apart here too.
           local _pr _to="$LBL_READY"
-          _pr=$(open_pr_closing "$issue")
-          [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
-          issue_status_set "$issue" "$_to" >/dev/null 2>&1 \
-            && printf '  #%s had no status — set %s\n' "$issue" "$_to"
+          if shipped_by_merged_pr "$issue"; then
+            printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"
+          else
+            _pr=$(open_pr_closing "$issue")
+            [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
+            issue_status_set "$issue" "$_to" >/dev/null 2>&1 \
+              && printf '  #%s had no status — set %s\n' "$issue" "$_to"
+          fi
           ;;
       esac
     fi
