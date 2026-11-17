@@ -86,10 +86,18 @@ feature_list_kept() { # <plan.json> <built.json>
 feature_list_problems() { # <plan.json> [built.json]
   local out built='{}' known=false
   if [ -n "${2:-}" ] && [ -s "$2" ] && jq -e 'type == "object"' "$2" >/dev/null 2>&1; then built=$(cat "$2"); known=true; fi
-  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" '
+  # A LIST IS SHORT. Each item is built and proved in its own pass, and a pass re-reads the
+  # plan and the code before it writes a line: 13 items of one two-tab screen took 5 h 20 min,
+  # about 2 h of it re-reading and re-proving. Past the cap the plan is asked to fold the
+  # behaviours of one screen or tab into one item with more steps. 0 switches it off.
+  local max="${FEATURE_LIST_MAX:-${DRIVER_PLAN_FEATURES_MAX:-6}}"
+  case "$max" in ''|*[!0-9]*) max=6 ;; esac
+  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" --argjson max "$max" '
     (.features // []) as $f | (.tasks // []) as $t | ([$f[].id]) as $ids
     | ([$t[] | select(.item == "foundation")] | length) as $nf
     | if ($f | length) == 0 then empty else
+      (if $max > 0 and ($f | length) > $max then
+         "the list has \($f | length) items and a change builds at most \($max): fold the behaviours of one screen, tab or sheet into one item whose steps cover them all (one test file an item), so each item is a whole piece a person uses, never one click" else empty end),
       (if $ids != [range($f | length) | "F\(. + 1)"] then
          "the ids run F1, F2, … in order, one per behaviour; this list has \($ids | join(", "))" else empty end),
       ($t | to_entries[] | (.key + 1) as $k | .value
