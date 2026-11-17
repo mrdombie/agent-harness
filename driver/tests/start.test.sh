@@ -96,8 +96,9 @@ want_in "and a resume keeps the ledger its commits still need" 'kept.test.sh' "$
 echo "--- a closed ticket ---"
 fix_issue 102 CLOSED "status:ready"
 out=$(driver_step_start 102 2>&1); rc=$?
-want "closed refuses"   "24" "$rc"
+want "closed ends the run with nothing owed, not a refusal that parks" "$DRIVER_E_NOOP" "$rc"
 want_in "and says so"   'CLOSED' "$out"
+want_in "and takes the ready label off the closed ticket" 'issue edit 102 .*--remove-label status:ready' "$(cat "$GH_LOG")"
 
 echo "--- a ticket a person is holding ---"
 fix_issue 103 OPEN "status:ready,needs:human-approval"

@@ -121,12 +121,25 @@ DRIVER_STEPS_DIR="$FAKE" DRIVER_MAX_REQUEUES=1 bash "$BT" 607 --steps "start pla
 want "the second in a row, past a ceiling of 1, parks" "20" "$rc"
 want_in "naming the step that kept requeueing"  'plan could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
 
-echo "--- a refusal that set no note parks with the step's own words ---"
+echo "--- a closed ticket ends the run: no park, no pull request, no ready label left ---"
+# 2026-11-17: two shipped tickets were started again; each park opened a draft pull
+# request from the head that had just merged and left the closed ticket ready.
 reset_case 606
-fix_issue 606 CLOSED "status:ready"
+fix_issue 606 CLOSED "status:ready,status:parked"
+: > "$GH_LOG"
 out=$(bash "$BT" 606 --steps "start" 2>&1); rc=$?
-want "a closed ticket still parks" "20" "$rc"
-want_in "with the step's reason" '#606 is CLOSED' "$out"
-want_not_in "not 'left no reason'" 'left no reason' "$out"
+want "the run ends clean" "0" "$rc"
+want_in "saying why" '#606 is CLOSED' "$out"
+want_not_in "it does not park" '⏸' "$out"
+want "no pull request is opened" "0" "$(grep -c '^pr create' "$GH_LOG")"
+want_in "the ready label comes off" 'issue edit 606 .*--remove-label status:ready' "$(cat "$GH_LOG")"
+want_in "the parked label comes off" 'issue edit 606 .*--remove-label status:parked' "$(cat "$GH_LOG")"
+
+echo "--- a closed ticket with neither label gets no label write ---"
+reset_case 608
+fix_issue 608 CLOSED ""
+: > "$GH_LOG"
+bash "$BT" 608 --steps "start" >/dev/null 2>&1
+want "no issue edit is made" "0" "$(grep -c '^issue edit 608' "$GH_LOG")"
 
 suite_end "$FAILED"
