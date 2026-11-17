@@ -185,8 +185,16 @@ driver_step_start() { # <ticket>
   driver_state_set "$t" title "$(printf '%s' "$meta" | cut -d$'\001' -f3)"
 
   if [ "$st" != "OPEN" ]; then
+    # A SHIPPED TICKET IS NOT PARKED. A park here opened a draft pull request from the
+    # head that had just merged and left the closed ticket ready to be picked again.
     driver_say "✋ start: #$t is $st. There is nothing to build."
-    return "$DRIVER_E_REFUSED"
+    for l in "$LBL_READY" "$LBL_PARKED"; do
+      case ",$labels," in *",$l,"*)
+        swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$l" >/dev/null 2>&1 || true ;;
+      esac
+    done
+    driver_state_set "$t" noop_note "is $st, so nothing is built, parked or opened"
+    return "$DRIVER_E_NOOP"
   fi
   # ANOTHER REPO'S TICKET IS NEVER BUILT IN THIS ONE. A repo:<name> ticket started here
   # got a worktree of this repo, where none of its files exist: the plan and the first
