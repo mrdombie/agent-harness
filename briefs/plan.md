@@ -81,11 +81,10 @@ and a change touching a screen fills `screenChecklist`.
 
 ## One change, worked through by behaviour
 
-A ticket that changes what a person sees or does gets `features`: one whole piece
-a person uses per item (`F1`, `F2`…: a tab, a sheet, a flow, never one click; a
-long list is sent back), each with test steps and their test file, a
+A ticket that changes what a person sees or does gets `features`: one tab-sized behaviour
+per item (`F1`, `F2`…), each with test steps and their test file, a
 fast component or logic test, never a browser check. All start failing; the list
-is then fixed. Every task names its `item`, never a layer. The list builds
+is fixed. Every task names its `item`, never a layer. The list builds
 as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
 `foundation` is shared groundwork, with its reason. An `expand-contract`
 foundation needs `cleanup` tasks that remove the old path. A mechanical change has no list: the
