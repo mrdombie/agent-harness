@@ -19,6 +19,8 @@
 #   DRIVER_BUILD_GROUP_MAX   tasks of one plan group built in one session (build.groupMax, 6)
 #   DRIVER_BUILD_GROUP_CTX   context, in tokens, past which a group starts a fresh session
 #                            (build.groupContextMax, 150000)
+#   DRIVER_PLAN_FEATURES_MAX items a feature list may have before the plan is asked, once,
+#                            to fold them (plan.featuresMax, 6; 0 is no limit)
 #   DRIVER_MAX_REVIEW_ROUNDS review passes per change (review.maxRounds, 2); only the first
 #                            always calls the model (steps/review.sh)
 #
@@ -80,6 +82,10 @@ DRIVER_BUILD_GROUP_MAX="${DRIVER_BUILD_GROUP_MAX:-$(toolkit_cfg build.groupMax 2
 case "$DRIVER_BUILD_GROUP_MAX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_MAX=6 ;; esac
 DRIVER_BUILD_GROUP_CTX="${DRIVER_BUILD_GROUP_CTX:-$(toolkit_cfg build.groupContextMax 2>/dev/null)}"
 case "$DRIVER_BUILD_GROUP_CTX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_CTX=150000 ;; esac
+# A feature list past this many items is sent back once to be folded (plan.featuresMax, 6).
+DRIVER_PLAN_FEATURES_MAX="${DRIVER_PLAN_FEATURES_MAX:-$(toolkit_cfg plan.featuresMax 2>/dev/null)}"
+case "$DRIVER_PLAN_FEATURES_MAX" in ''|*[!0-9]*) DRIVER_PLAN_FEATURES_MAX=6 ;; esac
+export DRIVER_PLAN_FEATURES_MAX
 # Red gates in the branch's own diff go back to fix this many times before a park.
 DRIVER_MAX_GATE_FIXES="${DRIVER_MAX_GATE_FIXES:-3}"
 

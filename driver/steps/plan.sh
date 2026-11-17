@@ -328,7 +328,8 @@ _driver_plan_shape() {
   if [ -n "$probs" ]; then
     rc=0; _driver_plan_resend "$t" "the plan does not build its list by behaviour" "$probs" "$(_driver_plan_kept "$t" "$ans")" || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
-    probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
+    # The length of the list is asked for once and never parks a ticket.
+    probs=$(FEATURE_LIST_MAX=0 _driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
     if [ -n "$probs" ]; then
       driver_say "✋ plan: asked once and it still does not build its list by behaviour — $(printf '%s' "$probs" | paste -sd';' - | sed 's/;/; /g')"
       driver_state_set "$t" park_note "the plan does not build its list by behaviour: $(printf '%s' "$probs" | paste -sd';' -)"
