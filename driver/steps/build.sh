@@ -1179,7 +1179,16 @@ driver_step_build() { # <ticket>
 
   # A list kept here is this ticket's to pass, whatever the record says of build_whole: a
   # rebuild from before it was set left proved items false and parked asking a person.
-  if [ -n "$whole" ] || _driver_build_own_list "$t"; then _driver_build_features "$t" || bad=1; fi
+  local frc=0
+  if [ -n "$whole" ] || _driver_build_own_list "$t"; then _driver_build_features "$t" || frc=$?; fi
+  [ "$frc" -eq 0 ] || bad=1
+  # An item no task of this plan can prove: more tries change nothing, so it parks now, saying which.
+  if [ "$frc" -eq 2 ]; then
+    local stuckwhy; stuckwhy=$(tr '\n' ' ' < "$(driver_state_dir "$t")/steps/build-list.unbuildable" | sed 's/  */ /g; s/ $//')
+    driver_say "✋ build: the plan cannot pass its feature list — $stuckwhy Parking."
+    driver_state_set "$t" park_note "the plan cannot pass its feature list — $stuckwhy"
+    return "$DRIVER_E_REFUSED"
+  fi
 
   if [ "$bad" -eq 0 ]; then
     [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
@@ -1245,12 +1254,14 @@ _driver_build_own_list() {
 # _driver_build_features <ticket> — an item passes once every task of it is proved and one of
 # them proved the test file its steps run in. Re-derived on each pass, kept in the list, and
 # posted when the whole list first passes. 1 while any item fails: an item whose tasks are all
-# proved and whose test never ran sends its last task back, naming the file. An item the plan
+# proved and whose test never ran sends its last task back, naming the file — never a task that
+# only merged the trunk; when those are all it has, 2: no try can pass it. An item the plan
 # check kept as already built (`kept`) passes on that record: with no task at once, with tasks
 # once they are all proved.
 _driver_build_features() {
-  local t="$1" d list id test i m last all hit pass fails=0 before total kept
+  local t="$1" d list id test i m last all hit pass fails=0 before total kept back stuck=""
   d="$(driver_state_dir "$t")/steps"; list="$(driver_state_dir "$t")/features.json"
+  rm -f "$d/build-list.unbuildable"
   [ -s "$list" ] || return 0
   before=$(jq -c '[.items[].passes]' "$list")
   total=$(jq '.items | length' "$list")
@@ -1259,19 +1270,27 @@ _driver_build_features() {
     last=""; all=1; hit=""
     kept=$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .kept == true' "$list")
     [ "$kept" != true ] || hit=1
+    back=""
     for i in $(jq -r --arg id "$id" '.tasks | to_entries[] | select(.value.item == $id) | .key + 1' "$d/plan.json"); do
       last="$i"; m="$d/build-task-$i.proved"
-      if [ ! -s "$m" ]; then all=""; continue; fi
+      if [ ! -s "$m" ]; then all=""; back="$i"; continue; fi
+      # A trunk merge proves no test and cannot be made twice: it is never the task sent back.
+      case "$(jq -r '.pair // ""' "$m" 2>/dev/null)" in merge:*) ;; *) back="$i" ;; esac
       jq -e --arg f "$test" '((.answer.testFirst.test.file // .answer.testOnly.test.file // "") | ltrimstr("./")) == ($f | ltrimstr("./"))' "$m" >/dev/null 2>&1 && hit=1
     done
     pass=false
     if [ -z "$last" ] && [ "$kept" = true ]; then pass=true
     elif [ -n "$last" ] && [ -n "$all" ]; then
       if [ -n "$hit" ]; then pass=true
+      elif [ -z "$back" ]; then
+        # Every task of the item only merged the trunk: no try can prove its test, so no round is spent.
+        printf '%s passes only when its steps pass in %s, and its only task(s) merge the trunk, which proves no test: the plan needs a task for %s that proves that file (testFirst or testOnly)\n' "$id" "$test" "$id" >> "$d/build-list.unbuildable"
+        driver_say "✋ build: $(tail -1 "$d/build-list.unbuildable")"
+        stuck=1
       else
-        printf '%s passes only when its steps pass in %s, and no task of it proved that file: prove it in testFirst.test.file\n' "$id" "$test" > "$d/build-task-$last.refused"
-        rm -f "$d/build-task-$last.proved"
-        driver_say "✋ build: $(cat "$d/build-task-$last.refused")"
+        printf '%s passes only when its steps pass in %s, and no task of it proved that file: prove it in testFirst.test.file\n' "$id" "$test" > "$d/build-task-$back.refused"
+        rm -f "$d/build-task-$back.proved"
+        driver_say "✋ build: $(cat "$d/build-task-$back.refused")"
       fi
     fi
     [ "$pass" = true ] || fails=$((fails+1))
@@ -1279,6 +1298,7 @@ _driver_build_features() {
   done
   if [ "$fails" -gt 0 ]; then
     driver_say "   build: $((total - fails)) of $total feature list item(s) pass"
+    [ -z "$stuck" ] || return 2
     return 1
   fi
   driver_say "   build: all $total feature list item(s) pass"
