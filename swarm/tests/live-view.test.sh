@@ -1119,4 +1119,45 @@ got=$(areas "$P2/server.mjs")
 [ "$got" != "Pulse=6b,1r,3l;One Desk=2s;Tooling=4o;Other=5r" ] && ok "planted: tooling not split out → $got → red" || bad "planted: the tooling split deleted and the test cannot see it"
 want_not_in "the page no longer has the By area block"   'id="areas"' "$(cat "$LV/index.html")"
 
+echo "--- a pull request opened by hand, with no builder run, shows as a direct row ---"
+# 2026-11-09: forty tickets fixed by plain pull requests ("Fixes #N", auto-merge on)
+# never reached the board: rows came only from builder runs.
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+run 3001 "$DEAD" 0
+TODAY0=$(node -e 'const d=new Date();d.setHours(0,0,0,0);console.log(d.toISOString().replace(/\.\d{3}Z$/,"Z"))')
+cat > "$STATE/swarm/prs.json" <<'JSON'
+[{"number":4001,"title":"fix(x): by hand","baseRefName":"develop","headRefName":"fix/3002-direct","body":"Fixes #3002 and fixes #3006","closingIssuesReferences":[],"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"name":"build","status":"IN_PROGRESS"}],"updatedAt":"2026-11-09T10:00:00Z"},
+ {"number":4002,"title":"fix(x): run already shows it","baseRefName":"develop","headRefName":"fix/3001-direct","body":"Closes #3001","closingIssuesReferences":[{"number":3001}],"labels":[],"statusCheckRollup":[]},
+ {"number":4008,"title":"fix(x): newer, also for the run's ticket","baseRefName":"develop","headRefName":"fix/3001-again","body":"Fixes #3001","closingIssuesReferences":[],"labels":[],"statusCheckRollup":[]},
+ {"number":4003,"title":"builder branch","baseRefName":"develop","headRefName":"tkt-3003/x","body":"Fixes #3003","closingIssuesReferences":[],"labels":[],"statusCheckRollup":[]},
+ {"number":4004,"title":"into another branch","baseRefName":"main","headRefName":"fix/3004","body":"Fixes #3004","closingIssuesReferences":[],"labels":[],"statusCheckRollup":[]},
+ {"number":4006,"title":"no closing word","baseRefName":"develop","headRefName":"chore/y","body":"See #3007","closingIssuesReferences":[],"labels":[],"statusCheckRollup":[]},
+ {"number":4007,"title":"fix(x): red","baseRefName":"develop","headRefName":"fix/3008","body":"Resolves #3008","closingIssuesReferences":[],"labels":[],"statusCheckRollup":[{"name":"type check","conclusion":"FAILURE","completedAt":"2026-11-09T09:00:00Z"}]}]
+JSON
+printf '{"at":"%s","since":"%s","trunk":"develop","heads":null,"closed":[{"number":4005,"title":"fix(x): merged by hand","mergedAt":"%s","closedAt":"%s","head":"fix/3005","body":"Resolves #3005"}],"merged":{"total":1,"items":[{"number":4005,"title":"fix(x): merged by hand","mergedAt":"%s"}]}}\n' \
+  "$NOW_ISO" "$TODAY0" "$NOW_ISO" "$NOW_ISO" "$NOW_ISO" > "$STATE/swarm/pr-states.json"
+dsnap() { SWARM_PR_STATES_MS=86400000 BRANCH_PREFIX=tkt- snap; }
+s=$(dsnap)
+drow() { printf '%s' "$s" | jq -r --arg t "$1" '[.done[] | select(.direct and (.tickets | index($t)))] | map("\(.pr)=\(.now.state)=\(.now.text)") | join(";")'; }
+want "an open PR with Fixes #N and no run: a direct row waiting for checks" "4001=checks=Waiting for checks (1 running)" "$(drow 3002)"
+want "it carries every ticket it closes" "3002,3006" "$(printf '%s' "$s" | jq -r '.done[] | select(.pr=="4001") | .tickets | join(",")')"
+want "a red one reads a check failed" "4007=failed" "$(drow 3008 | cut -d= -f1-2)"
+want "merged today by hand: merged" "4005=merged" "$(drow 3005 | cut -d= -f1-2)"
+want "a ticket a run row shows is not repeated" "1" "$(printf '%s' "$s" | jq '[.done[] | select(.ticket=="3001" or ((.tickets // []) | index("3001")))] | length')"
+want "the run's row carries the newest PR for its ticket" "4008" "$(printf '%s' "$s" | jq -r '.done[] | select(.ticket=="3001") | .pr')"
+want "and that one row is the run's" "null" "$(printf '%s' "$s" | jq -r '.done[] | select(.ticket=="3001") | .direct')"
+want "a builder's branch, another base, no closing word: none direct" "" "$(drow 3003)$(drow 3004)$(drow 3007)"
+want_in "the header counts them with the runs" "1 merged" "$(printf '%s' "$s" | jq -r '.doneSummary')"
+r=$(page_row "$LV" 3002)
+want_in "the page says it had no builder" 'Direct change, no builder' "$r"
+want_in "and shows its state" 'pill neutral">Waiting for checks' "$r"
+plant server.mjs "    return [...ts].filter((t) => !shownTickets.has(t)).sort((a, b) => Number(a) - Number(b))" \
+  "    return [...ts].sort((a, b) => Number(a) - Number(b))"
+got=$(SNAP_MJS="$P2_URL" dsnap | jq '[.done[] | select(.ticket=="3001" or ((.tickets // []) | index("3001")))] | length')
+[ "$got" != "1" ] && ok "planted: no de-duplication against runs → $got rows for 3001 → red" || bad "planted: run de-duplication deleted and the test cannot see it"
+plant index.html "  if (d.direct) return directRow(d)"
+[ "$(page_row "$P2" 3002 | grep -c 'no builder')" = 0 ] \
+  && ok "planted: the page drops the direct mark → red" || bad "planted: the direct mark deleted and the test cannot see it"
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-* "$STATE/swarm/prs.json" "$STATE/swarm/pr-states.json"
+
 suite_end "$FAILED"
