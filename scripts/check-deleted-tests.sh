@@ -80,6 +80,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$BASE" ] || usage
+# Read a piped body now: an early clean exit would leave the writer on a broken pipe, which a pipefail caller reads as a refusal.
+STDIN_BODY=""
+[ "$BODY_FILE" = "-" ] && STDIN_BODY=$(cat)
 [ -n "$REPO" ] || REPO=$(git rev-parse --show-toplevel 2>/dev/null || true)
 [ -n "$REPO" ] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
   || refuse "no git repo at '${REPO:-<cwd>}'"
@@ -398,7 +401,7 @@ printf 'test files deleted or losing cases   : %s\n' "$n"
 # ---- the accounting ------------------------------------------------------------------
 BODY=""
 if [ -n "$BODY_FILE" ]; then
-  if [ "$BODY_FILE" = "-" ]; then BODY=$(cat); else
+  if [ "$BODY_FILE" = "-" ]; then BODY=$STDIN_BODY; else
     [ -f "$BODY_FILE" ] || refuse "no body file '$BODY_FILE'"
     BODY=$(cat "$BODY_FILE"); fi
 elif [ -n "$PR" ]; then
