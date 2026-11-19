@@ -1134,12 +1134,15 @@ cat > "$CLOG" <<'LOG'
 10:40:00 event: red-2h #20288 PR 20749 — red for 120 min with nothing fixing it
 10:50:00 spawn: 4 live, ceiling 4 — no slot
 11:15:34 ended: claim-20811-x exit 0 — ✓ #20811 shipped: start · plan route=full claim→PR 100m06s
+11:16:00 live: 5 run(s) [20784 untracked: 20884, 20885]
 11:17:41 tick: done
 LOG
 feed=$(SWARM_COORD_LOG="$CLOG" SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e 'import { pathToFileURL } from "node:url"
   const { feedOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)
   console.log(JSON.stringify(feedOf())); process.exit(0)' 2>&1)
 want "the last check is the last tick done"            "11:17:41" "$(printf '%s' "$feed" | jq -r '.lastCheck')"
+# Dom, 2026-11-19: "There are only 2 building?" — 3 more were run by hand and the page hid them.
+want "builds started outside the queue are named"      "20884 20885" "$(printf '%s' "$feed" | jq -r '.untracked | join(" ")')"
 want "newest first, one row per thing"                 "done held red requeue start start" "$(printf '%s' "$feed" | jq -r '[.rows[].kind] | join(" ")')"
 want "a finished run says it opened a pull request, not that it merged" "#20811 pull request opened, 100m06s after it started" "$(printf '%s' "$feed" | jq -r '.rows[0].text')"
 want "the same reason every check is one row, at its newest" "10:50:00" "$(printf '%s' "$feed" | jq -r '[.rows[] | select(.kind=="held")][0].t')"
@@ -1151,6 +1154,10 @@ s=$(printf '%s' "$s0" | jq --argjson f "$feed" '.feed = $f')
 r=$(page_render "$LV")
 want_in "the page draws each row with its time and a link" '^feed=<ul class="feed"><li class="done"><span class="t">11:15</span>.*<a href="https://github.com/acme/widgets/issues/20811"' "$r"
 want_in "the top bar shows the last check"             '^hud=.*Last check</span><b>11:17</b>' "$r"
+s=$(printf '%s' "$s" | jq '.outside = [{ticket:"20884",title:"Hand-run build",short:"Hand-run build",tag:"",host:"laptop",outside:true}]')
+r=$(page_render "$LV")
+want_in "a build outside the queue is a building row"   '^building=.*class="row build outside".*Hand-run build.*Started outside the queue' "$r"
+want_in "and it counts in the building heading"         '^buildinghead=Building now · [0-9]+$' "$r"
 P4="$FIX/lv-feed"; mkdir -p "$P4"; cp "$LV"/*.mjs "$LV"/index.html "$P4/"
 sed -i.bak "s/  document.getElementById('feed').innerHTML = feedList(s.feed, titles)/  document.getElementById('feed').innerHTML = ''/" "$P4/index.html"
 grep -q "getElementById('feed').innerHTML = ''" "$P4/index.html" || bad "the feed plant did not land"
