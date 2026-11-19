@@ -330,6 +330,8 @@ export function feedOf(file = COORD_LOG) {
   if (feedMemo.key === key) return feedMemo.val
   const rows = []
   let lastCheck = null
+  // Builds running here that the coordinator did not start: its newest live line names them.
+  let untracked = []
   for (const line of tail(file).split('\n')) {
     const m = /^(\d\d:\d\d:\d\d) (.*)$/.exec(line)
     if (!m) continue
@@ -337,6 +339,7 @@ export function feedOf(file = COORD_LOG) {
     const ticket = (/#(\d+)/.exec(l) || [])[1] || ''
     let row = null
     if (l === 'tick: done') { lastCheck = t; continue }
+    if (l.startsWith('live: ')) { untracked = ((/untracked: ([\d, ]+)/.exec(l) || [])[1] || '').split(/[ ,]+/).filter(Boolean); continue }
     if (l.startsWith('spawned ')) row = { kind: 'start', text: `Started ${l.slice(8)}` }
     else if (l.startsWith('ended: ')) {
       const said = (l.split(' — ').slice(1).join(' — ') || l.slice(7)).trim()
@@ -361,7 +364,7 @@ export function feedOf(file = COORD_LOG) {
     if (r.kind === 'held') { if (seen.has(r.text)) continue; seen.add(r.text) }
     out.push(r)
   }
-  feedMemo = { key, val: { lastCheck, rows: out.slice(0, FEED_ROWS) } }
+  feedMemo = { key, val: { lastCheck, untracked, rows: out.slice(0, FEED_ROWS) } }
   return feedMemo.val
 }
 
@@ -1536,6 +1539,14 @@ export function snapshot(now = Date.now()) {
   const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
   let feed = null
   guard('feed', () => { feed = feedOf() })
+  // Started here outside the queue (a build run by hand): they hold places, so they are shown.
+  const shown = new Set([...live, ...elsewhere].map((r) => String(r.ticket)))
+  const outside = ((feed && feed.untracked) || []).filter((t) => !shown.has(String(t))).map((t) => {
+    guard('title', () => fetchTitle(t))
+    const x = titleOf(t)
+    return { ticket: String(t), title: x.title || `Ticket ${t}`, short: x.title ? shortTitle(x.title, plainTitles[t], x.project, plainName) : `Ticket ${t}`,
+             tag: x.tag || '', host: THIS_HOST, outside: true }
+  })
   const queue = queued
   for (const r of queue.tickets) {
     guard('title', () => fetchTitle(r.ticket))
@@ -1547,7 +1558,7 @@ export function snapshot(now = Date.now()) {
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
-           hold, queue, capacity: capacityOf(), fleet, feed,
+           hold, queue, capacity: capacityOf(), fleet, feed, outside,
            mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now), measures: measuresOf(),
            hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,

@@ -313,7 +313,15 @@ function pips(p){
   if (!p || !p.of || !(p.steps || []).length) return ''
   return `<div class="pips" aria-hidden="true">${p.steps.map((st, i) => `<i class="${i + 1 < p.step ? 'done' : i + 1 === p.step ? 'now' : ''}" title="${esc(st.name)}"></i>`).join('')}</div>`
 }
+// A build started here by hand, outside the queue: it holds a place, and its steps live in its own log.
+function outsideRow(a){
+  return `<div class="row build outside"><span title="started outside the queue">${sprite('away')}</span><div class="main">
+    <div class="title">${tagOf(a)}${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
+    <div class="step">${machineOf(a.host)} · <b>Started outside the queue</b></div>
+    <div class="line">Run by hand, so the coordinator counts its place but does not report its steps</div></div></div>`
+}
 function buildRow(a){
+  if (a.outside) return outsideRow(a)
   if (a.remote) return remoteRow(a)
   const cls = quietCls(a.quietSec ?? 99999)
   const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
@@ -579,6 +587,7 @@ function render(s){
   document.getElementById('measures').innerHTML = measuresBlock(s.measures)
   thisHost = s.thisHost || ''
   const building = [...s.live, ...(s.elsewhere || [])]
+  building.push(...(s.outside || []))
   document.getElementById('buildinghead').textContent = building.length ? `Building now · ${building.length}` : 'Building now'
   document.getElementById('building').innerHTML = building.length
     ? `<div class="rows">${building.map(buildRow).join('')}</div>` : '<p class="empty">Nothing is being built.</p>'
