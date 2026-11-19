@@ -857,7 +857,8 @@ want "the chips add up to the bar's left"               "$(printf '%s' "$s" | jq
 s=$(printf '%s' "$s" | jq '.launch |= (.done = 410 | .open = 1259 | .total = 1669 | .pct = 24.6 | .product = 1100 | .tooling = 159)')
 r=$(page_render "$LV")
 want_in "the release in big numbers"                    'Release: 1,669 <small>tickets</small>.*<b>410</b> done · <b>1,259</b> left · <b>24.6%</b>.*Product <b>1,100</b> · Our tooling <b>159</b>' "$r"
-want_in "the page is titled for the release"             '<title>Release, live</title>.*<h1>Release, live</h1>' "$(tr -d '\n' < "$LV/index.html")"
+# Dom, 2026-11-19: "one system to monitor work being done by the co-ordinator".
+want_in "the page is titled for the coordinator"         '<title>Coordinator, live</title>.*<h1>Coordinator, live</h1>' "$(tr -d '\n' < "$LV/index.html")"
 want_in "a converging pace is a date"                   'pace ok">Shrinking 3/day</span><span>At this pace: <b>' "$r"
 want_in "eight days of added and done, today last"      '(class="day[^"]*".*){8}' "$r"
 want_in "and today's line reads from the same counts"   '^today=.*<b>2</b> done.*<b>1</b> new.*List shrinking by 1' "$r"
@@ -1118,5 +1119,43 @@ plant server.mjs "    const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling
 got=$(areas "$P2/server.mjs")
 [ "$got" != "Pulse=6b,1r,3l;One Desk=2s;Tooling=4o;Other=5r" ] && ok "planted: tooling not split out → $got → red" || bad "planted: the tooling split deleted and the test cannot see it"
 want_not_in "the page no longer has the By area block"   'id="areas"' "$(cat "$LV/index.html")"
+
+echo "--- what the coordinator did: its log as rows, newest first, on the page ---"
+# Dom, 2026-11-19: "I am losing track of whats being done again" — the page carries the
+# coordinator's own log so no second window is needed.
+CLOG="$FIX/coordinator.out.log"
+cat > "$CLOG" <<'LOG'
+09:31:47 spawned #20811 (new)
+09:50:19 spawn: 4 live, ceiling 4 — no slot
+09:55:19 spawn: 4 live, ceiling 4 — no slot
+10:00:38 spawned #20862 (new)
+10:25:52 ended: claim-20798-x exit 28 — ↻ #20798 requeued for the next tick, at the front of its priority as new, not parked: the quick step stopped
+10:25:53 event: requeued #20798 — run requeued itself
+10:40:00 event: red-2h #20288 PR 20749 — red for 120 min with nothing fixing it
+10:50:00 spawn: 4 live, ceiling 4 — no slot
+11:15:34 ended: claim-20811-x exit 0 — ✓ #20811 shipped: start · plan route=full claim→PR 100m06s
+11:17:41 tick: done
+LOG
+feed=$(SWARM_COORD_LOG="$CLOG" SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e 'import { pathToFileURL } from "node:url"
+  const { feedOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  console.log(JSON.stringify(feedOf())); process.exit(0)' 2>&1)
+want "the last check is the last tick done"            "11:17:41" "$(printf '%s' "$feed" | jq -r '.lastCheck')"
+want "newest first, one row per thing"                 "done held red requeue start start" "$(printf '%s' "$feed" | jq -r '[.rows[].kind] | join(" ")')"
+want "a finished run says it opened a pull request, not that it merged" "#20811 pull request opened, 100m06s after it started" "$(printf '%s' "$feed" | jq -r '.rows[0].text')"
+want "the same reason every check is one row, at its newest" "10:50:00" "$(printf '%s' "$feed" | jq -r '[.rows[] | select(.kind=="held")][0].t')"
+want "a requeue event is not a second row"             "1" "$(printf '%s' "$feed" | jq '[.rows[] | select(.ticket=="20798")] | length')"
+want "no log is no feed, not an empty one"             "null" "$(SWARM_COORD_LOG="$FIX/none.log" SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e 'import { pathToFileURL } from "node:url"
+  const { feedOf } = await import(pathToFileURL(process.env.SERVER_MJS).href); console.log(JSON.stringify(feedOf())); process.exit(0)')"
+s0="$s"
+s=$(printf '%s' "$s0" | jq --argjson f "$feed" '.feed = $f')
+r=$(page_render "$LV")
+want_in "the page draws each row with its time and a link" '^feed=<ul class="feed"><li class="done"><span class="t">11:15</span>.*<a href="https://github.com/acme/widgets/issues/20811"' "$r"
+want_in "the top bar shows the last check"             '^hud=.*Last check</span><b>11:17</b>' "$r"
+P4="$FIX/lv-feed"; mkdir -p "$P4"; cp "$LV"/*.mjs "$LV"/index.html "$P4/"
+sed -i.bak "s/  document.getElementById('feed').innerHTML = feedList(s.feed, titles)/  document.getElementById('feed').innerHTML = ''/" "$P4/index.html"
+grep -q "getElementById('feed').innerHTML = ''" "$P4/index.html" || bad "the feed plant did not land"
+[ "$(page_render "$P4" | grep -c '^feed=.*pull request opened')" = 0 ] \
+  && ok "planted: the log left undrawn → red" || bad "planted: the log left undrawn and the test cannot see it"
+s="$s0"
 
 suite_end "$FAILED"
