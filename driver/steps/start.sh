@@ -54,6 +54,18 @@
 # so: prune dead registrations; move a stray dir at <tree> aside;
 # free the branch from a tree nothing holds, when that tree is clean; and keep a
 # branch tip the cut lacks on origin (or a local ref) before `-B` moves it.
+# _driver_start_forget_built <ticket> — the branch goes back to the cut, so every
+# finished step after start built on work that is no longer there: reopen them.
+_driver_start_forget_built() {
+  local f done
+  f=$(_driver_state_file "$1"); [ -f "$f" ] || return 0
+  done=$(jq -r '(.done // [])[] | select(. != "start")' "$f" 2>/dev/null)
+  [ -n "$done" ] || return 0
+  # shellcheck disable=SC2086 # one step name per word
+  driver_state_reopen "$1" $done
+  driver_say "   start: the branch's earlier steps ($(printf '%s' "$done" | paste -sd' ' -)) built on what the reset drops — they run again"
+}
+
 _driver_start_clear_way() {
   local t="$1" repo="$2" wt="$3" b="$4" cut="$5" other tip holder stamp
   DRIVER_START_WHY=""
@@ -92,6 +104,7 @@ _driver_start_clear_way() {
   if [ -n "$(git -C "$repo" for-each-ref --contains "$tip" --format=x refs/remotes/origin/ 2>/dev/null)" ] \
      || grep -qxF "$tip" <<<"$(git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1)"; then
     driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10), already on origin — the branch is reset to the cut"
+    _driver_start_forget_built "$t"
     return 0
   fi
   if driver_keep_ref "$t" "$repo" "$tip"; then
@@ -101,6 +114,7 @@ _driver_start_clear_way() {
   else
     DRIVER_START_WHY="$b holds commits at $(printf '%s' "$tip" | cut -c1-10) that are nowhere else and could not be kept"; return 1
   fi
+  _driver_start_forget_built "$t"
 }
 
 # _driver_start_cut <ticket> <repo> <tree> <branch> <cut> — clear the way, add the
