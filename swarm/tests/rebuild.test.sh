@@ -212,12 +212,28 @@ want "  and no re-run"                           "0" "$(grep -c '^run rerun 7007
 want "  no clock while the new head is not read" "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 age 12; pass
 want "  a second pass on that head: no second update" "1" "$(updates 74)"
+want_in "  it says it waits on the update it had"   'its update from develop was accepted; waits for the new head' "$OUT"
+want "  and claims no fresh update"              "0" "$(grep -c 'brought up to date from develop first' <<<"$OUT")"
 pr 74 101 head4b BLOCKED '[]' unit:FAILURE:7008 lint:SUCCESS:7006
 age 20; pass
 want "  the new head, still red: no second update" "1" "$(updates 74)"
 want "  and no re-run there either"              "0" "$(grep -c '^run rerun' "$GH_LOG")"
 want "  its clock starts"                        "74" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 rm -f "$U74"
+
+fi
+if suite_case "base-red, then develop green, in shadow: an update already refused on this head is not predicted again"; then
+fresh; base unit:failure lint:success
+pr 76 101 head6 BLOCKED '[]' unit:FAILURE:7009 lint:SUCCESS:7006
+age 0; COORDINATOR_SHADOW=1 pass
+want_in "base-red in shadow: it waits"           'rebuild: PR #76 waits — base-red on unit' "$OUT"
+base unit:success lint:success; : > "$GH_LOG"
+printf '76\thead6\tdev1\t%s\trefused\t-\n' "$T0" > "$C/stale-updates.would.tsv"   # develop's tip, as base() makes it
+age 10; COORDINATOR_SHADOW=1 pass
+want "  nothing is sent in shadow"               "0" "$(updates 76)"
+want "  it predicts no update live would not send" "0" "$(grep -c 'would bring it up to date from develop first' <<<"$OUT")"
+want_in "  it says it would re-run its failed jobs" 'PR #76 waited on develop, which passes unit now — would re-run its failed jobs \(7009\) first' "$OUT"
+rm -f "$C/stale-updates.would.tsv"
 
 fi
 if suite_case "a required check cancelled past the threshold: re-run, then rebuilt as for a red"; then
