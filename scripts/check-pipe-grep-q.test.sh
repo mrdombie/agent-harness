@@ -26,6 +26,8 @@ printf '%s\n' "$x" | grep -qxF -- "$1"
 names=$(gh label list); grep -qxF -- "$1" <<<"$names"
 [ -n "$a" ] && echo "$a" | grep -qi yes
 gh label list | grep -xF -- "$1" >/dev/null
+[ -n "$x" ] \
+  || grep -qxF -- "$1" <<<"$names"
 # gh x | grep -q y   (a comment)
 X
 out=$(bash "$C" "$T/bad.sh"); rc=$?

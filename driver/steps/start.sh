@@ -59,7 +59,7 @@ _driver_start_clear_way() {
   DRIVER_START_WHY=""
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   git -C "$repo" worktree prune 2>/dev/null || true
-  if [ -e "$wt" ] && ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(wt_real "$wt")"; then
+  if [ -e "$wt" ] && ! grep -qxF "worktree $(wt_real "$wt")" <<<"$(git -C "$repo" worktree list --porcelain 2>/dev/null)"; then
     if mv "$wt" "$wt.aside-$stamp" 2>/dev/null; then
       driver_say "   start: $wt was there and is no worktree — moved aside to $wt.aside-$stamp"
     else
@@ -90,7 +90,7 @@ _driver_start_clear_way() {
   tip=$(git -C "$repo" rev-parse -q --verify "refs/heads/$b" 2>/dev/null) || return 0
   git -C "$repo" merge-base --is-ancestor "$tip" "$cut" 2>/dev/null && return 0
   if [ -n "$(git -C "$repo" for-each-ref --contains "$tip" --format=x refs/remotes/origin/ 2>/dev/null)" ] \
-     || git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1 | grep -qxF "$tip"; then
+     || grep -qxF "$tip" <<<"$(git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1)"; then
     driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10), already on origin — the branch is reset to the cut"
     return 0
   fi

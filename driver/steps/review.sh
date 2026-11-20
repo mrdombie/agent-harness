@@ -584,7 +584,7 @@ _driver_review_priority_skipped() {
 # is recorded? (yes/no)" — the answer is always yes, so the step asks itself. A question
 # that asks to run the review again, or names a verdict not yet reached, reads as silent.
 _driver_review_rerun_question() { # <question>
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eq \
+  grep -Eq <<<"$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
     "(re-?run|run)[^.?!]*review[^.?!]*(again|once more|a second time)|review( step)? (be )?(re-?run|run again|run once more)|reviewer[^.?!]*(finish|complete|report)[^.?!]*(before|so)|(before|until) (a|the|its) verdict|verdict (is|was|has)( not| n.t)? (yet )?(been )?(recorded|reached|returned)|no verdict (yet|was|is)"
 }
 _driver_review_silent() {

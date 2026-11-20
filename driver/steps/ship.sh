@@ -161,7 +161,7 @@ _driver_ship_routes() {
 # the branch adds or edits it: CI then photographs the plan, so the body names its routes.
 _driver_ship_plan_routes() {
   local plan; plan=$(driver_evidence_plan "$1")
-  git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null | grep -q . || return 0
+  [ -n "$(git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null)" ] || return 0
   jq -r '.shots[]?.route // empty' "$2/$plan" 2>/dev/null | grep '^/' | awk '!seen[$0]++'
 }
 
@@ -256,7 +256,7 @@ _driver_ship_place_plan() {
   want=$(driver_evidence_plan "$t")
   old="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"   # legacy-plan-path: where it was misfiled
   [ "$want" != "$old" ] && [ -f "$wt/$old" ] && [ ! -e "$wt/$want" ] || return 0
-  git -C "$wt" diff --name-only "$trunk"...HEAD -- "$old" 2>/dev/null | grep -q . || return 0
+  [ -n "$(git -C "$wt" diff --name-only "$trunk"...HEAD -- "$old" 2>/dev/null)" ] || return 0
   mkdir -p "$wt/${want%/plan.json}" && git -C "$wt" mv -- "$old" "$want" >/dev/null 2>&1 || return 0
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the plan where CI reads it (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: moved $old to $want, where CI reads this branch's plan"

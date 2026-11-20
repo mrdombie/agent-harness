@@ -96,19 +96,20 @@ _driver_ga_same_files() { # <tree> <sha>
 }
 
 _driver_ga_reset_to() { # <ticket> <tree> <where> <sha> <branch> <trunk>
-  local t="$1" wt="$2" w="$3" want="$4" b="$5" trunk="$6" sha ob=""
+  local t="$1" wt="$2" w="$3" want="$4" b="$5" trunk="$6" sha ob="" own
   _driver_ga_merging "$wt" && { _driver_ga_refuse "$t" "$w" "resetTo: a merge is in progress"; return 1; }
   case "$want" in *[!0-9a-f]*|'') want="'$want'" ;; esac
   [ "${#want}" -ge 7 ] && [ "${#want}" -le 40 ] && sha=$(git -C "$wt" rev-parse -q --verify "$want^{commit}" 2>/dev/null) \
     || { _driver_ga_refuse "$t" "$w" "resetTo: ${want} is not a commit sha"; return 1; }
   [ -n "$b" ] && ob=$(git -C "$wt" rev-parse -q --verify "refs/remotes/origin/$b" 2>/dev/null)
   if [ "$sha" != "$ob" ]; then
-    if ! git -C "$wt" rev-list --first-parent HEAD --not "$trunk" 2>/dev/null | grep -qx "$sha" \
+    own=$(git -C "$wt" rev-list --first-parent HEAD --not "$trunk" 2>/dev/null)
+    if ! grep -qx "$sha" <<<"$own" \
        && _driver_ga_same_files "$wt" "$sha"; then
       driver_say "   $w: resetTo — ${want} is already in this branch and holds the same files as its head, so nothing is reset"
       return 0
     fi
-    git -C "$wt" rev-list --first-parent HEAD --not "$trunk" 2>/dev/null | grep -qx "$sha" \
+    grep -qx "$sha" <<<"$own" \
       || { _driver_ga_refuse "$t" "$w" "resetTo: ${want} is not one of this branch's own commits (first-parent, not on $trunk)"; return 1; }
     [ -z "$ob" ] || git -C "$wt" merge-base --is-ancestor "$ob" "$sha" 2>/dev/null \
       || { _driver_ga_refuse "$t" "$w" "resetTo: ${want} is behind origin/$b, so it would drop pushed work"; return 1; }

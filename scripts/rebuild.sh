@@ -175,7 +175,7 @@ rebuild_base_red() {
     [ -n "$name" ] || continue
     names="$names${names:+, }$name"; [ -z "$rid" ] || case " $rids " in *" $rid "*) ;; *) rids="$rids${rids:+ }$rid" ;; esac
     r=$(_rebuild_base_latest_done "$base" "$name" "$c") && [ -n "$r" ] || { unread=1; continue; }
-    jq -r '.conclusion // ""' <<<"$r" 2>/dev/null | grep -qE '^(FAILURE|ERROR|TIMED_OUT)$' || notred="$notred${notred:+, }$name"
+    grep -qE '^(FAILURE|ERROR|TIMED_OUT)$' <<<"$(jq -r '.conclusion // ""' <<<"$r" 2>/dev/null)" || notred="$notred${notred:+, }$name"
   done <<<"$fails"
   if [ -z "$notred" ] && [ -z "$unread" ]; then
     if ! awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null; then

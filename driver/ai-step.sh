@@ -483,7 +483,7 @@ SHIM
   # A QUESTION ABOUT THE DESIGN CRITIC WHILE IT IS OFF has one answer: carry on without
   # it. Asked once more, told so; asked again, the owner channel refuses it (exit 5).
   if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused "$(driver_critic_labels "$t")" \
-     && jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null | grep -qi 'critic'; then
+     && grep -qi 'critic' <<<"$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)"; then
     local cq creask="$d/steps/$slot.critic-off.prompt" csid
     cq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)
     csid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
@@ -622,7 +622,7 @@ _driver_api_refusal_wait() {
 # it started had not reported: still running, timed out, or returned nothing. That has
 # one answer (run it again), so it is the machine's, never a person's question.
 driver_question_silent_agent() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eq \
+  grep -Eq <<<"$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
     "(sub-?agent|reviewer|review agent|agent)[^.?!]*((had|has|have|did|was|is)( not|n't)( yet)? (report|return|finish|complet|answer|respond|come back)|still running|timed? ?out|never (report|return|finish|answer))|(timed? ?out|still running)[^.?!]*(sub-?agent|reviewer)"
 }
 
