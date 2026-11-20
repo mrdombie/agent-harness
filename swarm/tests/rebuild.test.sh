@@ -40,6 +40,7 @@ lib() {
   case "$PLANT" in
     threshold) perl -0pi -e 's/\[ "\$age" -lt "\$REBUILD_AFTER_MIN" \]/false/' "$p" ;;
     base-red)  perl -0pi -e 's/if w=\$\(rebuild_base_red [^)]*\); then/if true; then/' "$p" ;;
+    base-update) perl -0pi -e 's/  if rebuild_stale_update "\$n" [^\n]*\n//' "$p" ;;
     held)      perl -0pi -e 's/if why=\$\(rebuild_held "\$t" "\$pj" "\$lab"\); then/if false; then/' "$p" ;;
     required)  perl -0pi -e 's/    pending\|green\) printf/    green) printf "stuck\\tplanted\\n" ;;\n    pending) printf/' "$p" ;;
     clash)     perl -0pi -e 's/    clash\)  printf .stuck/    clash)  printf '"'"'green/' "$p" ;;
@@ -185,7 +186,7 @@ want "200 minutes red on a check develop fails too: not closed" "0" "$(closes 73
 want_in "  it says it waits for develop"         'rebuild: PR #73 waits — base-red on unit — waits for develop to go green' "$OUT"
 want "  the PR is told, once"                    "1" "$(grep -c 'issues/73/comments -X POST -f body=Not rebuilt: unit failed on develop' "$GH_LOG")"
 want "  no clock runs while it waits"            "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
-echo "  develop goes green: the waiting head's failed jobs are re-run, and its clock starts after"
+echo "  develop goes green: an update from develop is tried first; refused, its failed jobs are re-run, and its clock starts after"
 base unit:success lint:success; : > "$GH_LOG"
 age 210; pass
 want "  not closed"                              "0" "$(closes 73)"
@@ -194,6 +195,28 @@ age 215; pass
 want "  still red: its clock starts now"         "73" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 age 280; pass
 want "  and an hour on it is rebuilt"            "1" "$(closes 73)"
+
+fi
+if suite_case "base-red, then develop green: brought up to date from develop once"; then
+fresh; base unit:failure lint:success
+U74="$FIX/gh/api-repos_acme_widgets_pulls_74_update-branch.json"; rm -f "$U74"
+pr 74 101 head4 BLOCKED '[]' unit:FAILURE:7007 lint:SUCCESS:7006
+age 0; pass
+want_in "base-red: it waits"                     'rebuild: PR #74 waits — base-red on unit' "$OUT"
+base unit:success lint:success; : > "$GH_LOG"; printf '{"message":"Updating pull request branch."}\n' > "$U74"
+age 10; pass
+want "  develop green: one update from develop"  "1" "$(updates 74)"
+want "  on the head that waited"                 "1" "$(grep -c '^api repos/acme/widgets/pulls/74/update-branch -X PUT -f expected_head_sha=head4$' "$GH_LOG")"
+want "  and no re-run"                           "0" "$(grep -c '^run rerun 7007' "$GH_LOG")"
+want "  no clock while the new head is not read" "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
+age 12; pass
+want "  a second pass on that head: no second update" "1" "$(updates 74)"
+pr 74 101 head4b BLOCKED '[]' unit:FAILURE:7008 lint:SUCCESS:7006
+age 20; pass
+want "  the new head, still red: no second update" "1" "$(updates 74)"
+want "  and no re-run there either"              "0" "$(grep -c '^run rerun' "$GH_LOG")"
+want "  its clock starts"                        "74" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
+rm -f "$U74"
 
 fi
 if suite_case "a required check cancelled past the threshold: re-run, then rebuilt as for a red"; then
@@ -553,6 +576,7 @@ plant_cases() { # <plant> — the cases that pin it, as a SUITE_ONLY pattern
   case "$1" in
     threshold|plan) echo '^a required check red past the threshold' ;;
     base-red)       echo '^red only because develop is red' ;;
+    base-update)    echo '^base-red, then develop green' ;;
     held)           echo '^a person owns it' ;;
     required)       echo '^red only on checks develop does not require|^a PR that goes green' ;;
     clash)          echo '^a clash past the threshold' ;;
@@ -565,7 +589,7 @@ plant_cases() { # <plant> — the cases that pin it, as a SUITE_ONLY pattern
 }
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ] && [ -z "${SUITE_ONLY:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
+  for p in threshold base-red base-update held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
     only=$(plant_cases "$p")
     PLANT=$p SUITE_ONLY="$only" bash "$0" >"$FIX/plant.out" 2>&1; rc=$?
     want "plant $p: its case fails"              "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
