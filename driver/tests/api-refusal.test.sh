@@ -137,6 +137,17 @@ rows=$(checks)
 out=$(bash "$BT" 704 --steps "plan" 2>&1); rc=$?
 want "it exits as the machine's" "33" "$rc"
 want_in "the park names the API's refusal" 'machine fault.*the API refused the plan session: api_error: Claude Code' "$out"
+want_in "the park line gives the refusal as the cause" 'parked.*machine fault: the API refused the plan session' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
+
+echo "--- refused, then taken and failed at the API once: the park says once, not twice ---"
+reset_case 717
+jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:3, result:"API Error: 529 overloaded"}' > "$FIX/ai/plan.then.jsonl"
+refused > "$FIX/ai/plan.jsonl"
+out=$(bash "$BT" 717 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_in "the park line names the one failure" 'parked.*machine fault: the plan model call failed at the API on try 1.*529 overloaded' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
 want_not_in "and never the skill sentence" "$SKILL_WORDS" "$out"
 want "no hold is written" "no" "$([ -f "$SWARM_USAGE_HOLD_FILE" ] && echo yes || echo no)"
 want "the skill check's record has no new row" "$rows 2" "$(checks) $(nones)"
@@ -151,6 +162,27 @@ want "asked once, never waited for" "1 no" "$(( $(calls) - before )) $([ -f "$FI
 want_in "with the park's wording" 'plan did not run the Skill its brief names' "$out"
 want_in "and the step's own line" 'the session \(Claude Code 2\.1\.319\) listed the skill and the model did not call it' "$out"
 want "and it is counted: a third no-Skill check" "$(( rows + 1 )) 3" "$(checks) $(nones)"
+
+echo "--- a session that errored on its first turn: a machine fault, never a skipped Skill ---"
+reset_case 711
+jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:1, result:"Something unexpected happened"}' > "$FIX/ai/plan.jsonl"
+rows=$(checks); nn=$(nones)
+out=$(bash "$BT" 711 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_not_in "never the skill sentence" "$SKILL_WORDS" "$out"
+want_in "the park says machine fault and quotes the CLI" 'parked.*machine fault.*Something unexpected happened' "$out"
+want_in "the park line gives the true cause" 'parked.*machine fault: the plan session ended on its first turn or with an error' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
+want "the skill check's record is untouched" "$rows $nn" "$(checks) $(nones)"
+
+echo "--- a clean answer in one turn with no Skill call: a machine fault, not counted ---"
+reset_case 712
+jq -nc '{type:"result", subtype:"success", is_error:false, num_turns:1, result:"{\"files\":[\"a.sh\"]}"}' > "$FIX/ai/plan.jsonl"
+rows=$(checks); nn=$(nones)
+out=$(bash "$BT" 712 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_not_in "never the skill sentence" "$SKILL_WORDS" "$out"
+want "the skill check's record is untouched" "$rows $nn" "$(checks) $(nones)"
 
 echo "--- the auth reader: the CLI's own lost login, and nothing that quotes one ---"
 auth_is() { # <title> <want-rc> <file>
@@ -178,6 +210,12 @@ jq -nc --arg q "$(expired)" '{type:"result", subtype:"success", is_error:false, 
 auth_is "an answer quoting 'Failed to authenticate' is not auth" 1 "$FIX/r.jsonl"
 { expired; jq -nc '{type:"result", is_error:false, result:"{\"files\":[]}"}'; } > "$FIX/r.jsonl"
 auth_is "an earlier auth line the CLI then ran past is not auth" 1 "$FIX/r.jsonl"
+jq -nc '{type:"result", is_error:true, num_turns:1, result:"invalid_grant: refresh token not found"}' > "$FIX/r.jsonl"
+a=$(swarm_api_auth_log "$FIX/r.jsonl"); rc=$?
+want "an invalid_grant result is auth" "0" "$rc"
+want_in "it prints the CLI's words" '^invalid_grant: refresh token not found' "$a"
+jq -nc '{type:"result", is_error:false, result:"the doc mentions invalid_grant"}' > "$FIX/r.jsonl"
+auth_is "an answer quoting invalid_grant is not auth" 1 "$FIX/r.jsonl"
 
 echo "--- an expired login: the host's, held for auth, requeued after one call ---"
 reset_case 706
@@ -204,6 +242,20 @@ want_not_in "and none on the log" 'machine fault' "$out"
 want_in "the requeue names the login" 'login' "$(driver_state_get 706 requeued)"
 want "the claim is released" "free" "$(bash "$CLK" show 706 >/dev/null 2>&1 && echo held || echo free)"
 want "the requeue cap is not bumped" "0" "$(driver_state_get 706 '.counters.requeue // 0')"
+want "the skill check's record has no new row" "$rows" "$(checks)"
+
+echo "--- an invalid_grant login: held for auth and requeued, never parked for the Skill ---"
+reset_case 716
+jq -nc '{type:"result", is_error:true, num_turns:1, result:"invalid_grant: refresh token not found"}' > "$FIX/ai/plan.jsonl"
+GH_CALLER=build-ticket bash "$CLK" acquire 716 --branch tkt-716/work >/dev/null 2>&1
+want "the ticket is claimed before the run" "held" "$(bash "$CLK" show 716 >/dev/null 2>&1 && echo held || echo free)"
+rows=$(checks)
+out=$(bash "$BT" 716 --steps "plan" 2>&1); rc=$?
+want "it ends as a requeue" "28" "$rc"
+want "the auth hold is written" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
+want_in "and names invalid_grant" 'invalid_grant' "$(cut -f2 "$SWARM_AUTH_HOLD_FILE" 2>/dev/null)"
+want_not_in "no skill park wording" "$SKILL_WORDS" "$out"
+want "the claim is released" "free" "$(bash "$CLK" show 716 >/dev/null 2>&1 && echo held || echo free)"
 want "the skill check's record has no new row" "$rows" "$(checks)"
 
 echo "--- the auth hold: the first since stays, and it never expires by time ---"
