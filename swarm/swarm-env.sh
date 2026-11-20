@@ -498,7 +498,7 @@ swarm_api_refusal_log() { # <log>
 }
 # swarm_api_auth_log <log> — 0 when the host's Claude login is gone, so no call on this
 # host can run until someone logs in again: the last result is an error naming a failed
-# authentication, an expired or revoked OAuth token or session, authentication_error or
+# authentication, an expired or revoked OAuth token or session, authentication_error, invalid_grant or
 # "run /login", or carrying status 401; or the CLI's authentication_failed event with no
 # clean answer after it. Prints the CLI's words (200 chars). Read from the CLI's own lines
 # only, as swarm_api_refusal_log: an answer that quotes one is not. The one lost-login reader.
@@ -510,7 +510,7 @@ swarm_api_auth_log() { # <log>
     | if $r == null or ($r.structured_output? // null) != null or ($r.is_error // false) != true then empty
       else (($r.result // "") | tostring | gsub("\\s+"; " ")) as $x
         | if (($r.api_error_status? // 0) | tonumber? // 0) == 401
-             or ($x | test("failed to authenticate|oauth (token|session)[^.]{0,40}(expired|revoked)|authentication_error|run /login"; "i"))
+             or ($x | test("failed to authenticate|oauth (token|session)[^.]{0,40}(expired|revoked)|authentication_error|invalid_grant|run /login"; "i"))
           then (if $x == "" then "401 with no message" else ($x | .[0:200]) end)
           else empty end
       end' 2>/dev/null)
