@@ -36,8 +36,8 @@ out=$(bash "$C" "$T/bad.sh"); rc=$?
 out=$(bash "$C" "$T/good.sh"); rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && ok "printf, echo, a here-string and grep >/dev/null pass" || bad "flagged correct code: $out"
 
-# The kit itself. These three are left to the changes that own those files.
-KNOWN='scripts/claim-lock.sh scripts/critic-judge.sh scripts/reconcile-claims.sh'
+# The kit itself. These are left to the changes that own those files (review.sh: a change there owes an eval score).
+KNOWN='driver/steps/review.sh scripts/claim-lock.sh scripts/critic-judge.sh scripts/reconcile-claims.sh'
 got=$(bash "$C" | sed "s#^$(cd "$HERE/.." && pwd)/##" | cut -d: -f1 | sort -u | tr '\n' ' ' | sed 's/ $//')
 [ "$got" = "$KNOWN" ] && ok "the kit has none outside the known three" || bad "the kit: wanted '$KNOWN', got '$got'"
 suite_end "$FAILED"

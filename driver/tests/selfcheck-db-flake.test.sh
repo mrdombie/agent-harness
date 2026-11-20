@@ -101,7 +101,7 @@ SUT_KIT="$KIT" case_flake; want "the unplanted kit: the load's red is not counte
 plant "the timeout is run again alone" driver/steps/self-check.sh '    elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
          && _driver_gate_db_flake "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$gsecs"; then
 ' && { SUT_KIT="$KIT" case_flake; want "planted (no run alone): the load's red goes to fix" "rc=$DRIVER_E_REWORK findings=present" "$R"; }
-plant "only a database timeout" driver/steps/self-check.sh '  perl -pe '"'"'s/\e\[[0-9;]*[A-Za-z]//g'"'"' "$out" 2>/dev/null | grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" || return 1
+plant "only a database timeout" driver/steps/self-check.sh '  grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" <<<"$(perl -pe '"'"'s/\e\[[0-9;]*[A-Za-z]//g'"'"' "$out" 2>/dev/null)" || return 1
 ' && { SUT_KIT="$KIT" case_plain; want "planted (any red outside): a plain red passes" "rc=0" "$R"; }
 
 suite_end "$FAILED"
