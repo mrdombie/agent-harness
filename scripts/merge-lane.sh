@@ -454,7 +454,7 @@ done <<< "$CHECKS"
 
 # Up to date not required: a head re-running its checks must not hold up a green member behind it.
 merge_past_head() { # <why the head waits> — 0 when a member merged (or would) in its place
-  local n nsha why v
+  local n nsha why v without
   [ "$UPDATE_BEHIND" = bot ] || return 1
   for n in $(jq -r --argjson h "$HEAD_PR" '.[] | select(. != $h)' <<<"$ORDER"); do
     [ "$(pr_field "$n" .mergeable)" = MERGEABLE ] || continue
@@ -462,14 +462,21 @@ merge_past_head() { # <why the head waits> — 0 when a member merged (or would)
     has_label "$n" "$HOLD_LABEL" && continue
     has_label "$n" "$DNM_LABEL" && continue
     nsha=$(pr_field "$n" .headRefOid)
-    v=$(checks_of "$n" | cut -f2)
-    if grep -qx owed <<<"$v"; then
+    v=$(checks_of "$n"); without=""
+    if grep -q $'\towed\t' <<<"$v"; then
       critic_waited "$n" "$nsha" || continue
-      v=$(grep -vx owed <<<"$v")
+      without=$(awk -F'\t' '$2 == "owed" { print $1 }' <<<"$v" | paste -sd, - | sed 's/,/, /g')
+      v=$(grep -v $'\towed\t' <<<"$v")
     fi
+    v=$(cut -f2 <<<"$v")
     [ -n "$v" ] || continue
     grep -qvx green <<<"$v" && continue
-    why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every required check green, and $INTEGRATION_BRANCH does not require up to date"
+    if [ -n "$without" ]; then
+      say "lane: #$n merges without $without — $without has not reported in $CRITIC_WAIT_MIN min on $nsha"
+      why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every other required check green, $without has not reported in $CRITIC_WAIT_MIN min, and $INTEGRATION_BRANCH does not require up to date"
+    else
+      why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every required check green, and $INTEGRATION_BRANCH does not require up to date"
+    fi
     act merge "$n" "$nsha" "$METHOD at $nsha in place of head #$HEAD_PR: $why"
     if lane_shadow; then
       say "would merge #$n in place of head #$HEAD_PR ($METHOD, head $nsha) — $why"
