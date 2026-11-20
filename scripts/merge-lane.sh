@@ -38,7 +38,9 @@
 #                                        anything else   → out, check named
 #                  (a PR out of the lane gets no fixer: it stays on the rebuild clock,
 #                  which closes it and builds its ticket fresh once it cannot merge)
-#                  every required check green            → merge, end of pass
+#                  every required check green            → merge, end of pass, unless
+#                                 person-stop.sh says a person stopped it (or cannot
+#                                 be read): then it waits in place; a member is checked too
 #                  a wait on anything but its own checks a second pass running
 #                                 (unreadable, refused) → it gives up its place
 #                                 and goes behind every other member
@@ -286,6 +288,20 @@ stall() { # <why> — ends the pass
 # ---- leaving --------------------------------------------------------------------
 ticket_of() { pr_field "$1" .headRefName | branch_tickets | cut -f1; }
 
+# A person's stop wins over a green head: read fresh at the moment of each merge.
+person_stop() { # <pr> — 0 nothing stops it, 1 stopped (sentence in PSTOP_WHY), 2 unread
+  local t rc
+  t=$(ticket_of "$1")
+  [ -n "$t" ] || { PSTOP_WHY="no ticket to read a person's stop from"; return 2; }
+  PSTOP_WHY=$(bash "${MERGE_LANE_PERSON_STOP:-$SELF_DIR/person-stop.sh}" check "$t" "$1" 2>/dev/null); rc=$?
+  PSTOP_WHY=$(printf '%s' "$PSTOP_WHY" | tr '\n' ' ' | sed 's/ *$//')
+  case "$rc" in
+    0) return 0 ;;
+    1) PSTOP_WHY="a person stopped it: ${PSTOP_WHY:-a stop with no sentence}"; return 1 ;;
+    *) PSTOP_WHY="could not read a person's stop"; return 2 ;;
+  esac
+}
+
 take_out() { # <why> — the head leaves the lane on this SHA; the rebuild clock has it
   local why="$1"
   act out "$HEAD_PR" "$SHA" "$why"
@@ -471,6 +487,7 @@ merge_past_head() { # <why the head waits> — 0 when a member merged (or would)
     v=$(cut -f2 <<<"$v")
     [ -n "$v" ] || continue
     grep -qvx green <<<"$v" && continue
+    person_stop "$n" || { say "lane: #$n does not merge in place of head #$HEAD_PR — $PSTOP_WHY"; continue; }
     if [ -n "$without" ]; then
       say "lane: #$n merges without $without — $without has not reported in $CRITIC_WAIT_MIN min on $nsha"
       why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every other required check green, $without has not reported in $CRITIC_WAIT_MIN min, and $INTEGRATION_BRANCH does not require up to date"
@@ -504,6 +521,8 @@ fi
 
 # ---- 4d. merge: one per pass ---------------------------------------------------
 [ -z "$unreported" ] || say "lane: #$HEAD_PR merges without $unreported — $unreported has not reported in $CRITIC_WAIT_MIN min on $SHA"
+PSTOP_WHY=""
+person_stop "$HEAD_PR" || { say "lane: #$HEAD_PR is green but does not merge — $PSTOP_WHY"; stall "$PSTOP_WHY"; }
 act merge "$HEAD_PR" "$SHA" "$METHOD at $SHA"
 if lane_shadow; then
   say "would merge #$HEAD_PR ($METHOD, head $SHA)"
