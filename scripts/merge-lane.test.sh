@@ -574,10 +574,38 @@ keep_pr FAILURE; labels_are 80 801 project:keep
 live >/dev/null
 want "its critic red: nothing merged"              "" "$(merges)"
 want "  and nothing is queued"                     "" "$(fixers)"
+cfg '.coordinator.criticWaitMin = 30'
 keep_pr PENDING; labels_are 80 801 project:keep
 live >/dev/null
-want "its verdict owed: nothing merged"            "" "$(merges)"
+want "its verdict owed, inside criticWaitMin: nothing merged" "" "$(merges)"
 want_in "  it waits for the critic by name"        'waiting for checks: Design critic' "$(cat "$C/lane.status")"
+export SWARM_NOW=2800; out=$(live)
+want "30 min on the same head with no verdict: merged" "80" "$(merges)"
+want_in "  and the log says the critic never reported" 'Design critic has not reported in 30 min' "$out"
+keep_pr PENDING; labels_are 80 801 project:keep
+live >/dev/null
+set_pr 80 '.headRefOid = "s80b"'; compare develop s80b 0
+export SWARM_NOW=2700; live >/dev/null
+export SWARM_NOW=2900; live >/dev/null
+want "a new head restarts the clock: 200s after it, nothing merged" "" "$(merges)"
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 80 s80 - 1 build:PENDING lint:SUCCESS; compare develop s80 0; critic 80 PENDING; labels_are 80 801 project:keep
+live >/dev/null; export SWARM_NOW=2800; live >/dev/null
+want "past the window with a required check pending: nothing merged" "" "$(merges)"
+keep_pr FAILURE; labels_are 80 801 project:keep
+live >/dev/null; export SWARM_NOW=2800; live >/dev/null
+want "past the window, its critic red: nothing merged" "" "$(merges)"
+want_in "  it leaves the lane on the red"          '^pr edit 80 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.wait"; cfg '.merge.updateBehind = "bot"'
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 11 s11 - 1 build:PENDING lint:SUCCESS; pr 80 s80 - 1 build:SUCCESS lint:SUCCESS
+compare develop s11 0; compare develop s80 0; critic 80 PENDING; labels_are 80 801 project:keep
+live >/dev/null
+want "bot: a member owing its critic does not merge past the head inside the window" "" "$(merges)"
+export SWARM_NOW=2800; live >/dev/null
+want "bot: past the window it merges in the pending head's place" "80" "$(merges)"
+want "  and the head keeps its place"              "11" "$(jq -r '.head.pr' "$C/lane.did.json")"
+cp "$FIX/cfg.wait" "$HARNESS_CFG_PATH"
 keep_pr -; labels_are 80 801 project:keep
 live >/dev/null
 want "no critic status on the head: merged (nothing would judge it)" "80" "$(merges)"
