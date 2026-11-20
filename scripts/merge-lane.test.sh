@@ -604,8 +604,10 @@ pr 11 s11 - 1 build:PENDING lint:SUCCESS; pr 80 s80 - 1 build:SUCCESS lint:SUCCE
 compare develop s11 0; compare develop s80 0; critic 80 PENDING; labels_are 80 801 project:keep
 live >/dev/null
 want "bot: a member owing its critic does not merge past the head inside the window" "" "$(merges)"
-export SWARM_NOW=2800; live >/dev/null
+export SWARM_NOW=2800; out=$(live)
 want "bot: past the window it merges in the pending head's place" "80" "$(merges)"
+want_in "  and the log says the critic never reported" '#80 merges without Design critic — Design critic has not reported in 30 min on s80' "$out"
+want_not_in "  and the act does not call it all-green"  'merge	80	.*every required check green' "$(cat "$C/actions.log")"
 want "  and the head keeps its place"              "11" "$(jq -r '.head.pr' "$C/lane.did.json")"
 cp "$FIX/cfg.wait" "$HARNESS_CFG_PATH"
 keep_pr -; labels_are 80 801 project:keep
