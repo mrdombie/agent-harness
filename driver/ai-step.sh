@@ -749,6 +749,17 @@ EOW
     local sess s_cli s_cause s_said
     sess=$(driver_log_session "$log" "$want"); s_cli=${sess%%$'\t'*}; s_cause=${sess#*$'\t'}
     if [ "$hit" -eq 0 ]; then
+      # A session that errored or never got past its first turn had no chance to call a Skill.
+      local first
+      first=$(driver_log_events "$log" | jq -r -s '[.[] | select(.type=="result")] | last
+        | if . == null or (.num_turns? | type) != "number" then empty
+          elif (.is_error // false) == true or .num_turns <= 1 then ((.result // "") | tostring | gsub("\\s+"; " ") | .[0:200] | if . == "" then "no message" else . end)
+          else empty end' 2>/dev/null)
+      if [ -n "$first" ]; then
+        driver_say "✋ $step: the session ended on its first turn or with an error, before any Skill could run: $first"
+        driver_state_set "$t" park_note "machine fault, nothing to answer: the $step session ended on its first turn or with an error ($first). The next run tries again."
+        return "$DRIVER_E_MACHINE"
+      fi
       case "$s_cause" in
         no-init)       s_said="the transcript has no session start to read the session from" ;;
         no-skill-tool) s_said="the session (Claude Code ${s_cli:-?}) had no Skill tool" ;;
