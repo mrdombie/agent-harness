@@ -46,7 +46,9 @@
 # Project facts, refused by key name when missing: merge.method, gates.requiredChecks.
 # Optional: mergeLane.label (queue:merge), mergeLane.firstLabel (P0),
 # mergeLane.flakePattern, design.surfacePaths (which files are screens),
-# merge.updateBehind (agent; bot = the trunk does not require up to date).
+# merge.updateBehind (agent; bot = the trunk does not require up to date),
+# coordinator.criticWaitMin (30; 0 = wait for ever): how long a kept critic that
+# has not reported holds one head before it merges without the verdict.
 #
 # Shadow (the default): every act is written to actions.log as "would …"; nothing
 # is merged, updated, labelled, re-run, spawned or notified.
@@ -81,6 +83,8 @@ REQUIRED=$(release_blocking_required "$REQUIRED")
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
 UPDATE_BEHIND=$(swarm_opt merge.updateBehind agent)
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
+CRITIC_WAIT_MIN=$(swarm_opt coordinator.criticWaitMin 30)
+case "$CRITIC_WAIT_MIN" in ''|*[!0-9]*) CRITIC_WAIT_MIN=30 ;; esac
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 CLEAR_HOLD="$SELF_DIR/clear-hold.sh"
@@ -372,11 +376,12 @@ fi
 # One row per required check: name, green|pending|missing|failed, conclusion, url.
 # A ticket that keeps the critic through the release waits on its status too, once posted:
 # nothing judges a head that carries none, so a missing one would hold it for ever.
+# A kept critic still pending is "owed": it holds the head at most criticWaitMin.
 checks_of() { # <pr>
   local kept req
   kept=$(release_critic_required "$(release_labels_of "$1" "$(ticket_of "$1")")")
   req=$(jq -c --argjson k "$kept" '. + [$k[] as $c | select(map(ascii_downcase) | index([$c | ascii_downcase]) | not) | $c]' <<<"$REQUIRED" 2>/dev/null) || req="$REQUIRED"
-  jq -r --argjson n "$1" --argjson req "$req" --argjson kept "$kept" "$CHECK_NEWEST_JQ"'
+  jq -r --argjson n "$1" --argjson req "$req" --argjson kept "$kept" --argjson own "$REQUIRED" "$CHECK_NEWEST_JQ"'
   (.[] | select(.number == $n) | .statusCheckRollup // [] | newest_runs) as $c
   | $req[] as $r
   | ($r | ascii_downcase) as $rl
@@ -384,7 +389,8 @@ checks_of() { # <pr>
                      or ((((.workflowName // "") + " / " + (.name // "")) | ascii_downcase) == $rl)) ] | last) as $x
   | if $x == null and ($kept | map(ascii_downcase) | index([$rl])) then empty
     elif $x == null then [$r, "missing", "", ""]
-    elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then [$r, "pending", "", ""]
+    elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then
+      [$r, (if ($own | map(ascii_downcase) | index([$rl])) then "pending" else "owed" end), "", ""]
     elif (($x.conclusion // $x.state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then [$r, "green", "", ""]
     else [$r, "failed", ($x.conclusion // $x.state // ""), ($x.detailsUrl // $x.targetUrl // "")] end
   | @tsv' <<<"$PRS"
@@ -399,12 +405,24 @@ flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN w
   grep -iE -- "$FLAKE_RE" >/dev/null <<<"$notes"
 }
 
-waiting=""; unread=""
+critic_waited() { # <pr> <sha> — 0 once its kept critic has been owed on this sha for criticWaitMin
+  local at
+  at=$(jq -r --arg p "$1" --arg s "$2" '.members[$p].criticOwed // {} | select(.sha == $s) | .at' <<<"$ST")
+  if [ -z "$at" ]; then
+    st --arg p "$1" --arg s "$2" --argjson now "$NOW" '.members[$p].criticOwed = {sha: $s, at: $now}'; at=$NOW
+  fi
+  [ "$CRITIC_WAIT_MIN" -gt 0 ] && [ $((NOW - at)) -ge $((CRITIC_WAIT_MIN * 60)) ]
+}
+
+waiting=""; unread=""; unreported=""
 while IFS=$'\t' read -r name verdict concl url; do
   [ -n "${name:-}" ] || continue
   case "$verdict" in
     green) ;;
     pending|missing) waiting="$waiting${waiting:+, }$name" ;;
+    owed)
+      if critic_waited "$HEAD_PR" "$SHA"; then unreported="$unreported${unreported:+, }$name"
+      else waiting="$waiting${waiting:+, }$name"; fi ;;
     failed)
       run=$(printf '%s' "$url" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
       job=$(printf '%s' "$url" | sed -nE 's#.*/job/([0-9]+).*#\1#p')
@@ -443,10 +461,14 @@ merge_past_head() { # <why the head waits> — 0 when a member merged (or would)
     [ "$(pr_field "$n" .mergeStateStatus)" != BEHIND ] || continue
     has_label "$n" "$HOLD_LABEL" && continue
     has_label "$n" "$DNM_LABEL" && continue
+    nsha=$(pr_field "$n" .headRefOid)
     v=$(checks_of "$n" | cut -f2)
+    if grep -qx owed <<<"$v"; then
+      critic_waited "$n" "$nsha" || continue
+      v=$(grep -vx owed <<<"$v")
+    fi
     [ -n "$v" ] || continue
     grep -qvx green <<<"$v" && continue
-    nsha=$(pr_field "$n" .headRefOid)
     why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every required check green, and $INTEGRATION_BRANCH does not require up to date"
     act merge "$n" "$nsha" "$METHOD at $nsha in place of head #$HEAD_PR: $why"
     if lane_shadow; then
@@ -474,6 +496,7 @@ if [ -n "$waiting" ]; then
 fi
 
 # ---- 4d. merge: one per pass ---------------------------------------------------
+[ -z "$unreported" ] || say "lane: #$HEAD_PR merges without $unreported — $unreported has not reported in $CRITIC_WAIT_MIN min on $SHA"
 act merge "$HEAD_PR" "$SHA" "$METHOD at $SHA"
 if lane_shadow; then
   say "would merge #$HEAD_PR ($METHOD, head $SHA)"
