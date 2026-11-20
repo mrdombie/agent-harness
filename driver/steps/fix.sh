@@ -226,7 +226,7 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
   if [ -z "$body" ]; then
     printf 'cites PM answer "%s", which is not a ## PM answer comment on the ticket\n' "$ref"; return 3
   fi
-  if ! _driver_fix_pm_allows "$pa" "$bid" "$kind" | grep -qxF -- "$ref"; then
+  if ! grep -qxF -- "$ref" <<<"$(_driver_fix_pm_allows "$pa" "$bid" "$kind")"; then
     printf 'PM answer %s does not name %s and accept a %s proof for it\n' "$ref" "$bid" "$kind"; return 3
   fi
   cs=$(git -C "$wt" rev-parse --verify -q "$c^{commit}" 2>/dev/null) || {
@@ -245,7 +245,7 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
       done
       [ -n "$named" ] || { printf 'PM answer %s names no commit that is %s\n' "$ref" "$(printf '%s' "$c" | cut -c1-10)"; return 3; }
       tf=$(jq -r --arg b "$bid" '[.findings[]? | select(.id == $b) | .file] | first // ""' "$review" 2>/dev/null)
-      if [ -z "$tf" ] || ! git -C "$wt" show --name-only --format= "$cs" 2>/dev/null | grep -qxF -- "$tf"; then
+      if [ -z "$tf" ] || ! grep -qxF -- "$tf" <<<"$(git -C "$wt" show --name-only --format= "$cs" 2>/dev/null)"; then
         printf 'commit %s does not touch %s, the file the finding names\n' "$(printf '%s' "$c" | cut -c1-10)" "${tf:-(none)}"; return 3
       fi
       printf 'commit %s is on the branch, is the one PM answer %s names, and touches %s\n' "$(printf '%s' "$c" | cut -c1-10)" "$ref" "$tf"
@@ -572,7 +572,7 @@ $basenote"
   # asked once more, pointed at autoProofs, and the driver checks what comes back.
   local autokinds; autokinds=$(driver_auto_proof_kinds)
   if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && [ -z "$proofnote" ] && [ -n "$autokinds" ] \
-     && jq -r '.question // ""' "$d/steps/fix.json" 2>/dev/null | grep -qiE -- "$DRIVER_FIX_AUTO_ASK_RE"; then
+     && grep -qiE -- "$DRIVER_FIX_AUTO_ASK_RE" <<<"$(jq -r '.question // ""' "$d/steps/fix.json" 2>/dev/null)"; then
     driver_state_set "$t" fix_proof_note "- you asked: $(jq -r '.question' "$d/steps/fix.json" | tr '\n' ' ' | cut -c1-600)
   That is not a question for a person. A finding no red-then-green pair can show, fixed by a commit that is only $autokinds, goes in autoProofs naming the kind and the commit (test-only also names testFile, command and a break in non-test code). The driver reads the commit's diff itself and, for test-only, plants the break: red, then green once restored."
     driver_say "↩ fix: asked whether a docs/comment/wording/test-only fix can be accepted without a red-then-green pair — the driver checks that itself; asking the fix step once more, pointed at autoProofs"

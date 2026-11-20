@@ -50,7 +50,7 @@ issue_status_markers() {
   for d in ${DECISION_LABELS:-}; do case "$d" in "$p"*) printf '%s\n' "$d" ;; esac; done
 }
 
-issue_status_is_marker() { issue_status_markers | grep -qxF -- "$1"; }
+issue_status_is_marker() { grep -qxF -- "$1" <<<"$(issue_status_markers)"; }
 
 # A lifecycle status: status-prefixed and not a marker.
 issue_status_is_lifecycle() {

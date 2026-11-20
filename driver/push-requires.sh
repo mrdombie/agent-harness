@@ -261,7 +261,7 @@ _driver_attest_graded() {
 # mechanical", and the fix step is a model. Parking on it parked #13044 on one Minor.
 _driver_spitback_to_fix() {
   local t="$1" name="$2" out="$3" d round maxr ground block graded blocking defer nb nd
-  grep -m1 -E 'VERDICT:' "$out" 2>/dev/null | grep -q 'SPIT-BACK' || return 0
+  grep -q 'SPIT-BACK' <<<"$(grep -m1 -E 'VERDICT:' "$out" 2>/dev/null)" || return 0
   case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 0 ;; esac
   round="${DRIVER_ATTEST_ROUND:-$(driver_state_count "$t" review)}"; ground="${DRIVER_ATTEST_GROUND:-$round}"
   maxr="${DRIVER_ATTEST_MAXR:-$DRIVER_MAX_REVIEW_ROUNDS}"
