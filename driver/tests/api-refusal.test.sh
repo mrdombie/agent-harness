@@ -152,6 +152,25 @@ want_in "with the park's wording" 'plan did not run the Skill its brief names' "
 want_in "and the step's own line" 'the session \(Claude Code 2\.1\.319\) listed the skill and the model did not call it' "$out"
 want "and it is counted: a third no-Skill check" "$(( rows + 1 )) 3" "$(checks) $(nones)"
 
+echo "--- a session that errored on its first turn: a machine fault, never a skipped Skill ---"
+reset_case 711
+jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:1, result:"Something unexpected happened"}' > "$FIX/ai/plan.jsonl"
+rows=$(checks); nn=$(nones)
+out=$(bash "$BT" 711 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_not_in "never the skill sentence" "$SKILL_WORDS" "$out"
+want_in "the park says machine fault and quotes the CLI" 'parked.*machine fault.*Something unexpected happened' "$out"
+want "the skill check's record is untouched" "$rows $nn" "$(checks) $(nones)"
+
+echo "--- a clean answer in one turn with no Skill call: a machine fault, not counted ---"
+reset_case 712
+jq -nc '{type:"result", subtype:"success", is_error:false, num_turns:1, result:"{\"files\":[\"a.sh\"]}"}' > "$FIX/ai/plan.jsonl"
+rows=$(checks); nn=$(nones)
+out=$(bash "$BT" 712 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_not_in "never the skill sentence" "$SKILL_WORDS" "$out"
+want "the skill check's record is untouched" "$rows $nn" "$(checks) $(nones)"
+
 echo "--- the auth reader: the CLI's own lost login, and nothing that quotes one ---"
 auth_is() { # <title> <want-rc> <file>
   swarm_api_auth_log "$3" >/dev/null; want "$1" "$2" "$?"
