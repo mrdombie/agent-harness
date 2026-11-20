@@ -72,12 +72,21 @@ cat > "$BIN/notify" <<'SH'
 echo "$1" >> "$FIX/notify.log"
 SH
 chmod +x "$BIN/gh" "$BIN/notify"
+# A person's stop: nothing stops a PR unless a case writes pstop-<pr>.rc (and .why).
+cat > "$BIN/person-stop" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/pstop.log"
+[ -f "$FIX/pstop-$3.why" ] && cat "$FIX/pstop-$3.why"
+exit "$(cat "$FIX/pstop-$3.rc" 2>/dev/null || echo 0)"
+SH
+chmod +x "$BIN/person-stop"
+export MERGE_LANE_PERSON_STOP="$BIN/person-stop"
 export COORDINATOR_NOTIFY_CMD="$BIN/notify"
 unset MERGE_LANE_SHADOW COORDINATOR_SHADOW
 
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$FIX"/gh/update-*.fail "$FIX"/gh/merge-*.fail "$FIX"/gh/api-repos_*compare*.json "$FIX"/gh/api-repos_*annotations*.json
-  : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"
+  : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"; : > "$FIX/pstop.log"; rm -f "$FIX"/pstop-*
   printf '[]\n' > "$FIX/gh/prs-all.json"
   printf '[{"name":"queue:merge"}]\n' > "$FIX/gh/labels.json"; rm -f "$FIX/gh/label-create.fail"
   export SWARM_NOW=1000
@@ -644,6 +653,31 @@ critic 80 FAILURE; set_pr 80 '.mergeStateStatus = "UNSTABLE"'; labels_are 80 801
 live >/dev/null
 want "a non-blocking critic red on a ticket not kept: merged" "80" "$(merges)"
 rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.unstable" "$HARNESS_CFG_PATH"
+
+echo "--- a person's stop is read before every merge: a stopped head stalls in place ---"
+fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
+echo 1 > "$FIX/pstop-21.rc"; echo "Critical: Dom said not yet at 10:00" > "$FIX/pstop-21.why"
+out=$(live)
+want "a stopped green head is not merged"        "" "$(merges)"
+want "  the stop was asked of its ticket and PR" "check 211 21" "$(cat "$FIX/pstop.log")"
+want_in "  the log carries the stop's sentence"  'a person stopped it: Critical: Dom said not yet' "$(cat "$C/lane.log")"
+want_in "  and so does the status line"          'a person stopped it: Critical: Dom said not yet' "$(cat "$C/lane.status")"
+want "  it stays head, not taken out"            "21" "$(jq -r '.head.pr' "$C/lane.did.json")"
+fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
+echo 2 > "$FIX/pstop-21.rc"
+out=$(live)
+want "a head whose stop could not be read is not merged" "" "$(merges)"
+want_in "  and the log says so"                  "could not read a person's stop" "$(cat "$C/lane.log")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.pstop"; cfg '.merge.updateBehind = "bot"'
+fresh
+pr 18 s18 - 1 build:PENDING lint:SUCCESS; compare develop s18 0
+pr 19 s19 - 1 build:SUCCESS lint:SUCCESS; compare develop s19 0
+pr 20 s20 - 1 build:SUCCESS lint:SUCCESS; compare develop s20 0
+echo 1 > "$FIX/pstop-19.rc"; echo "do-not-merge put on by dom" > "$FIX/pstop-19.why"
+live >/dev/null
+want "bot: a stopped member does not merge past the head; an unstopped one does" "20" "$(merges)"
+want_in "  and the log says why it was passed over" '#19 .*a person stopped it: do-not-merge put on by dom' "$(cat "$C/lane.log")"
+cp "$FIX/cfg.pstop" "$HARNESS_CFG_PATH"
 
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
