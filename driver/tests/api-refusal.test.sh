@@ -137,6 +137,17 @@ rows=$(checks)
 out=$(bash "$BT" 704 --steps "plan" 2>&1); rc=$?
 want "it exits as the machine's" "33" "$rc"
 want_in "the park names the API's refusal" 'machine fault.*the API refused the plan session: api_error: Claude Code' "$out"
+want_in "the park line gives the refusal as the cause" 'parked.*machine fault: the API refused the plan session' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
+
+echo "--- refused, then taken and failed at the API once: the park says once, not twice ---"
+reset_case 717
+jq -nc '{type:"result", subtype:"success", is_error:true, num_turns:3, result:"API Error: 529 overloaded"}' > "$FIX/ai/plan.then.jsonl"
+refused > "$FIX/ai/plan.jsonl"
+out=$(bash "$BT" 717 --steps "plan" 2>&1); rc=$?
+want "it exits as the machine's" "33" "$rc"
+want_in "the park line names the one failure" 'parked.*machine fault: the plan model call failed at the API on try 1.*529 overloaded' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
 want_not_in "and never the skill sentence" "$SKILL_WORDS" "$out"
 want "no hold is written" "no" "$([ -f "$SWARM_USAGE_HOLD_FILE" ] && echo yes || echo no)"
 want "the skill check's record has no new row" "$rows 2" "$(checks) $(nones)"
@@ -160,6 +171,8 @@ out=$(bash "$BT" 711 --steps "plan" 2>&1); rc=$?
 want "it exits as the machine's" "33" "$rc"
 want_not_in "never the skill sentence" "$SKILL_WORDS" "$out"
 want_in "the park says machine fault and quotes the CLI" 'parked.*machine fault.*Something unexpected happened' "$out"
+want_in "the park line gives the true cause" 'parked.*machine fault: the plan session ended on its first turn or with an error' "$out"
+want_not_in "and never says the API failed twice" 'failed at the API twice' "$out"
 want "the skill check's record is untouched" "$rows $nn" "$(checks) $(nones)"
 
 echo "--- a clean answer in one turn with no Skill call: a machine fault, not counted ---"
