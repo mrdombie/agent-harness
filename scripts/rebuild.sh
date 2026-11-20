@@ -188,9 +188,14 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
   [ -n "$notred" ] || return 0
   # The base passes again: a head that waited on it is updated once (re-run when refused) before its clock runs.
   awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null || return 0
-  if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would bring it up to date from $base first"; return 1; fi
-  if rebuild_stale_update "$n" "$head" "$base" "$base passes $notred again" >&2; then echo "PR #$n waited on $base, which passes $notred now — brought up to date from $base first"; return 1; fi
+  if rebuild_stale_update "$n" "$head" "$base" "$base passes $notred again" >&2; then
+    if [ "$STALE_UPDATE_DID" = waits ]; then echo "PR #$n waited on $base, which passes $notred now — its update from $base was accepted; waits for the new head"
+    else echo "PR #$n waited on $base, which passes $notred now — brought up to date from $base first"; fi
+    return 1
+  fi
+  if [ "$STALE_UPDATE_DID" = would ]; then echo "PR #$n waited on $base, which passes $notred now — would bring it up to date from $base first"; return 1; fi
   [ -n "$rids" ] || return 0
+  if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would re-run its failed jobs ($rids) first"; return 1; fi
   did=$(pr_red_rerun "$n" "$head" "$rids" "$REBUILD_BASE_RERUNS" 1) || return 0
   echo "PR #$n waited on $base, which passes $notred now — its update was refused; $did, its failed jobs, first"; return 1
 }
@@ -478,6 +483,7 @@ rebuild_base_tip() {
 # the round is spent.
 rebuild_stale_update() {
   local pr="$1" head="$2" base="$3" why="$4" tip uh="" ub="" at="" res="" after="" now
+  STALE_UPDATE_DID=""   # sent | waits | would — what this call did, for a caller that logs it
   tip=$(rebuild_base_tip "$base"); now=$(swarm_now)
   IFS=$'\t' read -r uh ub at res after <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 } END { print r }' "$STALE_UPDATES" 2>/dev/null)"
   if [ "$res" = ok ]; then
@@ -485,7 +491,7 @@ rebuild_stale_update() {
       case "$at" in ''|*[!0-9]*) at=0 ;; esac
       if [ $((now - at)) -lt "$REBUILD_UPDATE_WAIT_SEC" ]; then
         say "rebuild: PR #$pr is stuck ($why) — its update from $base was accepted and the new head is not read yet; it waits for that"
-        return 0
+        STALE_UPDATE_DID=waits; return 0
       fi
     elif [ "${after:--}" = - ]; then
       after="$head"; rebuild_ledger_put "$STALE_UPDATES" "$pr" "$uh" "$ub" "$at" ok "$after"
@@ -494,9 +500,10 @@ rebuild_stale_update() {
     [ "$after" != "$head" ] || return 1
   fi
   [ "$uh" != "$head" ] || [ "$ub" != "$tip" ] || return 1
-  if coord_shadow; then say "rebuild: would bring PR #$pr up to date with $base once ($why) before any fix round"; return 1; fi
+  if coord_shadow; then say "rebuild: would bring PR #$pr up to date with $base once ($why) before any fix round"; STALE_UPDATE_DID=would; return 1; fi
   if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT -f expected_head_sha="$head" >/dev/null 2>&1; then
     rebuild_ledger_put "$STALE_UPDATES" "$pr" "$head" "$tip" "$now" ok -
+    STALE_UPDATE_DID=sent
     say "rebuild: PR #$pr is red ($why) and was brought up to date with $base first — no builder sent, no fix round spent"
     return 0
   fi
