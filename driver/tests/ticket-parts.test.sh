@@ -153,4 +153,14 @@ jq '.items[0].covers = ["A1"]' "$FIX/old.json" > "$FIX/new.json"
 rc=0; feature_list_guard "$FIX/old.json" "$FIX/new.json" >/dev/null || rc=$?
 want "the items a feature covers are fixed once listed" "3" "$rc"
 
+echo "--- a path named by its tail is found in a large tree, under pipefail ---"
+mkdir -p "$REPO/aa/lib/pulse" "$REPO/zz"
+: > "$REPO/aa/lib/pulse/scheduled-words.ts"
+for i in $(seq 1 3000); do : > "$REPO/zz/a-long-enough-file-name-to-fill-the-pipe-buffer-$i.ts"; done
+git -C "$REPO" add -A; git -C "$REPO" commit -qm big
+printf '## The change\n1. Use `pulse/scheduled-words.ts`.\n' > "$FIX/tail.md"
+rc=0; out=$(ticket_parts_check "$REPO" "$FIX/tail.md" 501) || rc=$?
+want "the tail matches a tracked file" "0" "$rc"
+want_not_in "and is not reported missing" 'scheduled-words' "$out"
+
 suite_end "$FAILED"
