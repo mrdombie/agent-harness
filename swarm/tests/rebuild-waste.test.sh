@@ -13,6 +13,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A driver run exports the host's state paths; left set, they win over the fixture's.
+unset DRIVER_DIR RUNS_DIR STATE_DIR SWARM_DIR SWARM_LOGS COORD_DIR COORD_LOG COORD_QUEUE COORD_EVENTS COORD_ACTIONS COORD_NEEDS_YOU
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -345,6 +347,35 @@ pr 95 101 head1 BLOCKED unit:FAILURE:7001
 age 0; pass
 want "  parked"                                  "1" "$(grep -c 'issue edit 101 .*--add-label status:parked' "$GH_LOG")"
 want "  with one read of its labels, the one the label write uses" "1" "$(grep -c '^issue view 101 ' "$GH_LOG")"
+
+echo "--- every CI runner offline: what does not wait on CI still runs ---"
+RUNNERS="$FIX/gh/api-repos_acme_widgets_actions_runners_per_page_100.json"
+printf '{"total_count":1,"runners":[{"id":1,"status":"offline"}]}\n' > "$RUNNERS"
+echo "  a half-built draft is resumed"
+fresh; base dev1 unit:success; record 101 start plan
+DRAFT=1 pr 80 101 head1 BLOCKED unit:FAILURE:7001
+age 0; pass
+want "  queued once to be resumed"               "1" "$(resumes 101)"
+echo "  a clash gets its one update from its base, and no fix round"
+fresh; base dev1 unit:success; accepts 96
+pr 96 101 head1 DIRTY unit:SUCCESS:7001
+age 0; pass
+want "  its branch is updated once"              "1" "$(updates 96)"
+want "  no fix round queued"                     "0" "$(fixes 101)"
+echo "  a red PR is not sent back to its builder"
+fresh; base dev1 unit:success
+pr 97 101 head1 BLOCKED unit:FAILURE:7001
+age 0; pass
+want "  no fix round queued"                     "0" "$(fixes 101)"
+want "  no round on the ledger"                  "" "$(rounds 97)"
+want_in "  it says CI is down"                   'rebuild: PR #97 waits — every CI runner is offline' "$OUT"
+echo "  a ticket a person holds stops its clock"
+fresh; base dev1 unit:success; fix_issue 101 OPEN "status:needs-human,P1"
+printf '98\t%s\tred\n' "$T0" > "$C/rebuild-clock.did.tsv"
+pr 98 101 head1 BLOCKED unit:FAILURE:7001
+age 0; pass
+want "  its clock is stopped"                    "" "$(awk -F'\t' '$1 == 98' "$C/rebuild-clock.did.tsv" 2>/dev/null)"
+rm -f "$RUNNERS"
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
