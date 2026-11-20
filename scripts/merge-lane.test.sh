@@ -42,7 +42,9 @@ case "$1 $2" in
   "pr merge")
     case "$*" in *--disable-auto*) exit 0 ;; esac
     [ -f "$FIX/gh/merge-$3.fail" ] && { cat "$FIX/gh/merge-$3.fail" >&2; exit 1; }; exit 0 ;;
-  "pr view") jq --argjson n "$3" '.[] | select(.number == $n) | {author:{login:"tester"}, headRefOid, headRefName}' "$FIX/gh/prs-all.json" ;;
+  "pr view") jq --argjson n "$3" --arg b "$(cat "$FIX/gh/base-$3" 2>/dev/null)" '.[] | select(.number == $n) | {author:{login:"tester"}, headRefOid, headRefName, baseRefName, isDraft}
+      | if $b != "" then .baseRefName = $b else . end' "$FIX/gh/prs-all.json" > "$FIX/gh/view.json"
+    [ -s "$FIX/gh/view.json" ] || exit 1; emit "$FIX/gh/view.json" ;;
   "variable get") exit 1 ;;
   "label list") f="$FIX/gh/labels.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "label create") [ -f "$FIX/gh/label-create.fail" ] && exit 1
@@ -65,6 +67,16 @@ case "$1 $2" in
 esac
 exit 0
 GH
+# person-stop.sh check, as the lane calls it: answers $FIX/pstop.rc (0 when absent).
+cat > "$BIN/pstop" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$FIX/pstop.log"
+rc=$(cat "$FIX/pstop.rc" 2>/dev/null || echo 0)
+[ "$rc" = 1 ] && echo "do-not-merge was added by dom at 2026-11-04T10:00Z"
+exit "$rc"
+SH
+chmod +x "$BIN/pstop"
+export MERGE_LANE_PERSON_STOP="$BIN/pstop"
 cat > "$BIN/notify" <<'SH'
 #!/usr/bin/env bash
 echo "$1" >> "$FIX/notify.log"
@@ -74,7 +86,7 @@ export COORDINATOR_NOTIFY_CMD="$BIN/notify"
 unset MERGE_LANE_SHADOW COORDINATOR_SHADOW
 
 fresh() {
-  rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$FIX"/gh/update-*.fail "$FIX"/gh/merge-*.fail "$FIX"/gh/api-repos_*compare*.json "$FIX"/gh/api-repos_*annotations*.json
+  rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$FIX/pstop.rc" "$FIX/pstop.log" "$FIX"/gh/base-* "$FIX"/gh/update-*.fail "$FIX"/gh/merge-*.fail "$FIX"/gh/api-repos_*compare*.json "$FIX"/gh/api-repos_*annotations*.json
   : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"
   printf '[]\n' > "$FIX/gh/prs-all.json"
   printf '[{"name":"queue:merge"}]\n' > "$FIX/gh/labels.json"; rm -f "$FIX/gh/label-create.fail"
@@ -578,6 +590,54 @@ keep_pr PENDING; labels_are 80 801 project:keep
 live >/dev/null
 want "its verdict owed: nothing merged"            "" "$(merges)"
 want_in "  it waits for the critic by name"        'waiting for checks: Design critic' "$(cat "$C/lane.status")"
+out=$(SWARM_NOW=$((1000 + 60 * 60)) live)
+want "  not merge first: an owed critic is waited on however long" "" "$(merges)"
+cfg '.release.mergeFirst = true | .coordinator.criticWaitMin = 30'
+keep_pr PENDING; labels_are 80 801 project:keep
+live >/dev/null
+want "merge first, owed inside the window: nothing merged" "" "$(merges)"
+out=$(SWARM_NOW=$((1000 + 29 * 60)) live)
+want "  29 min on: still nothing merged"           "" "$(merges)"
+out=$(SWARM_NOW=$((1000 + 30 * 60)) live)
+want "owed 30 min at the same head: merged"        "80" "$(merges)"
+want_in "  and it says why"                        'the critic has not reported in 30 min; it no longer holds the merge' "$out"
+want "  after a person-stop check"                 "check 801 80" "$(cat "$FIX/pstop.log" 2>/dev/null)"
+keep_pr PENDING; labels_are 80 801 project:keep; echo 1 > "$FIX/pstop.rc"
+SWARM_NOW=1000 live >/dev/null; out=$(SWARM_NOW=$((1000 + 30 * 60)) live)
+want "a critic waited out but a person's stop: nothing merged" "" "$(merges)"
+want_in "  and it says whose stop"                 'a person stopped it: do-not-merge was added by dom' "$out"
+keep_pr PENDING; labels_are 80 801 project:keep
+SWARM_NOW=1000 live >/dev/null
+set_pr 80 '.headRefOid = "s80b"'; compare develop s80b 0
+SWARM_NOW=2800 live >/dev/null
+SWARM_NOW=3000 live >/dev/null
+want "a new head restarts the clock: nothing merged 200 s after it" "" "$(merges)"
+SWARM_NOW=$((2800 + 30 * 60)) live >/dev/null
+want "  and 30 min after the new head: merged"     "80" "$(merges)"
+keep_pr PENDING; labels_are 80 801 project:keep
+set_pr 80 '.statusCheckRollup |= map(if .name == "build" then .status = "IN_PROGRESS" | .conclusion = null else . end)'
+SWARM_NOW=1000 live >/dev/null; SWARM_NOW=$((1000 + 60 * 60)) live >/dev/null
+want "owed past the window with a required check pending: nothing merged" "" "$(merges)"
+keep_pr PENDING; labels_are 80 801 project:keep
+SWARM_NOW=1000 live >/dev/null
+set_pr 80 '.statusCheckRollup |= map(if .context == "Design critic" then .state = "FAILURE" else . end)'
+SWARM_NOW=$((1000 + 60 * 60)) live >/dev/null
+want "a red critic after the window opened: nothing merged" "" "$(merges)"
+cfg '.merge.updateBehind = "bot"'
+keep_pr PENDING; pr 11 s11 P0 1 build:PENDING lint:SUCCESS; compare develop s11 0
+labels_are 80 801 project:keep
+SWARM_NOW=1000 live >/dev/null
+want "pass-by, inside the window: #11 is head, nothing merged" "11|" "$(jq -r '.head.pr' "$C/lane.did.json")|$(merges)"
+SWARM_NOW=$((1000 + 30 * 60)) live >/dev/null
+want "pass-by: a member owed its critic past the window merges in place of the head" "80" "$(merges)"
+cp "$L" "$FIX/lane.bak"
+sed 's/^      if \[ "\$MERGE_FIRST" = true \] && critic_waited "\$HEAD_PR" "\$SHA"; then$/      if false; then/' "$FIX/lane.bak" > "$L"
+grep -q '^      if false; then$' "$L" || bad "the critic-wait plant did not land"
+keep_pr PENDING; labels_are 80 801 project:keep
+SWARM_NOW=1000 live >/dev/null; SWARM_NOW=$((1000 + 30 * 60)) live >/dev/null
+[ -z "$(merges)" ] && ok "planted: no critic wait → the owed head never merges → red" || bad "planted: no critic wait and the test cannot see it"
+cp "$FIX/lane.bak" "$L"; cmp -s "$FIX/lane.bak" "$L" || bad "the lane was not restored after the critic plant"
+cfg 'del(.merge.updateBehind) | del(.coordinator.criticWaitMin) | .release.mergeFirst = false'
 keep_pr -; labels_are 80 801 project:keep
 live >/dev/null
 want "no critic status on the head: merged (nothing would judge it)" "80" "$(merges)"
@@ -592,6 +652,77 @@ keep_pr FAILURE; labels_are 80 801 project:keep
 live >/dev/null
 want "the key absent: merged, as today"            "80" "$(merges)"
 rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.keep" "$HARNESS_CFG_PATH"
+
+echo "--- merge first: a PR green on every required check merges in one pass, UNSTABLE or unarmed ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.mf"
+cfg '.release = {mergeFirst: true, done: false}'
+# 90: unarmed, unlabelled, UNSTABLE because a check develop does not require failed.
+mf_pr() { # <required verdicts…> — PR 90 on ticket 901
+  fresh; pr 90 s90 - 0 "$@"; compare develop s90 0
+  set_pr 90 '.mergeStateStatus = "UNSTABLE" | .statusCheckRollup += [{__typename:"CheckRun", name:"Does this diff need pixels?", status:"COMPLETED", conclusion:"FAILURE"}]'
+}
+mf_pr build:SUCCESS lint:SUCCESS; out=$(live)
+want "UNSTABLE, never armed, every required check green: merged in one pass" "90" "$(merges)"
+want "  on the head it judged"                    1 "$(grep -cE '^pr merge 90 .*--squash.*--match-head-commit s90' "$GH_LOG")"
+want_in "  labelled into the lane"                '^pr edit 90 .*--add-label queue:merge' "$(cat "$GH_LOG")"
+want "  after a person-stop check on its ticket"  "check 901 90" "$(cat "$FIX/pstop.log" 2>/dev/null)"
+want_in "  its base read again before the merge" '^pr view 90 .*baseRefName' "$(cat "$GH_LOG")"
+view_line=$(grep -nE '^pr view 90 ' "$GH_LOG" | tail -1 | cut -d: -f1); merge_line=$(grep -nE '^pr merge 90 .*--squash' "$GH_LOG" | cut -d: -f1)
+want "  and the re-read comes just before the merge" yes "$([ "${view_line:-99}" -lt "${merge_line:-0}" ] && echo yes || echo no)"
+mf_pr build:FAILURE lint:SUCCESS; live >/dev/null
+want "a red required check: nothing merged"       "" "$(merges)"
+mf_pr build:PENDING lint:SUCCESS; live >/dev/null
+want "a required check pending: nothing merged"   "" "$(merges)"
+mf_pr build:SUCCESS; set_pr 90 '.statusCheckRollup |= map(select(.name != "lint"))'; live >/dev/null
+want "a required check that never reported: nothing merged" "" "$(merges)"
+mf_pr build:SUCCESS lint:SUCCESS; echo 1 > "$FIX/pstop.rc"; out=$(live)
+want "a person's stop: nothing merged"            "" "$(merges)"
+want_in "  and it says whose"                     'a person stopped it: do-not-merge was added by dom' "$out"
+mf_pr build:SUCCESS lint:SUCCESS; echo 2 > "$FIX/pstop.rc"; live >/dev/null
+want "a stop that could not be read: nothing merged" "" "$(merges)"
+mf_pr build:SUCCESS lint:SUCCESS; set_pr 90 '.isDraft = true'; live >/dev/null
+want "a draft: nothing merged"                    "" "$(merges)"
+mf_pr build:SUCCESS lint:SUCCESS; set_pr 90 '.baseRefName = "live"'; live >/dev/null
+want "based on live: never merged"                "" "$(merges)"
+mf_pr build:SUCCESS lint:SUCCESS; echo uat > "$FIX/gh/base-90"; out=$(live)
+want "its base moved to uat just before the merge: never merged" "" "$(merges)"
+want_in "  and it says so"                        'its base is now uat, not develop' "$out"
+fresh; pr 91 s91 - 1 build:SUCCESS lint:SUCCESS; compare develop s91 0; echo live > "$FIX/gh/base-91"; out=$(live)
+want "an armed PR whose base moved to live just before the merge: never merged" "" "$(merges)"
+want "  and an armed one needs no person-stop read" "" "$(cat "$FIX/pstop.log" 2>/dev/null)"
+mf_pr build:SUCCESS lint:SUCCESS; set_pr 90 '.headRefName = "dependabot/npm/x"'; live >/dev/null
+want "not a ticket branch: merge first does not take it" "" "$(merges)"
+mf_pr build:SUCCESS lint:SUCCESS; set_pr 90 '.labels = [{name:"do-not-merge"}]'; live >/dev/null
+want "do-not-merge: nothing merged"               "" "$(merges)"
+cfg '.release.mergeFirst = false'
+mf_pr build:SUCCESS lint:SUCCESS; live >/dev/null
+want "merge first off: an unarmed PR is not the lane's" "" "$(merges)"
+cfg '.release.mergeFirst = true'
+mf_pr build:SUCCESS lint:SUCCESS; lane >/dev/null
+want "shadow: nothing written"                    "" "$(writes)"
+# Plants: each guard removed, its case goes red.
+mf_plant() { # <name> <sed> <grep proving it landed> <setup…> -- then the check runs in the caller
+  cp "$L" "$FIX/lane.bak"; sed "$2" "$FIX/lane.bak" > "$L"
+  grep -qE -- "$3" "$L" || bad "the $1 plant did not land"
+}
+mf_unplant() { cp "$FIX/lane.bak" "$L"; cmp -s "$FIX/lane.bak" "$L" || bad "the lane was not restored after a plant"; }
+mf_plant "merge-first admission" 's/(\$unarmed | not) or (\$mf and/(\$unarmed | not) or (false and/' '\(false and'
+mf_pr build:SUCCESS lint:SUCCESS; live >/dev/null
+[ -z "$(merges)" ] && ok "planted: no merge-first admission → the UNSTABLE unarmed PR sits → red" || bad "planted: no admission and the test cannot see it"
+mf_unplant
+mf_plant "person-stop" 's/^  \[ "\$3" = 1 \] || return 0$/  return 0/' '^  return 0$'
+mf_pr build:SUCCESS lint:SUCCESS; echo 1 > "$FIX/pstop.rc"; live >/dev/null
+[ "$(merges)" = 90 ] && ok "planted: no person-stop check → a stopped PR merges → red" || bad "planted: no person-stop check and the test cannot see it"
+mf_unplant
+mf_plant "base re-check" 's/^  \[ "\$b" = "\$INTEGRATION_BRANCH" \] || .*$/  :/' '^  :$'
+fresh; pr 91 s91 - 1 build:SUCCESS lint:SUCCESS; compare develop s91 0; echo live > "$FIX/gh/base-91"; live >/dev/null
+[ "$(merges)" = 91 ] && ok "planted: no base re-check → merged into live → red" || bad "planted: no base re-check and the test cannot see it"
+mf_unplant
+mf_plant "red required" 's/^    failed)$/    failed) continue ;; xfailed)/' 'xfailed\)'
+mf_pr build:FAILURE lint:SUCCESS; live >/dev/null
+[ "$(merges)" = 90 ] && ok "planted: a red required check ignored → merged over red → red" || bad "planted: red ignored and the test cannot see it"
+mf_unplant
+cp "$FIX/cfg.mf" "$HARNESS_CFG_PATH"
 
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0

@@ -17,6 +17,17 @@
 #   2. members     open, not draft, on the trunk, no hold label, and auto-merge
 #                  armed or the lane label. Live: the label goes on and auto-merge
 #                  comes off, so the lane is the only thing that merges them.
+#                  MERGE FIRST (release.mergeFirst): a ready PR on a ticket branch
+#                  joins too, armed or not. GitHub will not arm auto-merge on a PR
+#                  that is UNSTABLE on a check the trunk does not require, so such a
+#                  PR, green on every required check, sat for hours until a person
+#                  merged it (owner, 2026-11-04: ~20 by hand in two days).
+#   merging        just before any merge the PR is read again: its base must still be
+#                  the trunk and its head the one judged. A merge-first merge (a PR
+#                  that joined unarmed, or a kept critic waited out) also needs a trunk
+#                  that is not a release branch (live, main, master, uat, prod…) and
+#                  no person's stop (person-stop.sh check: do-not-merge, a person's
+#                  draft, a Critical); a stopped PR gives up its place, never merges.
 #   3. order       the PR in flight stays head; then the first label (P0), then
 #                  priority (the PR's own P label, else its ticket's; none last),
 #                  then product before our own tooling, then the pass that first
@@ -31,6 +42,9 @@
 #                                 unless merge.updateBehind is bot and GitHub does
 #                                 not call it BEHIND (up to date is not required):
 #                                 then behind is no reason to wait
+#                  a kept critic pending past coordinator.criticWaitMin (30) at
+#                                 this head, under merge first → no longer waited on;
+#                                 a red critic still takes it out
 #                  a required check pending or missing   → wait; with merge.updateBehind
 #                                 bot the first other member that is MERGEABLE, not
 #                                 BEHIND, not held and green merges in its place
@@ -80,6 +94,11 @@ fi
 REQUIRED=$(release_blocking_required "$REQUIRED")
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
 UPDATE_BEHIND=$(swarm_opt merge.updateBehind agent)
+# A kept critic nothing posts would hold the head for ever: it waits this long, then not.
+CRITIC_WAIT_MIN=$(swarm_opt coordinator.criticWaitMin 30)
+case "$CRITIC_WAIT_MIN" in ''|*[!0-9]*) CRITIC_WAIT_MIN=30 ;; esac
+MERGE_FIRST=false; release_merge_first && MERGE_FIRST=true
+PERSON_STOP="${MERGE_LANE_PERSON_STOP:-$SELF_DIR/person-stop.sh}"
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
@@ -173,14 +192,16 @@ for n in $(jq -r --arg d "$DNM_LABEL" '.[] | select(any(.labels[]?; .name == $d)
       || say "lane: could not disarm auto-merge on #$n, which carries $DNM_LABEL"
   fi
 done
-CANDS=$(jq_slurp out "$(jq -c .out <<<"$ST")" -- jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" --arg dnm "$DNM_LABEL" '
+CANDS=$(jq_slurp out "$(jq -c .out <<<"$ST")" -- jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" --arg dnm "$DNM_LABEL" \
+          --argjson mf "$MERGE_FIRST" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
   $out[0] as $out
   | [ .[] | select(.isDraft | not) | select(.baseRefName == $trunk)
     | select(any(.labels[]?; .name == $hold) | not)
     | select(any(.labels[]?; .name == $dnm) | not)
-    | select(.autoMergeRequest != null or any(.labels[]?; .name == $lane))
+    | (.autoMergeRequest == null and (any(.labels[]?; .name == $lane) | not)) as $unarmed
+    | select(($unarmed | not) or ($mf and ((.headRefName // "") | branch_ticket($pre)) != ""))
     | select($out[(.number|tostring)] != .headRefOid)
-    | {n: .number, sha: .headRefOid} ]' <<<"$PRS")
+    | {n: .number, sha: .headRefOid, mf: $unarmed} ]' <<<"$PRS")
 HEAD_PR=$(jq -r '.head.pr // empty' <<<"$ST")
 ST=$(jq_slurp c "$CANDS" -- jq -c --argjson now "$NOW" --arg head "$HEAD_PR" '
   $c[0] as $c
@@ -188,7 +209,8 @@ ST=$(jq_slurp c "$CANDS" -- jq -c --argjson now "$NOW" --arg head "$HEAD_PR" '
   | reduce $c[] as $x (.; (.members[($x.n|tostring)]) as $m
       | if $m == null then .members[($x.n|tostring)] = {seen: $now, approved: $x.sha, updated: false}
         elif ($m.updated | not) then .members[($x.n|tostring)].approved = $x.sha
-        else . end)' <<<"$ST")
+        else . end)
+  | reduce ($c[] | select(.mf)) as $x (.; .members[($x.n|tostring)].mf = true)' <<<"$ST")
 
 # The lane does the merge: label first, so a disarmed PR never drops out of it.
 for n in $(jq -r '.[].n' <<<"$CANDS"); do
@@ -201,6 +223,17 @@ for n in $(jq -r '.[].n' <<<"$CANDS"); do
     swarm_gh pr merge "$n" --repo "$REPO_SLUG" --disable-auto >/dev/null 2>&1 \
       && act disarm "$n" "$(pr_field "$n" .headRefOid)" "auto-merge off, $LANE_LABEL on" \
       || say "lane: could not disarm auto-merge on #$n"
+  fi
+done
+
+# Merge first: a PR that joined unarmed is labelled into the lane, so it stays a member.
+for n in $(jq -r '.[] | select(.mf) | .n' <<<"$CANDS"); do
+  if lane_shadow; then
+    act join "$n" "$(pr_field "$n" .headRefOid)" "$LANE_LABEL on: merge first, auto-merge never armed"
+  elif swarm_gh pr edit "$n" --repo "$REPO_SLUG" --add-label "$LANE_LABEL" >/dev/null 2>&1; then
+    act join "$n" "$(pr_field "$n" .headRefOid)" "$LANE_LABEL on: merge first, auto-merge never armed"
+  else
+    say "lane: could not label #$n into the lane — it stays a member while merge first holds"
   fi
 done
 
@@ -369,7 +402,8 @@ if [ "$BEHIND" -gt 0 ]; then
 fi
 
 # ---- 4c. the required checks on this head --------------------------------------
-# One row per required check: name, green|pending|missing|failed, conclusion, url.
+# One row per required check: name, green|pending|owed|missing|failed, conclusion, url.
+# owed: a kept critic not yet reported, waited on only for CRITIC_WAIT_MIN (critic_waited).
 # A ticket that keeps the critic through the release waits on its status too, once posted:
 # nothing judges a head that carries none, so a missing one would hold it for ever.
 checks_of() { # <pr>
@@ -384,12 +418,54 @@ checks_of() { # <pr>
                      or ((((.workflowName // "") + " / " + (.name // "")) | ascii_downcase) == $rl)) ] | last) as $x
   | if $x == null and ($kept | map(ascii_downcase) | index([$rl])) then empty
     elif $x == null then [$r, "missing", "", ""]
-    elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then [$r, "pending", "", ""]
+    elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then
+      [$r, (if ($kept | map(ascii_downcase) | index([$rl])) then "owed" else "pending" end), "", ""]
     elif (($x.conclusion // $x.state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then [$r, "green", "", ""]
     else [$r, "failed", ($x.conclusion // $x.state // ""), ($x.detailsUrl // $x.targetUrl // "")] end
   | @tsv' <<<"$PRS"
 }
 CHECKS=$(checks_of "$HEAD_PR")
+
+# critic_waited <pr> <sha> — 0 once the lane has seen this head's kept critic owed for
+# CRITIC_WAIT_MIN; the clock starts on first sight and restarts on a new head.
+critic_waited() {
+  local at
+  at=$(jq -r --arg p "$1" --arg s "$2" '.members[$p].criticOwed | if . != null and .sha == $s then .at else empty end' <<<"$ST")
+  if [ -z "$at" ]; then
+    st --arg p "$1" --arg s "$2" --argjson now "$NOW" '.members[$p].criticOwed = {sha: $s, at: $now}'
+    at=$NOW
+  fi
+  CRITIC_WAITED_MIN=$(( (NOW - at) / 60 ))
+  [ $(( NOW - at )) -ge $(( CRITIC_WAIT_MIN * 60 )) ]
+}
+
+# merge_ok <pr> <sha> <merge-first 0|1> — read the PR again just before merging it.
+#   0 merge · 1 a person's stop (MERGE_NO says whose) · 2 unreadable · 3 no longer on the trunk
+release_base() { case "$1" in live|main|master|uat|prod|production|release|release/*) return 0 ;; esac; return 1; }
+merge_ok() {
+  local now b h d t out rc
+  MERGE_NO=""
+  # gh-read-ok: an unreadable answer holds the merge (2), never passes it
+  now=$(swarm_gh pr view "$1" --repo "$REPO_SLUG" --json baseRefName,headRefOid,isDraft --jq '[.baseRefName, .headRefOid, (.isDraft | tostring)] | @tsv' 2>/dev/null) \
+    || { MERGE_NO="it could not be read again before the merge"; return 2; }
+  IFS=$'\t' read -r b h d <<<"$now"
+  [ -n "$b" ] || { MERGE_NO="its base could not be read again before the merge"; return 2; }
+  [ "$b" = "$INTEGRATION_BRANCH" ] || { MERGE_NO="its base is now $b, not $INTEGRATION_BRANCH"; return 3; }
+  [ "$h" = "$2" ] || { MERGE_NO="its head moved since it was judged"; return 2; }
+  [ "$d" = false ] || { MERGE_NO="it is a draft"; return 3; }
+  [ "$3" = 1 ] || return 0
+  release_base "$b" && { MERGE_NO="merge first never merges into the release branch $b"; return 3; }
+  t=$(ticket_of "$1")
+  out=$(bash "$PERSON_STOP" check "${t:-0}" "$1" 2>/dev/null); rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) MERGE_NO="a person stopped it: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"; return 1 ;;
+    *) MERGE_NO="whether a person stopped it could not be read"; return 2 ;;
+  esac
+}
+merge_first_of() { # <pr> <critic waited 0|1> — 1 when its merge is one only merge first allows
+  if [ "$2" = 1 ] || [ "$(jq -r --arg p "$1" '.members[$p].mf // false' <<<"$ST")" = true ]; then echo 1; else echo 0; fi
+}
 
 flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN when its annotations could not be read
   local notes
@@ -399,11 +475,16 @@ flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN w
   grep -iE -- "$FLAKE_RE" >/dev/null <<<"$notes"
 }
 
-waiting=""; unread=""
+waiting=""; unread=""; HEAD_WAITED=0
 while IFS=$'\t' read -r name verdict concl url; do
   [ -n "${name:-}" ] || continue
   case "$verdict" in
     green) ;;
+    owed)
+      if [ "$MERGE_FIRST" = true ] && critic_waited "$HEAD_PR" "$SHA"; then
+        say "lane: #$HEAD_PR — the critic has not reported in $CRITIC_WAITED_MIN min; it no longer holds the merge"
+        HEAD_WAITED=1
+      else waiting="$waiting${waiting:+, }$name"; fi ;;
     pending|missing) waiting="$waiting${waiting:+, }$name" ;;
     failed)
       run=$(printf '%s' "$url" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
@@ -443,10 +524,19 @@ merge_past_head() { # <why the head waits> — 0 when a member merged (or would)
     [ "$(pr_field "$n" .mergeStateStatus)" != BEHIND ] || continue
     has_label "$n" "$HOLD_LABEL" && continue
     has_label "$n" "$DNM_LABEL" && continue
+    nsha=$(pr_field "$n" .headRefOid)
     v=$(checks_of "$n" | cut -f2)
     [ -n "$v" ] || continue
+    waited=0
+    if grep -qx owed <<<"$v"; then
+      [ "$MERGE_FIRST" = true ] && critic_waited "$n" "$nsha" || continue
+      v=$(grep -vx owed <<<"$v"); waited=1
+    fi
+    [ -n "$v" ] || continue
     grep -qvx green <<<"$v" && continue
-    nsha=$(pr_field "$n" .headRefOid)
+    if ! merge_ok "$n" "$nsha" "$(merge_first_of "$n" "$waited")"; then
+      say "lane: #$n does not merge in place of head #$HEAD_PR — $MERGE_NO"; continue
+    fi
     why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every required check green, and $INTEGRATION_BRANCH does not require up to date"
     act merge "$n" "$nsha" "$METHOD at $nsha in place of head #$HEAD_PR: $why"
     if lane_shadow; then
@@ -474,6 +564,18 @@ if [ -n "$waiting" ]; then
 fi
 
 # ---- 4d. merge: one per pass ---------------------------------------------------
+merge_ok "$HEAD_PR" "$SHA" "$(merge_first_of "$HEAD_PR" "$HEAD_WAITED")"; rc=$?
+case "$rc" in
+  0) ;;
+  1) say "lane: #$HEAD_PR is green but not merged — $MERGE_NO; it gives up its place"
+     act held "$HEAD_PR" "$SHA" "$MERGE_NO"
+     st --arg p "$HEAD_PR" --arg s "$SHA" --argjson now "$NOW" '.members[$p].yielded = {sha: $s, at: $now} | .head = null'
+     status "$WAITING in line · #$HEAD_PR held: $MERGE_NO"; exit 0 ;;
+  3) say "lane: #$HEAD_PR leaves the lane unmerged — $MERGE_NO"
+     act held "$HEAD_PR" "$SHA" "$MERGE_NO"; drop "$HEAD_PR"
+     status "$WAITING in line · #$HEAD_PR left: $MERGE_NO"; exit 0 ;;
+  *) stall "$MERGE_NO" ;;
+esac
 act merge "$HEAD_PR" "$SHA" "$METHOD at $SHA"
 if lane_shadow; then
   say "would merge #$HEAD_PR ($METHOD, head $SHA)"
