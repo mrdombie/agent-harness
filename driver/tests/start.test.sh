@@ -386,6 +386,21 @@ want "a branch left in the clone does not stop start" "0" "$rc"
 want "the tree is on the ticket's branch"             "tkt-150/ticket-150" "$(git -C "$(driver_state_get 150 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 want "the left-behind commit is kept on origin first" "1" "$(git -C "$REPO" ls-remote origin 'refs/stale/150/*' | grep -c "^$lone")"
 
+echo "--- a branch reset to the cut reopens the steps that built on it ---"
+# Live, #15616: the reset kept the old run's finished steps, so the walk went straight
+# to ship on a branch with nothing on it.
+fix_issue 158 OPEN "status:ready,type:feature"
+git -C "$REPO" branch -q tkt-158/ticket-158 develop
+git -C "$REPO" worktree add -q "$FIX/old-158" tkt-158/ticket-158
+printf 'old run\n' > "$FIX/old-158/old.txt"; git -C "$FIX/old-158" add old.txt; git -C "$FIX/old-158" commit -qm "feat(#158)"
+rm -rf "$FIX/old-158"; git -C "$REPO" worktree prune
+driver_state_init 158
+for s in start size plan build review record; do driver_state_done 158 "$s"; done
+rc=0; out=$(driver_step_start 158 2>&1) || rc=$?
+want "start goes ahead"                      "0" "$rc"
+want "only start stays finished"             "start" "$(jq -r '.done | join(" ")' "$(driver_state_dir 158)/state.json")"
+want_in "and it says the steps run again"    'run again' "$out"
+
 echo "--- the branch checked out in an orphan tree: that tree is freed, start succeeds ---"
 fix_issue 151 OPEN "status:ready,type:feature"
 git -C "$REPO" worktree add -q "$FIX/orphan-151" -b tkt-151/ticket-151 develop
