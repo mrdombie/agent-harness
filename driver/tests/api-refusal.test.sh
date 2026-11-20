@@ -178,6 +178,12 @@ jq -nc --arg q "$(expired)" '{type:"result", subtype:"success", is_error:false, 
 auth_is "an answer quoting 'Failed to authenticate' is not auth" 1 "$FIX/r.jsonl"
 { expired; jq -nc '{type:"result", is_error:false, result:"{\"files\":[]}"}'; } > "$FIX/r.jsonl"
 auth_is "an earlier auth line the CLI then ran past is not auth" 1 "$FIX/r.jsonl"
+jq -nc '{type:"result", is_error:true, num_turns:1, result:"invalid_grant: refresh token not found"}' > "$FIX/r.jsonl"
+a=$(swarm_api_auth_log "$FIX/r.jsonl"); rc=$?
+want "an invalid_grant result is auth" "0" "$rc"
+want_in "it prints the CLI's words" '^invalid_grant: refresh token not found' "$a"
+jq -nc '{type:"result", is_error:false, result:"the doc mentions invalid_grant"}' > "$FIX/r.jsonl"
+auth_is "an answer quoting invalid_grant is not auth" 1 "$FIX/r.jsonl"
 
 echo "--- an expired login: the host's, held for auth, requeued after one call ---"
 reset_case 706
@@ -204,6 +210,20 @@ want_not_in "and none on the log" 'machine fault' "$out"
 want_in "the requeue names the login" 'login' "$(driver_state_get 706 requeued)"
 want "the claim is released" "free" "$(bash "$CLK" show 706 >/dev/null 2>&1 && echo held || echo free)"
 want "the requeue cap is not bumped" "0" "$(driver_state_get 706 '.counters.requeue // 0')"
+want "the skill check's record has no new row" "$rows" "$(checks)"
+
+echo "--- an invalid_grant login: held for auth and requeued, never parked for the Skill ---"
+reset_case 716
+jq -nc '{type:"result", is_error:true, num_turns:1, result:"invalid_grant: refresh token not found"}' > "$FIX/ai/plan.jsonl"
+GH_CALLER=build-ticket bash "$CLK" acquire 716 --branch tkt-716/work >/dev/null 2>&1
+want "the ticket is claimed before the run" "held" "$(bash "$CLK" show 716 >/dev/null 2>&1 && echo held || echo free)"
+rows=$(checks)
+out=$(bash "$BT" 716 --steps "plan" 2>&1); rc=$?
+want "it ends as a requeue" "28" "$rc"
+want "the auth hold is written" "yes" "$([ -f "$SWARM_AUTH_HOLD_FILE" ] && echo yes || echo no)"
+want_in "and names invalid_grant" 'invalid_grant' "$(cut -f2 "$SWARM_AUTH_HOLD_FILE" 2>/dev/null)"
+want_not_in "no skill park wording" "$SKILL_WORDS" "$out"
+want "the claim is released" "free" "$(bash "$CLK" show 716 >/dev/null 2>&1 && echo held || echo free)"
 want "the skill check's record has no new row" "$rows" "$(checks)"
 
 echo "--- the auth hold: the first since stays, and it never expires by time ---"
