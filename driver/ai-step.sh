@@ -595,6 +595,7 @@ _driver_api_refusal_wait() {
     if ! why=$(driver_api_refusal "$out"); then
       if err=$(driver_api_error "$out"); then
         driver_say "✋ $step: the API took the session on try $n and the call then failed — $err. A machine fault, not a question."
+        driver_state_set "$t" machine_fault "the $step model call failed at the API on try $n: $err"
         driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API ($err). The next run tries again."
         return "$DRIVER_E_MACHINE"
       fi
@@ -612,6 +613,7 @@ _driver_api_refusal_wait() {
       return "$DRIVER_E_USAGE" ;;
   esac
   driver_say "✋ $step: the session could not run — the API refused it $((tries + 1)) times: $why. A machine fault, not a question."
+  driver_state_set "$t" machine_fault "the API refused the $step session $((tries + 1)) times: $why"
   driver_state_set "$t" park_note "machine fault, nothing to answer: the API refused the $step session: $why. The next run tries again."
   return "$DRIVER_E_MACHINE"
 }
@@ -757,6 +759,7 @@ EOW
           else empty end' 2>/dev/null)
       if [ -n "$first" ]; then
         driver_say "✋ $step: the session ended on its first turn or with an error, before any Skill could run: $first"
+        driver_state_set "$t" machine_fault "the $step session ended on its first turn or with an error: $first"
         driver_state_set "$t" park_note "machine fault, nothing to answer: the $step session ended on its first turn or with an error ($first). The next run tries again."
         return "$DRIVER_E_MACHINE"
       fi
