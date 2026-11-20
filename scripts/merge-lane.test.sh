@@ -9,6 +9,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A live coordinator's required-checks cache would be read, and written, by the fixture.
+unset PR_RED_REQ_FILE PR_RED_REQ_CACHE
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -620,6 +622,26 @@ keep_pr FAILURE; labels_are 80 801 project:keep
 live >/dev/null
 want "the key absent: merged, as today"            "80" "$(merges)"
 rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.keep" "$HARNESS_CFG_PATH"
+
+echo "--- green on every required check but UNSTABLE (a non-required red): it merges ---"
+pixels_red() { set_pr "$1" '.mergeStateStatus = "UNSTABLE" | .statusCheckRollup += [{__typename:"CheckRun", name:"Does this diff need pixels?", status:"COMPLETED", conclusion:"FAILURE"}]'; }
+fresh; pr 12 s12 - 1 build:SUCCESS lint:SUCCESS; compare develop s12 0; pixels_red 12
+live >/dev/null
+want "the head merges on its own sha"              1 "$(grep -cE '^pr merge 12 .*--squash.*--match-head-commit s12' "$GH_LOG")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.unstable"; cfg '.merge.updateBehind = "bot"'
+fresh; pr 11 s11 - 1 build:PENDING lint:SUCCESS; pr 12 s12 - 1 build:SUCCESS lint:SUCCESS
+compare develop s11 0; compare develop s12 0; pixels_red 12
+live >/dev/null
+want "bot: an UNSTABLE green member merges past a pending head" "12" "$(merges)"
+want "  on the sha it judged"                      1 "$(grep -cE '^pr merge 12 .*--match-head-commit s12' "$GH_LOG")"
+cp "$FIX/cfg.unstable" "$HARNESS_CFG_PATH"
+cfg '.gates.requiredChecks += ["Design critic"] | .release = {nonBlockingChecks: ["Design critic"], done: false} | .review.judge.duringReleaseLabels = ["project:keep"]'
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 80 s80 - 1 build:SUCCESS lint:SUCCESS; compare develop s80 0; _fix_require_add "Design critic"
+critic 80 FAILURE; set_pr 80 '.mergeStateStatus = "UNSTABLE"'; labels_are 80 801 screen:new
+live >/dev/null
+want "a non-blocking critic red on a ticket not kept: merged" "80" "$(merges)"
+rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.unstable" "$HARNESS_CFG_PATH"
 
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
