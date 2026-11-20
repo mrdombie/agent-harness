@@ -190,6 +190,7 @@ echo "  develop goes green: an update from develop is tried first; refused, its 
 base unit:success lint:success; : > "$GH_LOG"
 age 210; pass
 want "  not closed"                              "0" "$(closes 73)"
+want "  one update from develop is tried first"   "1" "$(updates 73)"
 want "  its failed jobs are re-run once"         "1" "$(grep -c '^run rerun 7005 --failed' "$GH_LOG")"
 age 215; pass
 want "  still red: its clock starts now"         "73" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
