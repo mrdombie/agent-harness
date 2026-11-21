@@ -190,6 +190,12 @@ FINDING_CLASS="${COORDINATOR_FINDING_CLASS:-$SELF_DIR/finding-class.sh}"
 if [ "$FINDING_CLASS" = off ] || coord_shadow; then :
 elif [ -n "$GH_WAIT" ]; then say "finding classes: $GH_WAIT — next pass"
 else bash "$FINDING_CLASS" pass >> "$COORD_LOG" 2>&1 || say "finding classes exited $?"; fi
+# A merged change reverted, or marked broken on UAT by a person: one record naming the layer
+# that missed it and one ticket to that layer's check. At most escapes.perPass model calls.
+ESCAPES="${COORDINATOR_ESCAPES:-$SELF_DIR/escape-record.sh}"
+if [ "$ESCAPES" = off ] || coord_shadow; then :
+elif [ -n "$GH_WAIT" ]; then say "escapes: $GH_WAIT — next pass"
+else COORDINATOR_SHADOW=0 bash "$ESCAPES" scan >> "$COORD_LOG" 2>&1 || say "escapes exited $?"; fi
 
 # ---- 7. disk -----------------------------------------------------------------
 CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"

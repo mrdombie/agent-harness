@@ -24,6 +24,9 @@ subagent of its own fails the step.
 - The change: {{DIFF}}
 - The renders of every screen it touches: {{RENDERS}}
 - The round: {{ROUND}}
+- The written rules this change is held to — the root CLAUDE.md and AGENTS.md and the
+  instruction file nearest each changed file, every line as `<file>:<line>: <text>`:
+  {{RULES}}
 - This project: {{PROJECT_FACTS}}
 
 ## Report every finding; the check decides what stays
@@ -46,6 +49,20 @@ several places, return ONE finding naming the mistake in `class` and every place
 
 **Never raise a finding twice.** The change may list findings already raised on it;
 do not return any of them again, reworded or not.
+
+## Hold the change to its written rules
+
+Read RULES before the code. Each finding also carries a `kind`:
+
+- `breaks-rule`: the change breaks a rule written there. Cite it in `rule` as
+  `<file>:<line>`, exactly as RULES numbers it, and grade it as any finding.
+- `stale-rule`: the change shows a written rule is out of date (it names a file,
+  a command or a way of working the code no longer has). Cite it in `rule`. It never
+  blocks and never goes back to the builder: the pull request lists it as a rule
+  to update.
+- `defect`: anything else.
+
+A rule finding with no `rule`, or citing a file RULES did not carry, is refused.
 
 ## Grade every finding
 
@@ -106,6 +123,8 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
 - `findings[].class`: string
+- `findings[].kind`: one of "defect", "breaks-rule", "stale-rule"
+- `findings[].rule`: string
 - `findings[].instances`: list of string
 - `findings[].summary` (required): string
 - `findings[].reason` (required): string

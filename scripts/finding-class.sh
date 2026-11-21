@@ -23,8 +23,8 @@
 #       class falls. A red check's class is `check:<check name>`, a test's `test:<file>`.
 #   finding-class.sh weekly [--weeks N]
 #       the count per class per ISO week (default the last 4), most first: review classes,
-#       thrown-away checks and tests, and develop's red checks (develop-red.sh count,
-#       check-class-count.tsv) in one table. A class whose count has not fallen since its
+#       thrown-away checks and tests, develop's red checks (develop-red.sh count,
+#       check-class-count.tsv) and escapes per layer (escape-record.sh) in one table. A class whose count has not fallen since its
 #       source fix reads "not falling".
 #   exit 0 done · 2 usage or unreadable input
 #
@@ -89,6 +89,7 @@ export GH_CALL_TIMEOUT="${GH_CALL_TIMEOUT:-30}"
 LEDGER="${FINDING_CLASS_LEDGER:-${STATE_DIR:-}/swarm/finding-classes.jsonl}"
 [ "$LEDGER" != /swarm/finding-classes.jsonl ] || die "no state dir: set stateDir in harness.json or FINDING_CLASS_LEDGER"
 NOTICED="${LEDGER%.jsonl}.noticed"; FIXED="${LEDGER%.jsonl}.fixed.tsv"; ISSUE_CACHE="${LEDGER%.jsonl}.issue"
+ESCAPES="${ESCAPES_FILE:-$(dirname "$LEDGER")/escapes.jsonl}"
 LOGQ="${LEDGER%.jsonl}.logs.tsv"; PUBLISHED="${LEDGER%.jsonl}.published"; PASSED="${LEDGER%.jsonl}.passed"
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null; touch "$LEDGER" "$NOTICED" "$FIXED" 2>/dev/null
 NOTIFY="${FINDING_CLASS_NOTIFY:-$SELF_DIR/coordinator-notify.sh}"
@@ -367,8 +368,10 @@ fc_weekly() {
               | jq -s -r 'unique_by(.id)[] | "\(.week)\t\(.key | tostring | if startswith("check:") then "check" elif startswith("test:") then "test" else "review" end)\t\(.key)\t\(.at // 0)"'
             for w in $(fc_week $((now - (weeks + 1) * 604800))) $(fc_week $((now - weeks * 604800))) $wl; do
               bash "$SELF_DIR/develop-red.sh" count "$w" 2>/dev/null | awk -F'\t' -v w="$w" 'NF >= 2 { gsub(/[ \t]+/, "-", $2); for (i = 0; i < $1; i++) print w "\tcheck\tcheck:" $2 "\t0" }'
-            done; } 2>/dev/null)
-  printf '%s\n' "finding classes by week, most first — review findings, thrown-away checks and tests, red checks; from the ledgers, no model calls"
+            done
+            # Merged changes that got past the checks, by the layer that missed them (escape-record.sh).
+            jq -r 'select(.week and .pr) | "\(.week)\tescape\tescape:\(.layer // "unjudged")\t0"' "$ESCAPES" 2>/dev/null; } 2>/dev/null)
+  printf '%s\n' "finding classes by week, most first — review findings, thrown-away checks and tests, red checks, escapes by the layer that missed them; from the ledgers, no model calls"
   [ -z "$note" ] || printf '%s\n' "$note"
   printf '%s\n' "$rows" | awk -F'\t' -v weeks="$wl" -v fixed="$FIXED" -v lastfull="$(fc_week $((now - 604800)))" -v cur="$(fc_week "$now")" -v now="$now" '
     function prevweek(w,   y, n) { y = substr(w, 1, 4) + 0; n = substr(w, 7) + 0; if (n > 1) return sprintf("%04d-W%02d", y, n - 1); return sprintf("%04d-W52", y - 1) }
