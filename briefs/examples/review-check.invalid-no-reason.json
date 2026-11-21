@@ -4,12 +4,14 @@
   "judgements": [
     {
       "id": "a1",
-      "real": true
+      "real": true,
+      "rule": "dead-or-unwired"
     },
     {
       "id": "b1",
       "real": false,
-      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen"
+      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen",
+      "rule": "dead-or-unwired"
     }
   ]
 }

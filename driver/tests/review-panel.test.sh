@@ -79,7 +79,7 @@ F_PRE='{"id":"p1","file":"lib/old.sh","line":9,"grade":"major","tag":"pre-existi
 F_MINOR='{"id":"m1","file":"lib/other.sh","line":2,"grade":"minor","tag":"important","summary":"the label is vague","reason":"r","fix":"f"}'
 MIXED="$(answer 1 BLOCKED "[$F_A1,$F_NIT,$F_PRE,$F_B]")"
 # The check: a1 and p1 are real, b1 is not.
-J_MIXED='[{"id":"a1","real":true,"reason":"line 1 drops it"},{"id":"p1","real":true,"reason":"the reader returns []"},{"id":"b1","real":false,"reason":"the timer is cancelled before retry starts"}]'
+J_MIXED='[{"id":"a1","real":true,"reason":"line 1 drops it","rule":"other"},{"id":"p1","real":true,"reason":"the reader returns []","rule":"other"},{"id":"b1","real":false,"reason":"the timer is cancelled before retry starts","rule":"other"}]'
 
 echo "--- findings: one hunter, then one check that judges each finding ---"
 rp_tree 701; fresh
@@ -141,11 +141,11 @@ hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"
 rc=0; out=$(on driver_step_review 706 2>&1) || rc=$?
 want "a check that never ran at all keeps them too"    "30 a1 b1" "$rc $(ids 706)"
 rp_tree 707; fresh
-hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"; check_says '[{"id":"zz","real":false,"reason":"not on the list"}]'
+hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"; check_says '[{"id":"zz","real":false,"reason":"not on the list","rule":"other"}]'
 rc=0; out=$(on driver_step_review 707 2>&1) || rc=$?
 want "a judgement on no listed finding is no answer"   "30 a1 b1" "$rc $(ids 707)"
 rp_tree 708; fresh
-hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"; check_says '[{"id":"b1","real":false,"reason":"cancelled first"}]'
+hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"; check_says '[{"id":"b1","real":false,"reason":"cancelled first","rule":"other"}]'
 rc=0; out=$(on driver_step_review 708 2>&1) || rc=$?
 want "a finding the check did not judge is kept"       "30 a1" "$rc $(ids 708)"
 want_in "and that is said"                             "1 the check did not judge are kept" "$out"
@@ -187,6 +187,14 @@ transcript "$FIX/ai/review.jsonl" "$MIXED" '{"type":"system","subtype":"task_sta
 rc=0; on driver_step_review 722 >/dev/null 2>&1 || rc=$?
 want "a command the review runs is not a subagent"     "30" "$rc"
 
+echo "--- the check names the rule, the hunter is never handed the list, and the rule reaches the posted ledger ---"
+rp_tree 797; fresh
+hunt "$(answer 1 BLOCKED "[$F_A1]")"; check_says '[{"id":"a1","real":true,"reason":"line 1 drops it","rule":"dead-or-unwired"}]'
+on driver_step_review 797 >/dev/null 2>&1
+want "the rule is on the posted row"                   "dead-or-unwired" "$(jq -r .rule "$(driver_state_dir 797)/steps/review.posted.jsonl")"
+want "the hunter's schema and brief have no rule list" "0" "$(cat "$ROOT/briefs/schemas/review.json" "$ROOT/briefs/review.md" | grep -c 'failure-shown-as-success')"
+want "the check's schema does"                         "failure-shown-as-success" "$(jq -r '.properties.judgements.items.properties.rule.enum[0]' "$ROOT/briefs/schemas/review-check.json")"
+
 echo "--- no posted finding is raised twice ---"
 rp_tree 710; fresh
 hunt "$(answer 1 BLOCKED "[$F_A1]")"
@@ -224,7 +232,7 @@ want "the class already raised does not block again"   "0" "$rc"
 
 echo "--- grade effects stand: under merge first a kept Minor elsewhere goes to the sweep, never a ticket ---"
 rp_tree 713; fresh
-hunt "$(answer 1 BLOCKED "[$F_MINOR]")"; check_says '[{"id":"m1","real":true,"reason":"the label says Go"}]'
+hunt "$(answer 1 BLOCKED "[$F_MINOR]")"; check_says '[{"id":"m1","real":true,"reason":"the label says Go","rule":"other"}]'
 rc=0; out=$(on driver_step_review 713 2>&1) || rc=$?
 want "a Minor in a file the change did not touch ships" "0" "$rc"
 want "it was checked"                                  "review review-check" "$(calls)"
@@ -279,7 +287,7 @@ case_tools() { # the tools the hunter session was started with
   R="tools=$(toolsof review)"
 }
 case_pre_ship() { # a SHIP whose only blocking-grade finding is pre-existing
-  N=$((N + 1)); rp_tree "$N"; fresh; hunt "$(answer 1 SHIP "[$F_PRE]")"; check_says '[{"id":"p1","real":true,"reason":"r"}]'
+  N=$((N + 1)); rp_tree "$N"; fresh; hunt "$(answer 1 SHIP "[$F_PRE]")"; check_says '[{"id":"p1","real":true,"reason":"r","rule":"other"}]'
   R="rc=$(in_kit "$N")"
 }
 kit_copy

@@ -5,12 +5,14 @@
     {
       "id": "a1",
       "real": "yes",
-      "reason": "line 12 drops the save when retry fires before the write resolves"
+      "reason": "line 12 drops the save when retry fires before the write resolves",
+      "rule": "dead-or-unwired"
     },
     {
       "id": "b1",
       "real": false,
-      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen"
+      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen",
+      "rule": "dead-or-unwired"
     }
   ]
 }
