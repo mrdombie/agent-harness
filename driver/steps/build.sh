@@ -1244,6 +1244,19 @@ _driver_build_item_key() {
   case "$(jq -r '.item // ""' <<<"$1")" in F[0-9]*) printf ':%s' "$2" ;; esac
 }
 
+# _driver_build_branch_carries <ticket> <file> — 0 when the ticket's branch adds or changes <file>
+# against the trunk it was cut from, so the file is this change's own test.
+_driver_build_branch_carries() {
+  local wt base mb r
+  wt=$(driver_state_get "$1" worktree 2>/dev/null); [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$2" ] || return 1
+  git -C "$wt" cat-file -e "HEAD:${2#./}" 2>/dev/null || return 1
+  for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
+    git -C "$wt" rev-parse --verify -q "$r^{commit}" >/dev/null 2>&1 && { base=$r; break; }
+  done
+  [ -n "${base:-}" ] && mb=$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null) && [ -n "$mb" ] || return 1
+  ! git -C "$wt" diff --quiet "$mb" HEAD -- "${2#./}" 2>/dev/null
+}
+
 # _driver_build_own_list <ticket> — 0 when the ticket keeps a feature list whose items are
 # built here (no item filed as a part of its own).
 _driver_build_own_list() {
@@ -1282,6 +1295,11 @@ _driver_build_features() {
     if [ -z "$last" ] && [ "$kept" = true ]; then pass=true
     elif [ -n "$last" ] && [ -n "$all" ]; then
       if [ -n "$hit" ]; then pass=true
+      elif [ -z "$back" ] && _driver_build_branch_carries "$t" "$test"; then
+        # A resumed branch already holds the item's test from an earlier round, and the merge is all that
+        # was left. Self-check's changed-only tests run that file on this head and block the push on red.
+        pass=true
+        driver_say "   build: $id — its only task merged the trunk; $test is this branch's own, so self-check's tests prove it"
       elif [ -z "$back" ]; then
         # Every task of the item only merged the trunk: no try can prove its test, so no round is spent.
         printf '%s passes only when its steps pass in %s, and its only task(s) merge the trunk, which proves no test: the plan needs a task for %s that proves that file (testFirst or testOnly)\n' "$id" "$test" "$id" >> "$d/build-list.unbuildable"

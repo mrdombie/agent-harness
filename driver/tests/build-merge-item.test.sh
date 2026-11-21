@@ -5,6 +5,8 @@
 # tries, parked, with the last refusal and not the cause (2 of 388 runs in the week to 2026-11-18).
 # A merge proves no test and cannot be made twice. So its proof stays; when an item has another task
 # that one goes back; when merges are all it has, the build parks at once and names the item.
+# Unless the branch already carries the item's test from an earlier round (a resume after the trunk
+# moved): then self-check's changed-only tests run that file, and the item passes (#20579, 2026-11-21).
 # Run: bash "$0"
 # case-filter: SUITE_ONLY='<a case title, or a pattern over them>' bash driver/tests/build-merge-item.test.sh
 set -uo pipefail
@@ -61,6 +63,26 @@ if suite_case "an item whose only task merged the trunk: the merge keeps its pro
     && { SUT_KIT="$KIT" case_only_merge; want "planted (a merge is sent back): its proof is deleted" "rc=1 no" "$B $([ -s "$D/build-task-1.proved" ] && echo yes || echo no)"; }
   plant "the stop is its own answer" driver/steps/build.sh '[ -z "$stuck" ] || return 2' ':' \
     && { SUT_KIT="$KIT" case_only_merge; want "planted (no stop): it reads as one more round" "rc=1" "$B"; }
+fi
+
+if suite_case "a resumed branch that already carries the item's test: its merge-only plan passes, and self-check proves the file"; then
+  git -C "$REPO" checkout -q -b tkt-carry develop
+  printf 'echo ok\n' > "$REPO/f1.test.sh"; git -C "$REPO" add f1.test.sh; git -C "$REPO" commit -qm "test: f1"
+  case_only_merge
+  want "the item passes"                                   "rc=0 true" "$B $(jq -r '.items[0].passes' "$(driver_state_dir "$N")/features.json")"
+  want "nothing is left saying it cannot"                  "no" "$([ -e "$D/build-list.unbuildable" ] && echo yes || echo no)"
+  want_in "  and says why"                                 "f1.test.sh is this branch's own" "$B_OUT"
+  plant "the branch's own test is read" driver/steps/build.sh '! git -C "$wt" diff --quiet "$mb" HEAD -- "${2#./}" 2>/dev/null' 'false' \
+    && { SUT_KIT="$KIT" case_only_merge; want "planted (never the branch's own): it parks as before" "rc=2" "$B"; }
+  git -C "$REPO" checkout -q develop
+fi
+
+if suite_case "a merge-only plan on a branch whose test file the trunk already had still parks"; then
+  printf 'echo ok\n' > "$REPO/f1.test.sh"; git -C "$REPO" add f1.test.sh; git -C "$REPO" commit -qm "test: f1 on the trunk"
+  git -C "$REPO" checkout -q -b tkt-plain develop
+  case_only_merge
+  want "no try can pass it"                                "rc=2" "$B"
+  git -C "$REPO" checkout -q develop
 fi
 
 if suite_case "an item with a built task and a merge after it: the built task goes back, never the merge"; then
