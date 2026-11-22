@@ -95,6 +95,7 @@ feature_list_problems() { # <plan.json> [built.json]
   out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" --argjson max "$max" '
     (.features // []) as $f | (.tasks // []) as $t | ([$f[].id]) as $ids
     | ([$t[] | select(.item == "foundation")] | length) as $nf
+    | (.foundation.built == true) as $fb
     | if ($f | length) == 0 then empty else
       (if $max > 0 and ($f | length) > $max then
          "the list has \($f | length) items and a change builds at most \($max): fold the behaviours of one screen, tab or sheet into one item whose steps cover them all (one test file an item), so each item is a whole piece a person uses, never one click" else empty end),
@@ -113,9 +114,10 @@ feature_list_problems() { # <plan.json> [built.json]
           elif ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own tasks"
           else "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it" end),
       ($f[] | select(.test | test($br)) | "\(.id) runs its steps in \(.test), a browser check: the steps run as fast component or logic tests in the required test run"),
+      (if $fb and $nf > 0 then "the foundation says `built: true` and has tasks too: a built foundation has none" else empty end),
       (if $nf > 0 and (.foundation == null) then "the plan has foundation tasks and no `foundation`: a shared foundation goes first only with its reason (expand-contract, refactor or hidden-backend); otherwise fold it into the item that uses it" else empty end),
-      (if $nf == 0 and (.foundation != null) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
-      ($f[] | select(.needsFoundation == true and $nf == 0) | "\(.id) needs a foundation and the plan has none"),
+      (if $nf == 0 and (.foundation != null) and ($fb | not) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
+      ($f[] | select(.needsFoundation == true and $nf == 0 and ($fb | not)) | "\(.id) needs a foundation and the plan has none"),
       (if (.foundation.reason // "") == "expand-contract" and ([$t[] | select(.item == "cleanup")] | length) == 0
            then "an expand-contract foundation has no clean-up: the contract step (the old path removed) is a task with item cleanup" else empty end),
       (if (.units // []) != [] then "it has units and a feature list: a mechanical change fans out with no feature list" else empty end)

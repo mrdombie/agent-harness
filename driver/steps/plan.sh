@@ -282,6 +282,13 @@ _driver_plan_resend() {
 # _driver_plan_list_problems <ticket> <plan.json> <labels-csv> <title> <body> — what is wrong
 # with how the plan builds its list, one a line. A part of a split checks only that its plan runs its
 # item's steps; any other plan checks its list, and a feature ticket must have one.
+# _driver_plan_branch_own <ticket> — 0 when the run's branch carries a non-merge commit the trunk lacks.
+_driver_plan_branch_own() {
+  local wt; wt=$(driver_state_get "$1" worktree)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  [ -n "$(git -C "$wt" log -1 --format=%H --no-merges "origin/${INTEGRATION_BRANCH:-develop}..HEAD" 2>/dev/null)" ]
+}
+
 _driver_plan_list_problems() {
   local t="$1" ans="$2" labels="$3" title="$4" body="$5" item id test l built
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
@@ -294,6 +301,9 @@ _driver_plan_list_problems() {
   fi
   built=$(_driver_plan_built "$t" "$ans") || built=""
   feature_list_problems "$ans" "$built"
+  if jq -e '.foundation.built == true' "$ans" >/dev/null 2>&1 && ! _driver_plan_branch_own "$t"; then
+    printf '%s\n' "the foundation says \`built: true\`, and this branch has no commits of its own against the trunk: plan its tasks (item foundation)"
+  fi
   # Mapped here, where a miss costs one more answer, not a build and a park.
   local bf; bf=$(mktemp "${TMPDIR:-/tmp}/plan-body.XXXXXX") && {
     printf '%s\n' "$body" > "$bf"; feature_list_uncovered "$ans" "$bf"; rm -f "$bf"; }
