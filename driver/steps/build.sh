@@ -1258,8 +1258,18 @@ _driver_build_own_list() {
 # only merged the trunk; when those are all it has, 2: no try can pass it. An item the plan
 # check kept as already built (`kept`) passes on that record: with no task at once, with tasks
 # once they are all proved.
+# _driver_build_test_on_branch <ticket> <test file> — the newest commit of this branch, not on the
+# trunk, that touches the file: what an earlier run's proving task left. Empty when none.
+_driver_build_test_on_branch() {
+  local wt trunk
+  wt=$(driver_state_get "$1" worktree); [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  trunk="origin/${INTEGRATION_BRANCH:-develop}"
+  git -C "$wt" rev-parse -q --verify "$trunk" >/dev/null 2>&1 || return 1
+  git -C "$wt" log -1 --format=%H --no-merges "$trunk..HEAD" -- "$2" 2>/dev/null
+}
+
 _driver_build_features() {
-  local t="$1" d list id test i m last all hit pass fails=0 before total kept back stuck=""
+  local t="$1" d list id test i m last all hit pass fails=0 before total kept back stuck="" sha
   d="$(driver_state_dir "$t")/steps"; list="$(driver_state_dir "$t")/features.json"
   rm -f "$d/build-list.unbuildable"
   [ -s "$list" ] || return 0
@@ -1282,6 +1292,10 @@ _driver_build_features() {
     if [ -z "$last" ] && [ "$kept" = true ]; then pass=true
     elif [ -n "$last" ] && [ -n "$all" ]; then
       if [ -n "$hit" ]; then pass=true
+      elif [ -z "$back" ] && sha=$(_driver_build_test_on_branch "$t" "$test") && [ -n "$sha" ]; then
+        # A resumed run re-planned only a trunk merge: the test was proved by an earlier run, on this branch.
+        pass=true
+        driver_say "   build: $id passes on its test, $test, committed on this branch by an earlier run at $(printf '%s' "$sha" | cut -c1-10)"
       elif [ -z "$back" ]; then
         # Every task of the item only merged the trunk: no try can prove its test, so no round is spent.
         printf '%s passes only when its steps pass in %s, and its only task(s) merge the trunk, which proves no test: the plan needs a task for %s that proves that file (testFirst or testOnly)\n' "$id" "$test" "$id" >> "$d/build-list.unbuildable"

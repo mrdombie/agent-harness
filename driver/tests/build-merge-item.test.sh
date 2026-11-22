@@ -63,6 +63,21 @@ if suite_case "an item whose only task merged the trunk: the merge keeps its pro
     && { SUT_KIT="$KIT" case_only_merge; want "planted (no stop): it reads as one more round" "rc=1" "$B"; }
 fi
 
+if suite_case "a resumed run whose only task merges the trunk passes on the test an earlier run committed"; then
+  git init -q --bare "$FIX/origin-resume"
+  git -C "$REPO" remote add origin "$FIX/origin-resume" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/origin-resume"
+  git -C "$REPO" push -q origin develop && git -C "$REPO" fetch -q origin
+  git -C "$REPO" checkout -q -b tkt-resume develop
+  printf 'x\n' > "$REPO/f1.test.sh"; git -C "$REPO" add f1.test.sh; git -C "$REPO" commit -qm "test: f1"
+  earlier=$(git -C "$REPO" rev-parse HEAD)
+  case_only_merge
+  want "the item passes"                                   "rc=0 true" "$B $(jq -r '.items[0].passes' "$(driver_state_dir "$N")/features.json")"
+  want_in "  naming the earlier commit"                    "$(printf '%s' "$earlier" | cut -c1-10)" "$B_OUT"
+  git -C "$REPO" checkout -q develop
+  case_only_merge
+  want "with no such commit it still stops"                "rc=2" "$B"
+fi
+
 if suite_case "an item with a built task and a merge after it: the built task goes back, never the merge"; then
   case_merge_last
   want "one more round, as before"                         "rc=1" "$B"
