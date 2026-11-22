@@ -232,6 +232,40 @@ driver_usage_wall() {
   return 0
 }
 
+# driver_step_model <step> — the model a step asks for; empty is the session's own
+# (ANTHROPIC_MODEL). The thinking steps (plan, review, compare) ask for
+# DRIVER_THINK_MODEL while it has allowance; the steps that write code take the
+# session's. DRIVER_STEP_MODEL_<STEP> (upper case, - as _) sets one step outright.
+driver_step_model() {
+  local v m f until om
+  v="DRIVER_STEP_MODEL_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+  if [ -n "${!v+x}" ]; then printf '%s' "${!v}"; return 0; fi
+  case "$1" in plan|review|review-check|compare) ;; *) return 0 ;; esac
+  m="${DRIVER_THINK_MODEL-claude-fable-5-2}"; [ -n "$m" ] || return 0
+  f="${DRIVER_MODEL_OUT_FILE:-$STATE_DIR/model-out}"
+  if [ -s "$f" ]; then
+    IFS=$'\t' read -r until om _ < "$f"
+    case "$until" in ''|*[!0-9]*) until=0 ;; esac
+    [ "$om" = "$m" ] && [ "$until" -gt "$(swarm_now)" ] && return 0
+  fi
+  printf '%s' "$m"
+}
+
+# driver_model_wall <ticket> <step> <log> — 0 when a step that asked for its own model
+# was stopped by a limit: that model is marked out until the reset the log names
+# (DRIVER_MODEL_OUT_FILE) and the caller makes the call again on the session's model.
+# No spawning hold: if the whole plan is out, the call on the session's model meets the
+# wall too, and driver_usage_wall writes the hold then.
+driver_model_wall() {
+  local m="${_driver_ran_model:-}" hold epoch why
+  [ -n "$m" ] || return 1
+  hold=$(swarm_usage_log_reset "$3") || return 1
+  epoch=$(printf '%s' "$hold" | cut -f1); why=$(printf '%s' "$hold" | cut -f2-)
+  printf '%s\t%s\t%s\n' "$epoch" "$m" "$why (#$1 $2)" > "${DRIVER_MODEL_OUT_FILE:-$STATE_DIR/model-out}" || return 1
+  driver_say "↻ $2: $m is out of allowance until $(swarm_iso "$epoch") ($why) — the thinking steps run on the session's model until then."
+  return 0
+}
+
 # driver_ticket_answers <ticket> <out> — the answers a person already gave on the ticket
 # ("**The owner answered**" relays, and comments opening "PM answer" or "Cleared:" read
 # by scripts/person-words.sh, the rules person-stop.sh clears by), oldest first and
@@ -425,6 +459,10 @@ SHIM
     { printf 'This session goes on to the next task of the same plan. What you read stays true except where a commit since changed it. The brief below is the whole brief of this task:\n\n---\n'; cat "$prompt"; } > "$prompt.cont"
     _driver_ai_run "$prompt.cont" "$log.cont" "$csid_prev"
     driver_record_usage "$t" "$slot" "$log.cont" "$prompt.cont"
+    if driver_model_wall "$t" "$step" "$log.cont"; then
+      _driver_ai_run "$prompt.cont" "$log.cont" "$csid_prev"
+      driver_record_usage "$t" "$slot" "$log.cont" "$prompt.cont"
+    fi
     if driver_usage_wall "$t" "$step" "$log.cont" || driver_auth_lost "$t" "$step" "$log.cont"; then
       cp "$log.cont" "$log" 2>/dev/null; return "$DRIVER_E_USAGE"
     fi
@@ -635,6 +673,11 @@ _driver_ai_call() {
   local in="$1" out="$2" sid="${3:-}" err
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
+  if driver_model_wall "$t" "$step" "$out"; then
+    cp "$out" "$out.modelwall" 2>/dev/null
+    _driver_ai_run "$in" "$out" "$sid"
+    driver_record_usage "$t" "$slot" "$out" "$in"
+  fi
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
@@ -655,8 +698,10 @@ _driver_ai_call() {
 # worktree, from driver_ai_step's locals. With a session id it resumes that session.
 _driver_ai_run() {
   local in="$1" out="$2" sid="${3:-}"
-  local resume=() dbw=()
+  local resume=() dbw=() mf=()
   [ -z "$sid" ] || resume=(--resume "$sid")
+  _driver_ran_model=$(driver_step_model "$step")
+  [ -z "$_driver_ran_model" ] || mf=(--model "$_driver_ran_model")
   # The steps that run the project's tests get the throwaway database the proof gets.
   case "$step" in build|fix) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
   rm -f "$out.db"
@@ -689,13 +734,13 @@ _driver_ai_run() {
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
     if [ -n "$schema_for_model" ]; then
-      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} ${mf[@]+"${mf[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$in" > "$out" 2>"$out.err"
     else
-      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} ${mf[@]+"${mf[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" < "$in" > "$out" 2>"$out.err"
