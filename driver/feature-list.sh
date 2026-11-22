@@ -84,6 +84,8 @@ feature_list_kept() { # <plan.json> <built.json>
 }
 
 feature_list_problems() { # <plan.json> [built.json]
+  # A fix round (FEATURE_LIST_FIX_ROUND set) continues a branch whose foundation an earlier round built,
+  # so its plan owes no foundation task.
   local out built='{}' known=false
   if [ -n "${2:-}" ] && [ -s "$2" ] && jq -e 'type == "object"' "$2" >/dev/null 2>&1; then built=$(cat "$2"); known=true; fi
   # A LIST IS SHORT. Each item is built and proved in its own pass, and a pass re-reads the
@@ -92,7 +94,7 @@ feature_list_problems() { # <plan.json> [built.json]
   # behaviours of one screen or tab into one item with more steps. 0 switches it off.
   local max="${FEATURE_LIST_MAX:-${DRIVER_PLAN_FEATURES_MAX:-6}}"
   case "$max" in ''|*[!0-9]*) max=6 ;; esac
-  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" --argjson max "$max" '
+  out=$(jq -r --arg br "$FEATURE_LIST_BROWSER_RE" --argjson built "$built" --argjson known "$known" --argjson max "$max" --argjson fix "$([ -n "${FEATURE_LIST_FIX_ROUND:-}" ] && echo true || echo false)" '
     (.features // []) as $f | (.tasks // []) as $t | ([$f[].id]) as $ids
     | ([$t[] | select(.item == "foundation")] | length) as $nf
     | if ($f | length) == 0 then empty else
@@ -114,8 +116,8 @@ feature_list_problems() { # <plan.json> [built.json]
           else "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it" end),
       ($f[] | select(.test | test($br)) | "\(.id) runs its steps in \(.test), a browser check: the steps run as fast component or logic tests in the required test run"),
       (if $nf > 0 and (.foundation == null) then "the plan has foundation tasks and no `foundation`: a shared foundation goes first only with its reason (expand-contract, refactor or hidden-backend); otherwise fold it into the item that uses it" else empty end),
-      (if $nf == 0 and (.foundation != null) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
-      ($f[] | select(.needsFoundation == true and $nf == 0) | "\(.id) needs a foundation and the plan has none"),
+      (if $nf == 0 and (.foundation != null) and ($fix | not) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
+      ($f[] | select(.needsFoundation == true and $nf == 0 and ($fix | not)) | "\(.id) needs a foundation and the plan has none"),
       (if (.foundation.reason // "") == "expand-contract" and ([$t[] | select(.item == "cleanup")] | length) == 0
            then "an expand-contract foundation has no clean-up: the contract step (the old path removed) is a task with item cleanup" else empty end),
       (if (.units // []) != [] then "it has units and a feature list: a mechanical change fans out with no feature list" else empty end)

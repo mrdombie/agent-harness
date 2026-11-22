@@ -293,7 +293,7 @@ _driver_plan_list_problems() {
     return 0
   fi
   built=$(_driver_plan_built "$t" "$ans") || built=""
-  feature_list_problems "$ans" "$built"
+  FEATURE_LIST_FIX_ROUND="$(driver_fix_brief_pr "$(driver_state_get "$t" run_brief)")" feature_list_problems "$ans" "$built"
   # Mapped here, where a miss costs one more answer, not a build and a park.
   local bf; bf=$(mktemp "${TMPDIR:-/tmp}/plan-body.XXXXXX") && {
     printf '%s\n' "$body" > "$bf"; feature_list_uncovered "$ans" "$bf"; rm -f "$bf"; }

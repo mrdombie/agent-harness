@@ -28,6 +28,8 @@ want_in "the item's steps run in a test its part writes"  'F2 .*filter-list.test
 want_in "a foundation names its reason"                   'foundation tasks and no `foundation`' "$(problems "$(plan_with 'del(.foundation)')")"
 want_in "a reason with no foundation task"                '`foundation` .* no task' "$(problems "$(plan_with 'del(.tasks[0]) | .features[0].needsFoundation = false')")"
 want_in "an item cannot wait on a foundation there is not" 'F1 needs a foundation' "$(problems "$(plan_with 'del(.tasks[0]) | del(.foundation)')")"
+want "a fix round owes no foundation: an earlier round built it" "" "$(FEATURE_LIST_FIX_ROUND=42 problems "$(plan_with 'del(.tasks[0])')" | grep -i foundation)"
+want_in "  outside a fix round the same plan is refused"    'F1 needs a foundation' "$(problems "$(plan_with 'del(.tasks[0])')")"
 want_in "expand/contract has a clean-up part to contract" 'expand-contract .* clean-up' "$(problems "$(plan_with 'del(.tasks[3])')")"
 want "a refactor needs no clean-up"                       "" "$(problems "$(plan_with 'del(.tasks[3]) | .foundation.reason = "refactor"')")"
 want_in "a mechanical change has no feature list"         'units .* no feature list' "$(problems "$(plan_with '.units = [range(5) as $i | {title:"u\($i)", files:[{path:"u\($i).ts",action:"modify"}], tests:[{file:"u\($i).test.ts",behaviour:"b"}]}]')")"
