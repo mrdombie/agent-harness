@@ -27,9 +27,22 @@ NB=$(release_nonblocking_json)
 # Merge first: an Evidence capture develop does not require wakes nobody (release_evidence_waived).
 if REPO_SLUG="${REPO_SLUG:-$REPO}" release_evidence_waived; then NB=$(jq -c --arg c "$(release_evidence_check | tr '[:upper:]' '[:lower:]')" '. + [$c]' <<<"$NB"); fi
 
+# Merge first: only a check the trunk requires can hold a PR, so only one of those reads RED
+# (a red check develop does not require sent a fix after the wrong failure, 2026-11-22).
+# PR_WATCH_REQUIRED (a JSON list of lower-case names) overrides the live read; [] is no filter.
+REQ="${PR_WATCH_REQUIRED:-}"
+if [ -z "$REQ" ] && release_merge_first 2>/dev/null; then
+  declare -F pr_red_required >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-red.sh" 2>/dev/null
+  REQ=$(REPO_SLUG="${REPO_SLUG:-$REPO}" pr_red_required 2>/dev/null) || REQ=""
+fi
+jq -e 'type == "array"' >/dev/null 2>&1 <<<"$REQ" || REQ='[]'
+
 state() { # <pr> → one event word, or nothing while it is still pending
-  gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r --argjson nb "$NB" "$RELEASE_NB_JQ"'
-    ([.statusCheckRollup | newest_runs | .[] | select(release_nb($nb) | not) | (.conclusion // .state // "") | ascii_upcase]) as $c
+  gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r --argjson nb "$NB" --argjson req "$REQ" "$RELEASE_NB_JQ"'
+    ([.statusCheckRollup | newest_runs | .[] | select(release_nb($nb) | not)
+      | select(($req | length) == 0 or ((.name // .context // "") | ascii_downcase) as $n | ($req | index([$n])) != null
+               or ((.conclusion // .state // "") | ascii_upcase | test("FAILURE|ERROR|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED") | not))
+      | (.conclusion // .state // "") | ascii_upcase]) as $c
     | if .state == "MERGED" then "MERGED"
       elif .state == "CLOSED" then "CLOSED"
       elif ($c | map(select(test("FAILURE|ERROR|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"))) | length) > 0 then "RED"
