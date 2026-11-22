@@ -173,7 +173,7 @@
       ]
     },
     "questionFor": {
-      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape — which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
+      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape \u2014 which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
       "enum": [
         "owner",
         "pm"
@@ -387,6 +387,10 @@
         "why": {
           "type": "string",
           "minLength": 1
+        },
+        "built": {
+          "type": "boolean",
+          "description": "true when the foundation is already on this branch from an earlier round of this ticket: then no task has item foundation, and the branch must carry commits of its own."
         }
       }
     },

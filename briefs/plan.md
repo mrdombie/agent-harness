@@ -87,7 +87,8 @@ fast component or logic test, never a browser check. All start failing; the list
 is fixed. Every task names its `item`, never a layer. The list builds
 as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
 `foundation` is shared groundwork, with its reason. An `expand-contract`
-foundation needs `cleanup` tasks that remove the old path. A mechanical change has no list: the
+foundation needs `cleanup` tasks that remove the old path. A foundation an earlier round
+already built on this branch says `built: true` and has no task. A mechanical change has no list: the
 recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its ticket's
 test file.
 
@@ -156,6 +157,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `foundation`: object
 - `foundation.reason` (required): one of "expand-contract", "refactor", "hidden-backend"
 - `foundation.why` (required): string
+- `foundation.built`: boolean
 - `units`: list of object
 - `units[].title` (required): string
 - `units[].files` (required): list of object
