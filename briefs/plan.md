@@ -82,15 +82,13 @@ and a change touching a screen fills `screenChecklist`.
 ## One change, worked through by behaviour
 
 A ticket that changes what a person sees or does gets `features`: one tab-sized behaviour
-per item (`F1`, `F2`…), each with test steps and their test file, a
-fast component or logic test, never a browser check. All start failing; the list
-is fixed. Every task names its `item`, never a layer. The list builds
-as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
-`foundation` is shared groundwork, with its reason. An `expand-contract`
-foundation needs `cleanup` tasks that remove the old path. A foundation an earlier round
-already built on this branch says `built: true` and has no task. A mechanical change has no list: the
-recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its ticket's
-test file.
+per item (`F1`, `F2`…), each with steps in a fast component or logic test
+file, never a browser check. All start failing; the list is fixed. Every task
+names its `item`, never a layer. The list builds as one change: any `foundation`,
+F1, F2…, then `cleanup`. Never plan parts. A `foundation`, shared groundwork, comes with
+its reason; `expand-contract` needs `cleanup` removing the old path; one already
+on this branch says `built: true`, no task. A mechanical change has no list:
+its recipe in `tasks`, 5 to 30 `units`. A split part runs its ticket's test file.
 
 `outside` is what the plan leaves out: a ticket item by id
 (`{"item": "A3", "why": "…"}`), anything else in words
