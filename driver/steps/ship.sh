@@ -262,6 +262,17 @@ _driver_ship_place_plan() {
     && driver_say "   ship: moved $old to $want, where CI reads this branch's plan"
 }
 
+# _driver_ship_dropped_routes <tree> <merge-base> <plan path> — routes a commit on the branch
+# removed from the plan and the plan no longer holds, one a line.
+_driver_ship_dropped_routes() {
+  local wt="$1" mb="$2" plan="$3" removed now
+  removed=$(git -C "$wt" log -p --format= "$mb..HEAD" -- "$plan" 2>/dev/null \
+    | grep '^-' | grep -oE '"route":[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | awk '!seen[$0]++')
+  [ -n "$removed" ] || return 0
+  now=$(jq -r '.shots[]?.route' "$wt/$plan" 2>/dev/null | awk '!seen[$0]++')
+  if [ -n "$now" ]; then grep -vxF -f <(printf '%s\n' "$now") <<<"$removed" || true; else printf '%s\n' "$removed"; fi
+}
+
 # _driver_ship_derived_plan <ticket> <tree> <trunk> — NO PICTURE BINDS THE TICKET, so the
 # evidence is derived from what changed: the routes the changed screen files render on
 # (scripts/evidence-gaps.sh routes), at laptop 1440 / phone 390 x light / dark — the same
@@ -276,6 +287,13 @@ _driver_ship_derived_plan() {
             } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8)
   [ -n "$routes" ] || return 0
   plan=$(driver_evidence_plan "$t"); dir=${plan%/plan.json}
+  # A route a commit on this branch took out of the plan stays out: it was dropped on purpose.
+  local dropped
+  dropped=$(_driver_ship_dropped_routes "$wt" "$mb" "$plan")
+  if [ -n "$dropped" ]; then
+    routes=$(grep -vxF -f <(printf '%s\n' "$dropped") <<<"$routes" || true)
+    [ -n "$routes" ] || return 0
+  fi
   local -a a=(plan --into "$wt/$plan")
   while IFS= read -r r; do [ -n "$r" ] && a+=(--route "$r"); done <<<"$routes"
   new=$(python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" "${a[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the derived shots"; return 0; }

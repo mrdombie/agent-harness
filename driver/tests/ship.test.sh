@@ -718,6 +718,24 @@ want "the route is planned at both widths and themes" "/desk laptop light,/desk 
 want "and the plan is committed"                      "" "$(git -C "$FIX/wt198" status --porcelain)"
 want_in "the body names its route"                    '- /desk' "$(cat "$GH_LOG")"
 
+echo "--- a route the branch took out of its plan is not derived back in ---"
+# Live: a ticket dropped three routes no seeded plan could shoot empty; ship's derivation put
+# them back from the changed screens, the plan's own test went red, and the build parked five times.
+: > "$GH_LOG"
+setup_wt 176
+driver_state_set 176 screen_states '[{"route":"/desk"},{"route":"/gone"}]'
+mkdir -p "$FIX/wt176/docs/evidence/176"
+printf '{\n  "shots": [\n    {"name": "a", "route": "/desk", "viewport": "laptop", "theme": "light"},\n    {"name": "b", "route": "/gone", "viewport": "laptop", "theme": "light"}\n  ]\n}\n' > "$FIX/wt176/docs/evidence/176/plan.json"
+git -C "$FIX/wt176" add docs; git -C "$FIX/wt176" commit -qm "chore: the plan"
+printf '{\n  "shots": [\n    {"name": "a", "route": "/desk", "viewport": "laptop", "theme": "light"}\n  ]\n}\n' > "$FIX/wt176/docs/evidence/176/plan.json"
+git -C "$FIX/wt176" add docs; git -C "$FIX/wt176" commit -qm "fix: drop /gone from the plan"
+driver_state_put 176 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 176 review
+for st in start plan build self-check review record; do driver_state_done 176 "$st"; done
+rc=0; out=$(driver_step_ship 176 2>&1) || rc=$?
+want "it ships"                                       "0" "$rc"
+want "the dropped route stays out"                    "0" "$(jq '[.shots[] | select(.route == "/gone")] | length' "$FIX/wt176/docs/evidence/176/plan.json")"
+want "the kept route is still derived to both widths" "4" "$(jq '[.shots[] | select(.route == "/desk")] | length' "$FIX/wt176/docs/evidence/176/plan.json")"
+
 echo "--- the plan goes where CI reads it: the PR's number on a branch not named <prefix>NNNN/ (#308) ---"
 # CI keys evidence by the ticket of a <prefix>NNNN/ branch, else by the PR's number. Four
 # PRs on 5654/approval-preview-shaped branches had their plan under the ticket, unseen.
