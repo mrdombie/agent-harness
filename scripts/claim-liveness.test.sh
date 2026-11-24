@@ -303,4 +303,15 @@ want "a parked ticket's dead claim is released" "no" "$(ref_present 712)"
 want_not_in "and it is not put back on the board" '712 .*--add-label st:ready' "$(cat "$GH_EDITS")"
 want_in "but it loses status:claimed" '712 .*--remove-label st:claimed' "$(cat "$GH_EDITS")"
 
+# 13. Closed work kept at refs/stale/<ticket>/ is work to lose: never "nothing to lose".
+: > "$GH_EDITS"
+git -C "$SB/work" update-ref refs/stale/713/pr-9713 "$(git -C "$SB/work" rev-parse main)"
+git -C "$SB/work" push -q origin refs/stale/713/pr-9713 2>/dev/null
+plant_claim 713
+out=$(reconcile)
+want "a dead claim with kept work is released" "no" "$(ref_present 713)"
+want_not_in "but the ticket does not go back to ready" '713 .*--add-label st:ready' "$(cat "$GH_EDITS")"
+want_in "it is marked partial" '713 .*--add-label st:partial' "$(cat "$GH_EDITS")"
+want_in "and the report names the kept work" 'PARTIAL +#713 .*refs/stale/713/pr-9713' "$out"
+
 suite_end "$FAILED"

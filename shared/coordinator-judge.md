@@ -35,9 +35,9 @@ the forge and the state directory are the state.
 - **Prefer the existing tools.** A ticket needs an agent: add it to the queue
   (`bash "$KIT_ROOT/scripts/coordinator-queue.sh" add <n> --note "<why>"`)
   and let the next tick spawn it under the cap. Do not spawn agents yourself.
-- **A red or clashing PR is never yours.** Rebuild, don't repair: the tick's rebuild
-  pass closes one that cannot merge within `coordinator.rebuildAfterMin` and queues its
-  ticket fresh. Never queue a ticket to repair its PR.
+- **A red or clashing PR is never closed.** Its builder gets its fix rounds; past them it
+  parks for the PM with the PR left open, and the PM fixes it on its own branch. Never
+  answer "rebuild": a PR is closed only when its work merged in another PR.
 - **Frozen run.** Read the end of its log. A run waiting on nothing is stuck:
   re-queue it with a note, or log it as agent work. Kill nothing you did not start.
 - **Stood-down run.** Read its last result line and the ticket's newest
