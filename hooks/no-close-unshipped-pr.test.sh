@@ -2,7 +2,7 @@
 # Plant tests for no-close-unshipped-pr.sh, against a fake gh. Exit 1 on any mismatch.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/no-close-unshipped-pr.sh"; fail=0
-d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d); on_exit_keep_status 'rm -rf "$d"'
 # Fake gh: PR 10 open, 11 merged, 12 closed, 13 open; anything else is unreadable.
 cat >"$d/gh" <<'SH'
 #!/usr/bin/env bash
