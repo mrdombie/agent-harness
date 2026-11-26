@@ -19,6 +19,7 @@ CALLS="$FIX/claude-calls"
 cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
 printf '%s|%s\n' "$PWD" "$*" >> "$CALLS"
+[ -z "${RESUMED_ENV:-}" ] || env | grep -E '^HARNESS_(CFG|MAIN_REPO|STATE_DIR)' > "$RESUMED_ENV" || true
 sleep "${STUB_SLEEP:-0}"
 SH
 chmod +x "$BIN/claude"; export CALLS
@@ -113,6 +114,16 @@ reset; s=$SECONDS
 KEEPER_TIMEOUT_SEC=1 STUB_SLEEP=20 SWARM_NOW=$STALE bash "$K" >/dev/null 2>&1
 want "stopped well before it would finish" "yes" "$([ $(( SECONDS - s )) -lt 10 ] && echo yes || echo no)"
 want_in "and the decision says so" "stopped at the 1s limit" "$(tail -1 "$KLOG")"
+
+echo "--- a stale config pin in the keeper's environment does not reach the resumed session ---"
+reset; RENV="$FIX/resumed-env"; rm -f "$RENV"
+STALE_CFG="$FIX/stale/.claude/harness.json"
+mkdir -p "$FIX/stale/.claude"; jq '.integrationBranch = "stale"' "$REPO/.claude/harness.json" > "$STALE_CFG"
+HARNESS_CFG_PATH="$STALE_CFG" HARNESS_CFG="$STALE_CFG" HARNESS_CFG_REF=origin/stale RESUMED_ENV="$RENV" pass "$STALE"
+want "one claude run"                          "1" "$(calls)"
+want "no HARNESS_CFG* reaches the session"     "" "$(grep '^HARNESS_CFG' "$RENV" 2>/dev/null)"
+want "the keeper's main repo still reaches it" "HARNESS_MAIN_REPO=$REPO" "$(grep '^HARNESS_MAIN_REPO=' "$RENV" 2>/dev/null)"
+want "and its state dir"                       "HARNESS_STATE_DIR=$STATE" "$(grep '^HARNESS_STATE_DIR=' "$RENV" 2>/dev/null)"
 
 echo "--- the job: opt-in, through the launcher, every 15 minutes ---"
 I="$HERE/../install.sh"

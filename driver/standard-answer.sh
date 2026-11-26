@@ -83,22 +83,43 @@ _driver_sa_model() {
 # _driver_sa_already_done <ticket> <text> — "pr <n>" or "commit <sha>" for the first piece of
 # evidence the text names that verifies: a pull request GitHub says merged, or a commit that is
 # an ancestor of origin/<integration branch>. Nothing when none does, or the text hedges.
+# NOTHING EITHER WHILE THE TICKET'S OWN BRANCH HOLDS WORK THE TRUNK LACKS: closing it then
+# throws that work away and records it shipped. A trunk commit merged INTO the branch is on
+# the trunk and proves nothing about the branch.
 _driver_sa_already_done() {
-  local t="$1" q="$2" n sha wt merged
+  local t="$1" q="$2" n sha wt merged own br ahead
   printf '%s' "$q" | grep -qiE '\b(probably|seems?|appears?|might|may have|likely|i think|not sure)\b' && return 0
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+    git -C "$wt" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true  # unbounded-ok: bounded by the connect and low-speed limits, as release-checks.sh does
+  br=$(driver_state_get "$t" branch); own=""
+  if [ "$wt" != "$MAIN_REPO" ]; then own=HEAD
+  elif [ -n "$br" ] && git -C "$wt" rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null 2>&1; then own="refs/remotes/origin/$br"
+  elif [ -n "$br" ] && git -C "$wt" rev-parse -q --verify "refs/heads/$br" >/dev/null 2>&1; then own="refs/heads/$br"; fi
+  if [ -n "$own" ]; then
+    ahead=$(git -C "$wt" rev-list --count "origin/$INTEGRATION_BRANCH..$own" 2>/dev/null) || ahead=""
+    if [ -z "$ahead" ] || [ "$ahead" -gt 0 ]; then
+      driver_say "   standard answer: (h) is refused — #$t's own branch holds ${ahead:-an unread number of} commit(s) $INTEGRATION_BRANCH lacks, so nothing here is already done" >&2
+      return 0
+    fi
+  fi
   for n in $(printf '%s' "$q" | grep -oE '#[0-9]+' | tr -d '#' | awk -v t="$t" '$0 != t && !s[$0]++'); do
     # gh-read-ok: an unread or missing PR verifies nothing, so the question is asked, as before
     merged=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" -q '.merged' 2>/dev/null) || continue
     [ "$merged" = true ] && { printf 'pr %s' "$n"; return 0; }
   done
-  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
-  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
-    git -C "$wt" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true  # unbounded-ok: bounded by the connect and low-speed limits, as release-checks.sh does
   for sha in $(printf '%s' "$q" | grep -oE '\b[0-9a-f]{7,40}\b' | awk '!s[$0]++'); do
     git -C "$wt" cat-file -e "$sha^{commit}" 2>/dev/null || continue
     git -C "$wt" merge-base --is-ancestor "$sha" "origin/$INTEGRATION_BRANCH" 2>/dev/null && { printf 'commit %s' "$(git -C "$wt" rev-parse --short "$sha")"; return 0; }
   done
   return 0
+}
+
+# _driver_sa_gate_green_on_trunk <findings> — 0, setting SA_GATE_GREEN, when a gate handed to
+# the fix step carries the trunk run that found it green there (fix.sh records it as baseWhy).
+_driver_sa_gate_green_on_trunk() {
+  SA_GATE_GREEN=$(jq -r '[.[] | select((.baseWhy // "") | test(" is green on ")) | .baseWhy] | join("; ")' "$1" 2>/dev/null)
+  [ -n "$SA_GATE_GREEN" ]
 }
 
 driver_standard_answer() { # <ticket> <step> <text> [kind]
@@ -163,6 +184,11 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
     if [ -n "$hwt" ] && [ -n "$(git -C "$hwt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
       SA_ACTION=commit-carry; SA_HOOK_SKIP="$HOOK_BR_CHECKS"
     fi
+  elif [ "$SA_CLASS" = g ] && [ "$step" = fix ] && _driver_sa_gate_green_on_trunk "$d/steps/self-check.findings.json"; then
+    # MEASURED, NOT TAKEN FROM THE WORDS: the driver ran this gate on the trunk and it passed there.
+    SA_NAME="not base red: it passes on the trunk"
+    SA_ANSWER="Not base-red. Before this gate was handed to you the driver ran it on the $INTEGRATION_BRANCH commit this branch merged, and it passes there ($SA_GATE_GREEN). So the red is this branch's own, even where it shows in files this branch did not edit: something this branch changed makes them fail. Repair it in this change and answer the gate in gateFixes with the files you changed and the commit."
+    driver_say "   base-red: claimed, and not so — $SA_GATE_GREEN; the step is told to repair it here"
   elif [ "$SA_CLASS" = g ]; then
     local gates sha
     gates=$(printf '%s' "$q" | grep -oE '\b(gate-[A-Za-z0-9_-]+|check:[A-Za-z0-9:_-]+)' | sort -u | paste -sd, - | sed 's/,/, /g')

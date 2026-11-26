@@ -31,7 +31,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   # plain substring match counted 24 of them on the origin project's tickets.
   if printf '%s\n' "$line" | grep -qiE '(^|[^A-Za-z])exists([^A-Za-z]|$)' \
      && ! { printf '%s\n' "$line" | grep -iE 'extend|chang|modif|new field|new param' \
-            | grep -viqE 'unchang|no [a-z ]*chang|not? (be )?(chang|modif)|do not modif|without chang|shape unchang'; }; then
+            | grep -viE 'unchang|no [a-z ]*chang|not? (be )?(chang|modif)|do not modif|without chang|shape unchang' >/dev/null; }; then
     continue
   fi
   exit 0

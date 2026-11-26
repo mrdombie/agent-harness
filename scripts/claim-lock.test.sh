@@ -208,6 +208,104 @@ ls "$SB/state/runs" 2>/dev/null | grep -q 781 \
   || ok "a claim taken outside a spawned run writes no run note"
 gh_run -- release 781 --force
 
+# --- 7b. Release leaves a ready ticket ready, draft PR or not ------------------
+# 2026-11-15: two builds stopped by a full disk were set ready by the park, then set
+# in review ten seconds later by the release, because their draft PR closes them. No
+# retry reads in review, so both sat until a person moved them.
+cat > "$SB/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+case "$1 $2" in
+  "issue view")
+    case "$*" in
+      *state,labels*) echo "${FAKE_STATE_LABELS:-}" ;;
+      *) [ -n "${FAKE_PR_NUM:-}" ] && echo "$FAKE_PR_NUM" ;;
+    esac; exit 0 ;;
+  "pr view")    [ -n "${FAKE_PR_HEAD:-}" ] && echo "$FAKE_PR_HEAD"; exit 0 ;;
+  "pr list")    echo "${FAKE_MERGED:-0}"; exit 0 ;;
+  *) exit 0 ;;
+esac
+GH
+gh_run -- acquire 783 --branch tkt-783/x --worktree "$SB/wt11" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|st:ready' FAKE_PR_NUM=830 FAKE_PR_HEAD=tkt-783/x \
+  -- release 783 --force
+[ "$RC" -eq 0 ] && grep -q 'state,labels' "$SB/gh.log" && ! grep -q 'st:review' "$SB/gh.log" "$SB/out" \
+  && ok "release leaves a ready ticket ready when its draft PR is open" \
+  || bad "release moved a ready ticket to in review behind its draft PR (rc $RC: $(grep -h 'st:review' "$SB/gh.log" "$SB/out" | head -1))"
+gh_run -- acquire 784 --branch tkt-784/x --worktree "$SB/wt12" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_PR_NUM=831 FAKE_PR_HEAD=tkt-784/x \
+  -- release 784 --force
+grep -q 'st:review' "$SB/gh.log" "$SB/out" \
+  && ok "release still marks a ticket with no status and an open PR as in review" \
+  || bad "release no longer marks a status-less ticket with an open PR as in review"
+
+# --- 7c. Release leaves a merged ticket alone, claimed label or not -----------
+# 2026-11-16: two merged tickets still open with no status were set ready by the
+# release and offered to builders again; only the claimed-label case checked for a merge.
+gh_run -- acquire 785 --branch tkt-785/x --worktree "$SB/wt13" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_MERGED=1 -- release 785 --force
+[ "$RC" -eq 0 ] && grep -q 'shipped, not abandoned' "$SB/out" \
+  && ! grep -qE 'issue edit.*st:(ready|review)' "$SB/gh.log" && ! grep -q 'had no status' "$SB/out" \
+  && ok "release leaves a merged ticket with no status alone" \
+  || bad "release put a merged ticket with no status back on the board (rc $RC: $(tail -1 "$SB/out"))"
+gh_run -- acquire 786 --branch tkt-786/x --worktree "$SB/wt14" --pid $$
+: > "$SB/gh.log"
+gh_run FAKE_GH_LOG="$SB/gh.log" FAKE_STATE_LABELS='OPEN|' FAKE_MERGED=0 -- release 786 --force
+grep -q 'had no status — set st:ready' "$SB/out" \
+  && ok "release still puts an unmerged ticket with no status back on the board" \
+  || bad "release no longer readies an unmerged ticket with no status (rc $RC: $(tail -1 "$SB/out"))"
+
+# --- 8. A refused push with nobody holding the claim is no lost race ----------
+# 2026-11-04: start parked tickets ten requeues running on "a peer took the claim
+# first" while `show` said "not claimed". Any `[remote rejected]` push was read as
+# the compare-and-swap lost. Origin's hook here refuses the ref with no holder.
+mkdir -p "$SB/origin.git/hooks"
+cat > "$SB/origin.git/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+while read -r _ _ ref; do [ "$ref" = refs/claims/888 ] && { echo "declined"; exit 1; }; done
+exit 0
+HOOK
+chmod +x "$SB/origin.git/hooks/pre-receive"
+gh_run -- acquire 888 --branch tkt-888/x --worktree "$SB/wt11" --pid $$
+if [ "$RC" -ne 0 ] && [ "$RC" -ne 10 ] && ! grep -q 'lost the race' "$SB/out"; then
+  ok "a push origin refuses, with no holder, fails as a push (rc $RC), not a lost race"
+else
+  bad "a push origin refuses, with no holder, is reported as a lost race (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+fi
+rm -f "$SB/origin.git/hooks/pre-receive"
+
+# Control: a claim a peer really holds still loses the race with rc 10.
+git -C "$SB/work" push -q origin "$(git -C "$SB/work" commit-tree "$(git -C "$SB/work" hash-object -t tree /dev/null)" \
+  -m '{"issue":889,"agent":"peer@elsewhere","pid":1,"branch":"tkt-889/x","worktree":"","host":"elsewhere","claimed_at":"2026-11-04T00:00:00Z"}'):refs/claims/889"
+gh_run -- acquire 889 --branch tkt-889/x --worktree "$SB/wt12" --pid $$
+[ "$RC" -eq 10 ] && grep -q 'held by: .*peer@elsewhere' "$SB/out" \
+  && ok "a claim a peer holds still loses the race (rc 10), naming the holder" \
+  || bad "a claim a peer holds still loses the race (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+
+# --- 9. A refusal origin gives once, with no holder, does not cost the claim --
+# 2026-11-14: each live refusal cleared on the next run, minutes later. Origin's
+# hook here refuses the first push of the ref, then lets it through.
+cat > "$SB/origin.git/hooks/pre-receive" <<HOOK
+#!/usr/bin/env bash
+while read -r _ _ ref; do
+  if [ "\$ref" = refs/claims/890 ] && [ ! -e "$SB/refused-890" ]; then
+    : > "$SB/refused-890"; echo "declined"; exit 1
+  fi
+done
+exit 0
+HOOK
+chmod +x "$SB/origin.git/hooks/pre-receive"
+gh_run CLAIM_RETRY_DELAY=0 -- acquire 890 --branch tkt-890/x --worktree "$SB/wt13" --pid $$
+if [ "$RC" -eq 0 ] && [ -e "$SB/refused-890" ] && git -C "$SB/origin.git" rev-parse -q --verify refs/claims/890 >/dev/null; then
+  ok "a free ticket origin refuses once still takes the claim"
+else
+  bad "a free ticket origin refuses once gets no claim (rc $RC: $(head -3 "$SB/out" | tr '\n' ' '))"
+fi
+rm -f "$SB/origin.git/hooks/pre-receive"
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"

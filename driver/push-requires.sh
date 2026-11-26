@@ -73,8 +73,17 @@ type driver_record_usage >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]
 # DRIVER_OWED_OUT. Returns its exit code: 0 not owed (or attested), 124 a hang,
 # anything else owed. `{{SHA}}` and `{{BASE}}` are filled as in `record`.
 _driver_owed() {
-  local t="$1" name="$2" owed="$3" wt="$4" trunk="$5" cmd f rc=0
+  local t="$1" name="$2" owed="$3" wt="$4" trunk="$5" cmd f rc=0 missing said
   f="$(driver_state_dir "$t")/steps/owed-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
+  DRIVER_OWED_FAULT=""
+  if missing=$(_driver_owed_missing_script "$owed" "$wt"); then
+    printf "'%s' owed check ('%s') names npm script %s, which package.json does not have — a settings fault in .claude/harness.json%s, not owed\n" \
+      "$name" "$owed" "$missing" "${HARNESS_CFG_FROM:+ (read from $HARNESS_CFG_FROM)}" > "$f"
+    DRIVER_OWED_OUT="$f"; DRIVER_OWED_FAULT=1
+    said="$f.said-$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+    [ -e "$said" ] || { driver_say "✋ push-requires: $(cat "$f")"; : > "$said"; }
+    return 0
+  fi
   cmd=$(printf '%s' "$owed" | sed -e "s|{{SHA}}|$(git -C "$wt" rev-parse HEAD 2>/dev/null)|g" -e "s|{{BASE}}|$trunk|g")
   ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$f" 2>&1 || rc=$?
   DRIVER_OWED_OUT="$f"
@@ -83,6 +92,21 @@ _driver_owed() {
     driver_state_set "$t" park_note "this project's '$name' owed check did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
   fi
   return "$rc"
+}
+
+# _driver_owed_missing_script <owed-cmd> <tree> — 0, printing the name, when <owed-cmd>
+# is `npm run <name>` and <tree>/package.json has no such script. npm exits 1 for it,
+# which reads as "owed" and sends a reviewer to earn a verdict no check can ever read.
+# Only the plain `npm run [-s|--silent] <name>` form: any other flag or a quoted name is
+# not read, and a package.json that does not parse is not a missing script.
+_driver_owed_missing_script() {
+  local owed="$1" tree="$2" name re='^[[:space:]]*npm[[:space:]]+run(-script)?[[:space:]]+((-s|--silent)[[:space:]]+)*([A-Za-z0-9_@/.+][^[:space:];&|"'"'"'\\]*)([[:space:];&|]|$)'
+  [ -f "$tree/package.json" ] && command -v jq >/dev/null 2>&1 || return 1
+  [[ "$owed" =~ $re ]] || return 1
+  name="${BASH_REMATCH[4]}"
+  jq -e '(.scripts // {}) | type == "object"' "$tree/package.json" >/dev/null 2>&1 || return 1
+  jq -e --arg n "$name" '(.scripts // {}) | has($n)' "$tree/package.json" >/dev/null 2>&1 && return 1
+  printf '%s' "$name"
 }
 
 # _driver_attest_agent <ticket> <name> <agent> <tree> <trunk> <out> — run a named
@@ -127,6 +151,7 @@ _driver_attest_agent() {
     ) > "$log" 2>"$log.err" || rc=$?
     driver_record_usage "$t" "$slot" "$log" "$prompt"
     driver_usage_wall "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
+    driver_auth_lost "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
     [ "$rc" -ne 124 ] || break
     err=$(driver_api_error "$log") || break
     if [ "$try" -eq 2 ]; then
@@ -175,6 +200,7 @@ _driver_attest_ask_verdict() {
   ) > "$alog" 2>"$alog.err" || true
   driver_record_usage "$t" "$slot-verdict" "$alog" "$ask"
   driver_usage_wall "$t" "$slot-verdict" "$alog" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$slot-verdict" "$alog" && return "$DRIVER_E_USAGE"
   line=$(jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$alog" 2>/dev/null \
     | grep -m1 -iE 'VERDICT:[^A-Za-z]*(SHIP|SPIT-BACK|SLOP)')
   [ -n "$line" ] || return 0
@@ -235,7 +261,7 @@ _driver_attest_graded() {
 # mechanical", and the fix step is a model. Parking on it parked #13044 on one Minor.
 _driver_spitback_to_fix() {
   local t="$1" name="$2" out="$3" d round maxr ground block graded blocking defer nb nd
-  grep -m1 -E 'VERDICT:' "$out" 2>/dev/null | grep -q 'SPIT-BACK' || return 0
+  grep -q 'SPIT-BACK' <<<"$(grep -m1 -E 'VERDICT:' "$out" 2>/dev/null)" || return 0
   case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 0 ;; esac
   round="${DRIVER_ATTEST_ROUND:-$(driver_state_count "$t" review)}"; ground="${DRIVER_ATTEST_GROUND:-$round}"
   maxr="${DRIVER_ATTEST_MAXR:-$DRIVER_MAX_REVIEW_ROUNDS}"
@@ -393,6 +419,7 @@ driver_push_requires() { # <ticket>
 
     if [ -n "$owed" ]; then
       orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
+      [ "$orc" -ne 0 ] || [ -z "$DRIVER_OWED_FAULT" ] || continue
       case "$orc" in
         0)  driver_say "   push-requires: '$name' is not owed on this diff — $(_driver_first_line "$DRIVER_OWED_OUT")"
             continue ;;

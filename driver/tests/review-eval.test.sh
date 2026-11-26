@@ -124,6 +124,21 @@ case_guard() { # CI: a review change carries a comparison that is not worse; not
   R="$R worse=$(guard briefs/review.md 'review-eval: compare before recall 6/20, false 9 (ran) → after recall 5/20, false 9 (ran) · worse · cost $72')"
   R="$R unrelated=$(guard briefs/plan.md 'no line')"
 }
+live() { # <event body> <live body | FAIL> — a PR guard run with no --body-file: exit code, then the source it names
+  git -C "$TR" checkout -q -B "l$RANDOM" "$TB"; echo v2 >> "$TR/briefs/review.md"; git -C "$TR" add -A; git -C "$TR" commit -qm change
+  jq -n --arg b "$1" '{pull_request: {number: 7, body: $b}}' > "$FIX/event.json"
+  printf '%s' "$2" > "$FIX/live.md"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n[ "$(cat "%s")" = FAIL ] && exit 1\ncat "%s"\n' "$FIX/livegh.log" "$FIX/live.md" "$FIX/live.md" > "$FIX/livegh"; chmod +x "$FIX/livegh"
+  local rc=0 out; out=$(RE_GH="$FIX/livegh" GITHUB_EVENT_PATH="$FIX/event.json" GITHUB_REPOSITORY=acme/widgets ev guard --repo "$TR" --base "$TB" 2>&1) || rc=$?
+  printf '%s,%s' "$rc" "$(printf '%s' "$out" | sed -n 's/^review-eval guard: judged the \([a-z]*\) PR body.*/\1/p')"
+}
+case_live() { # a re-run replays the old event: the guard judges the body as it is now, the event only when that read fails
+  local ok='review-eval: compare before recall 5/20, false 9 (reused) → after recall 6/20, false 9 (ran) · better · cost $36.4'
+  local bad='review-eval: compare before recall 6/20, false 9 (ran) → after recall 5/20, false 9 (ran) · worse · cost $72'
+  : > "$FIX/livegh.log"
+  R="fresh=$(live 'no line' "$ok") worse=$(live "$ok" "$bad") failed=$(live "$ok" FAIL) failedbad=$(live 'no line' FAIL)"
+  R="$R reads=$(grep -c '^pr view 7 --repo acme/widgets --json body' "$FIX/livegh.log")"
+}
 case_weekly() { # the schedule: one weekday, one hour; and the run skips inside six days
   local p cron n wd
   p=$(bash "$KIT/swarm/install.sh" --print review-eval 2>&1)
@@ -189,6 +204,8 @@ case_cap;     want "the unplanted kit: 21 items are refused unpaid" "rc=2 calls=
 case_trigger; want "the unplanted kit: what owes a comparison" \
   "brief=0 check-brief=0 schema=0 step=0 plan=1 fix=1 effort=0 evalonly=1 gates=1" "$R"
 case_guard;   want "the unplanted kit: the CI guard" "none=1 better=0 worse=1 unrelated=0" "$R"
+case_live;    want "the unplanted kit: the guard judges the live PR body" \
+  "fresh=0,live worse=1,live failed=0,event failedbad=1,event reads=4" "$R"
 case_weekly;  want "the unplanted kit: at most weekly" \
   "plist-weekly=1 wakes=1 interval=0 cron=*,*,0 recent=0,1 stale=4,1" "$R"
 case_compare; want "the unplanted kit: before and after" "better=0,0,1 worse=1,1 ran=0,4,1" "$R"
@@ -228,6 +245,9 @@ plant "a settings change no longer triggers" scripts/review-eval.sh \
   "brief=0 check-brief=0 schema=0 step=0 plan=1 fix=1 effort=1 evalonly=1 gates=1"
 plant "the guard reads no comparison" scripts/review-eval.sh \
   '  if [ -z "$line" ]; then' '  if false; then' case_guard "none=0 better=0 worse=1 unrelated=0"
+plant "the guard judges the replayed event, never the live body" scripts/review-eval.sh \
+  'if live=$(re_live_body "$num"); then' 'if false; then' case_live \
+  "fresh=1,event worse=0,event failed=0,event failedbad=1,event reads=0"
 plant "a worse score passes the guard" scripts/review-eval.sh \
   '    *"· worse"*) echo' '    *"never"*) echo' case_guard "none=1 better=0 worse=0 unrelated=0"
 plant "the weekly job loses its weekday" swarm/install.sh \

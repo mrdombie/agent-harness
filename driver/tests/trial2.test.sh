@@ -366,6 +366,33 @@ fix_ai fix "$(jq -nc --arg ts "$TS8" --arg is "$IS8" \
 rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "an unanswered blocker refuses" "24" "$rc"
 want_in "naming it"                  'F9' "$out"
+want_in "and listing the ids the review used" 'to be answered as written: F9' "$out"
+
+echo "--- an answer that shortens a finding's id is that finding; short for two, or none, is not ---"
+# 2026-11-14: a fixer cleared R1..R4 for R1-undone-from-line-edit-note.. and the round parked.
+IDR="$FIX/ids.review.json"; IDA="$FIX/ids.ans.json"
+printf '%s' '{"findings":[{"id":"R1-undone-note"},{"id":"R2-folded"},{"id":"R3-a"},{"id":"R3-b"},{"id":"F9"}]}' > "$IDR"
+ids_ans() { printf '%s' '{"cleared":[{"blockerId":"R1"},{"blockerId":"r2"},{"blockerId":"R3"},{"blockerId":"f9"},{"blockerId":"R"},{"blockerId":"zzz"}],"deferred":[{"blockerId":"R2-FOLDED"}]}' > "$IDA"; }
+ids_ans; _driver_fix_whole_ids "$IDA" "$IDR"
+want "short for one finding becomes it; short for two, a bare letter and an unknown stay as written" \
+  '["R1-undone-note","R2-folded","R3","F9","R","zzz"]' "$(jq -c '[.cleared[].blockerId]' "$IDA")"
+want "in deferred too, and whatever the case"   '["R2-folded"]' "$(jq -c '[.deferred[].blockerId]' "$IDA")"
+# Planted: the rule never finds its one match. The short ids must then stay short.
+eval "$(declare -f _driver_fix_whole_ids | sed -e 's/^_driver_fix_whole_ids/_planted_whole_ids/' -e 's/length) == 1 then/length) == 99 then/')"
+want "the plant changed the rule"               "1" "$(declare -f _planted_whole_ids | grep -c 'length) == 99 then')"
+ids_ans; _planted_whole_ids "$IDA" "$IDR"
+want "planted → R1 is nobody's again"           '["R1","r2","R3","f9","R","zzz"]' "$(jq -c '[.cleared[].blockerId]' "$IDA")"
+fix_ai fix "$(jq -nc --arg ts "$TS8" --arg is "$IS8" \
+  '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    cleared:[{blockerId:"f9",
+              change:[{path:"apps/web/save.tsx", action:"modify"}],
+              test:{file:"t/save.sh", behaviour:"the save button calls the mutation",
+                    redWhen:"the onClick handler is removed"},
+              command:"bash t/save.sh", testCommit:$ts, implCommit:$is,
+              failedBefore:true, passedAfter:true}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want_not_in "through the step: F9 answered as f9 is not left unanswered" 'appear in neither cleared nor deferred' "$out"
 
 echo "--- T2-3 · a deferred blocker is a person's call, not the driver's ---"
 # The contract has a `deferred` shape and the brief tells the fixer to use it, so

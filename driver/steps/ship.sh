@@ -37,6 +37,59 @@ _driver_ship_replaced() {
       else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
 }
 
+# _driver_ship_account_tests <ticket> <tree> <trunk> <check output> — the one accounting
+# round: step account-tests (Read Grep Glob only) is handed each file the deleted-tests
+# check refused and the test diff, and its rows join steps/replaced.jsonl. Once per HEAD;
+# non-zero when it was already asked at this HEAD or did not answer, and nothing was added.
+_driver_ship_account_tests() {
+  local t="$1" wt="$2" trunk="$3" dt="$4" d head mb pats f p tfiles="" rc=0 note_was ans
+  d="$(driver_state_dir "$t")/steps"
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+  [ "$(driver_state_get "$t" deleted_tests_asked)" != "$head" ] || return 1
+  driver_state_set "$t" deleted_tests_asked "$head"
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 1
+  # The checker's own patterns, read off its control line, so the two never disagree.
+  pats=$(printf '%s\n' "$dt" | sed -n 's/.*(patterns: \(.*\))$/\1/p' | head -1)
+  [ -n "$pats" ] || pats="*.test.ts *.test.tsx *.spec.ts"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    set -f; for p in $pats; do
+      # shellcheck disable=SC2254
+      case "$f" in $p) tfiles="$tfiles$f"$'\n'; break ;; esac
+    done; set +f
+  done < <(git -C "$wt" diff --name-only "$mb" HEAD 2>/dev/null)
+  rm -rf "$d/account-tests.facts"; rm -f "$d/account-tests.json"
+  driver_fact_put "$t" account-tests FILES "$dt"
+  driver_fact_put "$t" account-tests DIFF "$(git -C "$wt" diff --stat "$mb" HEAD 2>/dev/null
+    [ -z "$tfiles" ] || printf '%s' "$tfiles" | tr '\n' '\0' | xargs -0 git -C "$wt" diff "$mb" HEAD -- 2>/dev/null)"
+  note_was=$(driver_state_get "$t" park_note)
+  driver_ai_step "$t" account-tests || rc=$?
+  ans="$d/account-tests.json"
+  # A question or a broken answer is "did not account", never a question surfaced.
+  if [ "$rc" -ne 0 ] || [ ! -s "$ans" ] || ! jq -e '(.replacedTests // []) | length > 0' "$ans" >/dev/null 2>&1; then
+    driver_state_set "$t" park_note "$note_was"
+    driver_say "   ship: the accounting round answered nothing usable (exit $rc)"
+    return 1
+  fi
+  jq -c '(.replacedTests // [])[]' "$ans" >> "$d/replaced.jsonl" 2>/dev/null || return 1
+}
+
+# _driver_ship_refusal_print <ticket> <tree> — "<HEAD> <shasum of replaced.jsonl, or none>",
+# what a deleted-tests refusal was judged on; a retry that matches it would refuse the same.
+_driver_ship_refusal_print() {
+  local rec h
+  rec="$(driver_state_dir "$1")/steps/replaced.jsonl"
+  h=none; [ -f "$rec" ] && h=$(shasum < "$rec" | cut -d' ' -f1)
+  printf '%s %s' "$(git -C "$2" rev-parse HEAD 2>/dev/null)" "$h"
+}
+
+# _driver_ship_body_replaced <body> <section lines> — the body with its "## Deleted tests"
+# section, if any, replaced by one holding the given lines at its end.
+_driver_ship_body_replaced() {
+  printf '%s\n' "$1" | awk '/^## Deleted tests[[:space:]]*$/ { skip = 1; next } skip && /^## / { skip = 0 } !skip'
+  printf '\n## Deleted tests\n%s\n' "$2"
+}
+
 # _driver_ship_reserve <ticket> <pr> — reserves on the polish lists every item this
 # run's builder took (polish-list.sh take), for this PR: other runs skip them, and
 # the coordinator's housekeeping ticks them when the PR merges. An item another PR
@@ -108,7 +161,7 @@ _driver_ship_routes() {
 # the branch adds or edits it: CI then photographs the plan, so the body names its routes.
 _driver_ship_plan_routes() {
   local plan; plan=$(driver_evidence_plan "$1")
-  git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null | grep -q . || return 0
+  [ -n "$(git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null)" ] || return 0
   jq -r '.shots[]?.route // empty' "$2/$plan" 2>/dev/null | grep '^/' | awk '!seen[$0]++'
 }
 
@@ -203,10 +256,21 @@ _driver_ship_place_plan() {
   want=$(driver_evidence_plan "$t")
   old="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"   # legacy-plan-path: where it was misfiled
   [ "$want" != "$old" ] && [ -f "$wt/$old" ] && [ ! -e "$wt/$want" ] || return 0
-  git -C "$wt" diff --name-only "$trunk"...HEAD -- "$old" 2>/dev/null | grep -q . || return 0
+  [ -n "$(git -C "$wt" diff --name-only "$trunk"...HEAD -- "$old" 2>/dev/null)" ] || return 0
   mkdir -p "$wt/${want%/plan.json}" && git -C "$wt" mv -- "$old" "$want" >/dev/null 2>&1 || return 0
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the plan where CI reads it (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: moved $old to $want, where CI reads this branch's plan"
+}
+
+# _driver_ship_dropped_routes <tree> <merge-base> <plan path> — routes a commit on the branch
+# removed from the plan and the plan no longer holds, one a line.
+_driver_ship_dropped_routes() {
+  local wt="$1" mb="$2" plan="$3" removed now
+  removed=$(git -C "$wt" log -p --format= "$mb..HEAD" -- "$plan" 2>/dev/null \
+    | grep '^-' | grep -oE '"route":[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | awk '!seen[$0]++')
+  [ -n "$removed" ] || return 0
+  now=$(jq -r '.shots[]?.route' "$wt/$plan" 2>/dev/null | awk '!seen[$0]++')
+  if [ -n "$now" ]; then grep -vxF -f <(printf '%s\n' "$now") <<<"$removed" || true; else printf '%s\n' "$removed"; fi
 }
 
 # _driver_ship_derived_plan <ticket> <tree> <trunk> — NO PICTURE BINDS THE TICKET, so the
@@ -223,6 +287,13 @@ _driver_ship_derived_plan() {
             } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8)
   [ -n "$routes" ] || return 0
   plan=$(driver_evidence_plan "$t"); dir=${plan%/plan.json}
+  # A route a commit on this branch took out of the plan stays out: it was dropped on purpose.
+  local dropped
+  dropped=$(_driver_ship_dropped_routes "$wt" "$mb" "$plan")
+  if [ -n "$dropped" ]; then
+    routes=$(grep -vxF -f <(printf '%s\n' "$dropped") <<<"$routes" || true)
+    [ -n "$routes" ] || return 0
+  fi
   local -a a=(plan --into "$wt/$plan")
   while IFS= read -r r; do [ -n "$r" ] && a+=(--route "$r"); done <<<"$routes"
   new=$(python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" "${a[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the derived shots"; return 0; }
@@ -490,6 +561,14 @@ _driver_ship_person_stop() {
     0) return 0 ;;
     1) driver_say "✋ ship: a person has stopped this${pr:+ (PR #$pr)}, and a person's stop wins over the machine — nothing is readied, armed or pushed onto it:"
        printf '%s\n' "$out" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
+       # A hold label alone parks on the hold: its removal resumes the run, which a PM marker would not.
+       # Beside another stop it parks for the PM, so the note keeps every reason.
+       local held; held=$(printf '%s\n' "$out" | grep -E '^[^ ]+ put on by .+ at ' | head -1)
+       if [ -n "$held" ] && [ "$(printf '%s\n' "$out" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ]; then
+         driver_state_set "$t" park_note "$held"
+         driver_state_set "$t" park_cause hold
+         return "$DRIVER_E_REFUSED"
+       fi
        driver_state_set "$t" park_note "Needs the person who stopped it: $(printf '%s' "$out" | tr '\n' ' ')— fix what they named and have them clear it (a '## PM answer' or a comment starting 'Cleared:'), take the label off, or ready the PR themselves."
        driver_state_set "$t" park_cause pm
        return "$DRIVER_E_REFUSED" ;;
@@ -543,6 +622,16 @@ driver_step_ship() { # <ticket>
   if [ -n "$(driver_state_get "$t" branch)" ] && ! driver_heal_detached "$t" "$wt" "$branch"; then
     driver_say "✋ ship: HEAD in $wt is detached and $branch cannot be fast-forwarded to it. Nothing is pushed."
     driver_state_set "$t" park_note "HEAD in the worktree is detached at $(git -C "$wt" rev-parse --short HEAD 2>/dev/null) and $branch is not an ancestor of it, so ship could not put the branch back on it"
+    return "$DRIVER_E_REFUSED"
+  fi
+  # Re-running into the same deleted-tests refusal re-pushes and re-edits the PR for nothing.
+  local refused
+  refused=$(driver_state_get "$t" deleted_tests_refused)
+  if [ -n "$refused" ] && [ "$refused" = "$(_driver_ship_refusal_print "$t" "$wt")" ]; then
+    driver_say "✋ ship: nothing has changed since the deleted-tests refusal: same HEAD, same $(driver_state_dir "$t")/steps/replaced.jsonl. Add the missing rows there, then retry."
+    # build-ticket clears the park note and cause after every refusal; a retry must write them again.
+    driver_state_set "$t" park_note "$(driver_state_get "$t" deleted_tests_note)"
+    driver_state_set "$t" park_cause pm
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -869,12 +958,32 @@ $polish"
   local dt dtrc=0
   dt=$(printf '%s\n' "$body" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
          --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || dtrc=$?
+  # One short round asks the builder why; the body is rebuilt and judged again, never re-pushed.
+  if [ "$dtrc" -ne 0 ] && _driver_ship_account_tests "$t" "$wt" "$trunk" "$dt"; then
+    driver_say "   ship: the builder accounted for the deleted tests; the body is rebuilt and checked again"
+    body=$(_driver_ship_body_replaced "$body" "$(_driver_ship_replaced "$t")")
+    dtrc=0
+    dt=$(printf '%s\n' "$body" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
+           --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || dtrc=$?
+    if [ "$dtrc" -eq 0 ] && ! swarm_gh pr edit "${open_pr:-$pr_n}" --repo "$REPO_SLUG" --body "$body" >/dev/null 2>&1; then
+      driver_say "✋ ship: the pull request's body could not be rewritten with its '## Deleted tests' section, so it stays a draft."
+      driver_state_set "$t" park_note "the accounted '## Deleted tests' section could not be written to the pull request body"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
   if [ "$dtrc" -ne 0 ]; then
     driver_say "✋ ship: this branch deletes tests the pull request does not account for, so it stays a draft."
     printf '%s\n' "$dt" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
-    driver_state_set "$t" park_note "deleted tests to account for under '## Deleted tests' in the PR body: $(printf '%s\n' "$dt" | awk '/ — /{sub(/^ +/, ""); print}' | tr '\n' ';')"
+    # The body is rebuilt from replaced.jsonl, so a note pointing at the body sends the fix where ship overwrites it.
+    local dtfiles
+    dtfiles=$(printf '%s\n' "$dt" | awk '/^  [^ ].* — /{sub(/^ +/, ""); sub(/ — .*/, ""); print}' | paste -sd, - | sed 's/,/, /g')
+    driver_state_set "$t" deleted_tests_note "deleted tests not accounted for: ${dtfiles}. Write one JSON line per file to $(driver_state_dir "$t")/steps/replaced.jsonl, either {\"file\":\"<path>\",\"coveredBy\":\"<test at head>\"} or {\"file\":\"<path>\",\"removedBecause\":\"<why>\"}, e.g. {\"file\":\"${dtfiles%%, *}\",\"removedBecause\":\"<why>\"}. This goes in the record, not the PR body: ship rebuilds the body from that file."
+    driver_state_set "$t" park_note "$(driver_state_get "$t" deleted_tests_note)"
+    driver_state_set "$t" park_cause pm
+    driver_state_set "$t" deleted_tests_refused "$(_driver_ship_refusal_print "$t" "$wt")"
     return "$DRIVER_E_REFUSED"
   fi
+  driver_state_set "$t" deleted_tests_refused ""; driver_state_set "$t" deleted_tests_note ""
 
   # Ready, and only then auto. A draft is the only state an automerge workflow
   # will not land, so the draft is what holds the pull request while the review

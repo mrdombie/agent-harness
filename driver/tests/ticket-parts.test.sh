@@ -148,9 +148,30 @@ want "mapped or outside, it passes" "0" "$rc"
 jq '.features[0].covers = ["C1"] | del(.outside)' "$FIX/plan.json" > "$FIX/p3.json"
 want_in "the plan step sends an unmapped item back" 'A1 \(“two”\) is in no item' \
   "$(_driver_plan_list_problems 401 "$FIX/p3.json" "" "a ticket" "$(cat "$FIX/pb.md")")"
+echo "--- a foundation said built is held to the branch: built only when the branch has commits of its own ---"
+git init -q --bare "$FIX/origin-built"
+git -C "$REPO" remote add origin "$FIX/origin-built" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/origin-built"
+git -C "$REPO" push -q origin HEAD:refs/heads/develop && git -C "$REPO" fetch -q origin
+driver_state_init 402 --worktree "$REPO"
+jq '.features[0].covers = ["C1"] | .outside = [{item:"A1", why:"w"}] | .foundation = {reason:"refactor", why:"w", built:true}' "$FIX/plan.json" > "$FIX/pf.json"
+want_in "nothing of its own on the branch: sent back" 'says `built: true`, and this branch has no commits of its own' \
+  "$(_driver_plan_list_problems 402 "$FIX/pf.json" "" "a ticket" "$(cat "$FIX/pb.md")")"
+: > "$REPO/foundation.txt"; git -C "$REPO" add foundation.txt; git -C "$REPO" commit -qm "feat: the foundation"
+want_not_in "a commit of its own: taken as built" 'built: true' \
+  "$(_driver_plan_list_problems 402 "$FIX/pf.json" "" "a ticket" "$(cat "$FIX/pb.md")")"
 jq '.features[0] + {covers:["C1"]} | {items: [.]} ' "$FIX/plan.json" > "$FIX/old.json"
 jq '.items[0].covers = ["A1"]' "$FIX/old.json" > "$FIX/new.json"
 rc=0; feature_list_guard "$FIX/old.json" "$FIX/new.json" >/dev/null || rc=$?
 want "the items a feature covers are fixed once listed" "3" "$rc"
+
+echo "--- a path named by its tail is found in a large tree, under pipefail ---"
+mkdir -p "$REPO/aa/lib/pulse" "$REPO/zz"
+: > "$REPO/aa/lib/pulse/scheduled-words.ts"
+for i in $(seq 1 3000); do : > "$REPO/zz/a-long-enough-file-name-to-fill-the-pipe-buffer-$i.ts"; done
+git -C "$REPO" add -A; git -C "$REPO" commit -qm big
+printf '## The change\n1. Use `pulse/scheduled-words.ts`.\n' > "$FIX/tail.md"
+rc=0; out=$(ticket_parts_check "$REPO" "$FIX/tail.md" 501) || rc=$?
+want "the tail matches a tracked file" "0" "$rc"
+want_not_in "and is not reported missing" 'scheduled-words' "$out"
 
 suite_end "$FAILED"

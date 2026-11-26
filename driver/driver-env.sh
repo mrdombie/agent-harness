@@ -16,6 +16,11 @@
 #   DRIVER_VALIDATE  briefs/validate.sh — the one thing that reads a whole schema
 #   DRIVER_STEPS     the fixed order, one name per step
 #   DRIVER_MAX_BUILD_TRIES   red-before-green attempts before the ticket parks (5)
+#   DRIVER_BUILD_GROUP_MAX   tasks of one plan group built in one session (build.groupMax, 6)
+#   DRIVER_BUILD_GROUP_CTX   context, in tokens, past which a group starts a fresh session
+#                            (build.groupContextMax, 150000)
+#   DRIVER_PLAN_FEATURES_MAX items a feature list may have before the plan is asked, once,
+#                            to fold them (plan.featuresMax, 6; 0 is no limit)
 #   DRIVER_MAX_REVIEW_ROUNDS review passes per change (review.maxRounds, 2); only the first
 #                            always calls the model (steps/review.sh)
 #
@@ -71,6 +76,16 @@ DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
 # Review rounds: a project fact (review.maxRounds), 2 when unset or not a whole number.
 DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-$(toolkit_cfg review.maxRounds 2>/dev/null)}"
 case "$DRIVER_MAX_REVIEW_ROUNDS" in ''|*[!0-9]*|0) DRIVER_MAX_REVIEW_ROUNDS=2 ;; esac
+# Tasks of one plan `group` share a build session: at most this many (build.groupMax, 6;
+# 1 is one fresh session a task), and none once its context passes build.groupContextMax.
+DRIVER_BUILD_GROUP_MAX="${DRIVER_BUILD_GROUP_MAX:-$(toolkit_cfg build.groupMax 2>/dev/null)}"
+case "$DRIVER_BUILD_GROUP_MAX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_MAX=6 ;; esac
+DRIVER_BUILD_GROUP_CTX="${DRIVER_BUILD_GROUP_CTX:-$(toolkit_cfg build.groupContextMax 2>/dev/null)}"
+case "$DRIVER_BUILD_GROUP_CTX" in ''|*[!0-9]*|0) DRIVER_BUILD_GROUP_CTX=150000 ;; esac
+# A feature list past this many items is sent back once to be folded (plan.featuresMax, 6).
+DRIVER_PLAN_FEATURES_MAX="${DRIVER_PLAN_FEATURES_MAX:-$(toolkit_cfg plan.featuresMax 2>/dev/null)}"
+case "$DRIVER_PLAN_FEATURES_MAX" in ''|*[!0-9]*) DRIVER_PLAN_FEATURES_MAX=6 ;; esac
+export DRIVER_PLAN_FEATURES_MAX
 # Red gates in the branch's own diff go back to fix this many times before a park.
 DRIVER_MAX_GATE_FIXES="${DRIVER_MAX_GATE_FIXES:-3}"
 
@@ -418,6 +433,34 @@ driver_gates_local_set() {
                 or (($g.changed // null) == null)
                 or ((($g.changed | type) == "array") and ((($g.changed - $g.local) | length) == 0)))' \
     "$HARNESS_CFG" >/dev/null 2>&1
+}
+
+# driver_gate_rows — the gates self-check runs, one `name<TAB>command` per line on
+# stdout, from whichever shape harness.json wrote; sets DRIVER_GATE_ROWS_FROM to
+# local|changed|legacy. rc 1 when there is no row. A non-string legacy value is kept
+# as an empty command so the caller's empty-gate refusal counts it by name.
+driver_gate_rows() {
+  DRIVER_GATE_ROWS_FROM=""
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  local rows="" from=""
+  if driver_gates_local_set; then
+    from=local
+  elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    from=changed
+  elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    from=local
+  else
+    from=legacy
+  fi
+  case "$from" in
+    local|changed)
+      rows=$(jq -r --arg f "$from" '.gates[$f] | to_entries[] | "\($f) \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null) ;;
+    legacy)
+      rows=$(jq -r '.gates | del(.prePush, .ratchets, .localOnly) | to_entries[] | "\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null) ;;
+  esac
+  [ -n "$rows" ] || return 1
+  DRIVER_GATE_ROWS_FROM=$from
+  printf '%s\n' "$rows"
 }
 
 # driver_gates_reads_local — 0 when self-check runs gates.local: it is the local set, or
@@ -1099,6 +1142,7 @@ DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)
 DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
+export DRIVER_BUILD_GROUP_MAX DRIVER_BUILD_GROUP_CTX
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY

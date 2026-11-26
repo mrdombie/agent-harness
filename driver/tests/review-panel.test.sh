@@ -304,7 +304,8 @@ plant "the check call is deleted" driver/steps/review.sh \
   'rc=0; DRIVER_STEP_EFFORT="$ceffort" driver_ai_step "$t" review-check || rc=$?' 'rc=1' \
   case_check "rc=30 kept=a1 b1 swept=1 calls=review check-tools= effort=high"
 plant "the checker is given Bash" briefs/facts.json \
-  '"tools": ["Read", "Grep", "Glob"],' '"tools": ["Bash", "Read", "Grep", "Glob"],' \
+  $'"schema": "schemas/review-check.json",\n      "skills": [],\n      "tools": ["Read", "Grep", "Glob"],' \
+  $'"schema": "schemas/review-check.json",\n      "skills": [],\n      "tools": ["Bash", "Read", "Grep", "Glob"],' \
   case_check "rc=30 kept=a1 swept=1 calls=review,review-check check-tools=Bash,Read,Grep,Glob effort=high"
 plant "a finding judged not real is kept" driver/steps/review.sh \
   'select(type == "object" and .real == false)' 'select(type == "object" and .real == null)' \

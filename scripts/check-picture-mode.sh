@@ -37,7 +37,11 @@ else
 fi
 
 RULES="$ROOT/rules/standing-rules.md"
-grep -qi 'picture mode' "$RULES" 2>/dev/null || { echo "check-picture-mode: rules/standing-rules.md no longer states the picture-mode rule" >&2; fail=1; }
+grep -qF 'checked against the kit before the owner sees it' "$RULES" 2>/dev/null || { echo "check-picture-mode: rules/standing-rules.md no longer states the picture-mode rule" >&2; fail=1; }
+for want in 'checked again after its fixes' 'starts as a prototype'; do
+  grep -qF -- "$want" "$RULES" 2>/dev/null || { echo "check-picture-mode: rules/standing-rules.md no longer states '$want'" >&2; fail=1; }
+  grep -qF -- "$want" "$PRULES" 2>/dev/null || { echo "check-picture-mode: shared/picture-rules.md no longer states '$want'" >&2; fail=1; }
+done
 
 [ "$fail" -eq 0 ] && echo "check-picture-mode: ok ($senders skill file(s) hand the operator a picture, all gated on KIT: MATCH)"
 exit "$fail"

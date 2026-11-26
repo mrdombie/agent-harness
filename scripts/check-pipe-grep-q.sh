@@ -4,7 +4,8 @@
 # SIGPIPE (141), and pipefail makes the whole pipeline fail. Read the output into a
 # variable and grep that (a here-string), or let grep read everything (`>/dev/null`).
 #
-#   check-pipe-grep-q.sh [file…]   default: every non-test .sh under the kit that sets pipefail
+#   check-pipe-grep-q.sh [file…]   default: every non-test .sh under the kit (a sourced library runs
+#                                  under its caller's pipefail, so setting it is not the test)
 #
 # Prints <file>:<line>: <text> for each `| grep -q` whose pipeline starts with
 # anything but printf or echo (a builtin writing a short string finishes before grep
@@ -17,7 +18,7 @@ if [ $# -eq 0 ]; then
   set --
   while IFS= read -r f; do set -- "$@" "$f"; done < <(
     cd "$ROOT" && git ls-files '*.sh' 2>/dev/null | grep -vE '(\.test\.sh$|/tests/|^reference/)' \
-      | while IFS= read -r f; do grep -l 'pipefail' "$f" 2>/dev/null; done | sed "s#^#$ROOT/#")
+      | sed "s#^#$ROOT/#")
 fi
 [ $# -gt 0 ] || exit 0
 perl -ne '
@@ -29,7 +30,7 @@ perl -ne '
   # Quoted text cannot hold a pipe that matters.
   (my $s = $l) =~ s/\x27[^\x27]*\x27/Q/g; $s =~ s/"(?:[^"\\]|\\.)*"/Q/g;
   $s =~ s/\s#.*$//;
-  last unless $s =~ /\|\s*grep\s+(?:-[A-Za-z]*q[A-Za-z]*|--quiet)\b/;
+  last unless $s =~ /(?<!\|)\|(?!\|)\s*grep\s+(?:-[A-Za-z]*q[A-Za-z]*|--quiet)\b/;   # `||` is no pipe
   my $pre = substr($s, 0, $-[0]);
   my $flag = 0;
   my @chunks = split /\|\||&&|;|\$\(|\(|\{|\bif\b|\belif\b|\bthen\b|\belse\b|\bwhile\b|!|`/, $pre, -1;

@@ -150,6 +150,25 @@ s=$(status_line)
 [ $rc -ne 0 ] && printf '%s' "$s" | grep -q 'state=failure' && [ ! -f "$D/prompt-seen" ] \
   && grep -q 'evidence gap.*voice-menu-phone-dark' "$D/comment-0.md" && ok "a picture region with no pinned shot fails, named, before any model runs" || bad "gap: rc=$rc status=$s"
 
+# 3a DARK AFTER THE RELEASE: a project whose capture shoots dark only once its release is
+# done owes no dark region before it; a light region is still owed, and so is dark after.
+CFG3="$HARNESS_CFG_PATH"; cp "$CFG3" "$FIX/cfg3.keep"
+jq '.evidence.darkAfterRelease = true | .release.done = false' "$FIX/cfg3.keep" > "$CFG3"
+reset; rm "$D/shots/voice-menu-phone-dark.png"; answer SHIP
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+[ $rc -eq 0 ] && status_line | grep -q 'state=success' && [ -f "$D/prompt-seen" ] \
+  && ok "dark after the release: a missing dark region is not owed, and the critic judges" || bad "dark waived: rc=$rc $(status_line)"
+reset; answer SHIP; rm "$D/shots/voice-grid-laptop-light.png"
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+[ $rc -ne 0 ] && status_line | grep -q 'state=failure' && grep -q 'evidence gap.*voice-grid-laptop-light' "$D/comment-0.md" \
+  && ok "dark after the release: a missing light region still fails" || bad "light still owed: rc=$rc $(status_line)"
+jq '.evidence.darkAfterRelease = true | .release.done = true' "$FIX/cfg3.keep" > "$CFG3"
+reset; answer SHIP; rm "$D/shots/voice-menu-phone-dark.png"
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+[ $rc -ne 0 ] && grep -q 'evidence gap.*voice-menu-phone-dark' "$D/comment-0.md" \
+  && ok "once the release is done, the dark region is owed again" || bad "dark after release: rc=$rc $(status_line)"
+cp "$FIX/cfg3.keep" "$CFG3"
+
 # 3b THE BUG (#297): the PR changed a drawer and no capture step opens it. Fails without a
 # model call, as an evidence-gap finding the repair reads from the judge's record.
 reset; answer SHIP

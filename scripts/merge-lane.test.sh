@@ -9,6 +9,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A live coordinator's required-checks cache would be read, and written, by the fixture.
+unset PR_RED_REQ_FILE PR_RED_REQ_CACHE
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -70,12 +72,21 @@ cat > "$BIN/notify" <<'SH'
 echo "$1" >> "$FIX/notify.log"
 SH
 chmod +x "$BIN/gh" "$BIN/notify"
+# A person's stop: nothing stops a PR unless a case writes pstop-<pr>.rc (and .why).
+cat > "$BIN/person-stop" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/pstop.log"
+[ -f "$FIX/pstop-$3.why" ] && cat "$FIX/pstop-$3.why"
+exit "$(cat "$FIX/pstop-$3.rc" 2>/dev/null || echo 0)"
+SH
+chmod +x "$BIN/person-stop"
+export MERGE_LANE_PERSON_STOP="$BIN/person-stop"
 export COORDINATOR_NOTIFY_CMD="$BIN/notify"
 unset MERGE_LANE_SHADOW COORDINATOR_SHADOW
 
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$FIX"/gh/update-*.fail "$FIX"/gh/merge-*.fail "$FIX"/gh/api-repos_*compare*.json "$FIX"/gh/api-repos_*annotations*.json
-  : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"
+  : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"; : > "$FIX/pstop.log"; rm -f "$FIX"/pstop-*
   printf '[]\n' > "$FIX/gh/prs-all.json"
   printf '[{"name":"queue:merge"}]\n' > "$FIX/gh/labels.json"; rm -f "$FIX/gh/label-create.fail"
   export SWARM_NOW=1000
@@ -574,10 +585,40 @@ keep_pr FAILURE; labels_are 80 801 project:keep
 live >/dev/null
 want "its critic red: nothing merged"              "" "$(merges)"
 want "  and nothing is queued"                     "" "$(fixers)"
+cfg '.coordinator.criticWaitMin = 30'
 keep_pr PENDING; labels_are 80 801 project:keep
 live >/dev/null
-want "its verdict owed: nothing merged"            "" "$(merges)"
+want "its verdict owed, inside criticWaitMin: nothing merged" "" "$(merges)"
 want_in "  it waits for the critic by name"        'waiting for checks: Design critic' "$(cat "$C/lane.status")"
+export SWARM_NOW=2800; out=$(live)
+want "30 min on the same head with no verdict: merged" "80" "$(merges)"
+want_in "  and the log says the critic never reported" 'Design critic has not reported in 30 min' "$out"
+keep_pr PENDING; labels_are 80 801 project:keep
+live >/dev/null
+set_pr 80 '.headRefOid = "s80b"'; compare develop s80b 0
+export SWARM_NOW=2700; live >/dev/null
+export SWARM_NOW=2900; live >/dev/null
+want "a new head restarts the clock: 200s after it, nothing merged" "" "$(merges)"
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 80 s80 - 1 build:PENDING lint:SUCCESS; compare develop s80 0; critic 80 PENDING; labels_are 80 801 project:keep
+live >/dev/null; export SWARM_NOW=2800; live >/dev/null
+want "past the window with a required check pending: nothing merged" "" "$(merges)"
+keep_pr FAILURE; labels_are 80 801 project:keep
+live >/dev/null; export SWARM_NOW=2800; live >/dev/null
+want "past the window, its critic red: nothing merged" "" "$(merges)"
+want_in "  it leaves the lane on the red"          '^pr edit 80 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.wait"; cfg '.merge.updateBehind = "bot"'
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 11 s11 - 1 build:PENDING lint:SUCCESS; pr 80 s80 - 1 build:SUCCESS lint:SUCCESS
+compare develop s11 0; compare develop s80 0; critic 80 PENDING; labels_are 80 801 project:keep
+live >/dev/null
+want "bot: a member owing its critic does not merge past the head inside the window" "" "$(merges)"
+export SWARM_NOW=2800; out=$(live)
+want "bot: past the window it merges in the pending head's place" "80" "$(merges)"
+want_in "  and the log says the critic never reported" '#80 merges without Design critic — Design critic has not reported in 30 min on s80' "$out"
+want_not_in "  and the act does not call it all-green"  'merge	80	.*every required check green' "$(cat "$C/actions.log")"
+want "  and the head keeps its place"              "11" "$(jq -r '.head.pr' "$C/lane.did.json")"
+cp "$FIX/cfg.wait" "$HARNESS_CFG_PATH"
 keep_pr -; labels_are 80 801 project:keep
 live >/dev/null
 want "no critic status on the head: merged (nothing would judge it)" "80" "$(merges)"
@@ -592,6 +633,51 @@ keep_pr FAILURE; labels_are 80 801 project:keep
 live >/dev/null
 want "the key absent: merged, as today"            "80" "$(merges)"
 rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.keep" "$HARNESS_CFG_PATH"
+
+echo "--- green on every required check but UNSTABLE (a non-required red): it merges ---"
+pixels_red() { set_pr "$1" '.mergeStateStatus = "UNSTABLE" | .statusCheckRollup += [{__typename:"CheckRun", name:"Does this diff need pixels?", status:"COMPLETED", conclusion:"FAILURE"}]'; }
+fresh; pr 12 s12 - 1 build:SUCCESS lint:SUCCESS; compare develop s12 0; pixels_red 12
+live >/dev/null
+want "the head merges on its own sha"              1 "$(grep -cE '^pr merge 12 .*--squash.*--match-head-commit s12' "$GH_LOG")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.unstable"; cfg '.merge.updateBehind = "bot"'
+fresh; pr 11 s11 - 1 build:PENDING lint:SUCCESS; pr 12 s12 - 1 build:SUCCESS lint:SUCCESS
+compare develop s11 0; compare develop s12 0; pixels_red 12
+live >/dev/null
+want "bot: an UNSTABLE green member merges past a pending head" "12" "$(merges)"
+want "  on the sha it judged"                      1 "$(grep -cE '^pr merge 12 .*--match-head-commit s12' "$GH_LOG")"
+cp "$FIX/cfg.unstable" "$HARNESS_CFG_PATH"
+cfg '.gates.requiredChecks += ["Design critic"] | .release = {nonBlockingChecks: ["Design critic"], done: false} | .review.judge.duringReleaseLabels = ["project:keep"]'
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 80 s80 - 1 build:SUCCESS lint:SUCCESS; compare develop s80 0; _fix_require_add "Design critic"
+critic 80 FAILURE; set_pr 80 '.mergeStateStatus = "UNSTABLE"'; labels_are 80 801 screen:new
+live >/dev/null
+want "a non-blocking critic red on a ticket not kept: merged" "80" "$(merges)"
+rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.unstable" "$HARNESS_CFG_PATH"
+
+echo "--- a person's stop is read before every merge: a stopped head stalls in place ---"
+fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
+echo 1 > "$FIX/pstop-21.rc"; echo "Critical: Dom said not yet at 10:00" > "$FIX/pstop-21.why"
+out=$(live)
+want "a stopped green head is not merged"        "" "$(merges)"
+want "  the stop was asked of its ticket and PR" "check 211 21" "$(cat "$FIX/pstop.log")"
+want_in "  the log carries the stop's sentence"  'a person stopped it: Critical: Dom said not yet' "$(cat "$C/lane.log")"
+want_in "  and so does the status line"          'a person stopped it: Critical: Dom said not yet' "$(cat "$C/lane.status")"
+want "  it stays head, not taken out"            "21" "$(jq -r '.head.pr' "$C/lane.did.json")"
+fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
+echo 2 > "$FIX/pstop-21.rc"
+out=$(live)
+want "a head whose stop could not be read is not merged" "" "$(merges)"
+want_in "  and the log says so"                  "could not read a person's stop" "$(cat "$C/lane.log")"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.pstop"; cfg '.merge.updateBehind = "bot"'
+fresh
+pr 18 s18 - 1 build:PENDING lint:SUCCESS; compare develop s18 0
+pr 19 s19 - 1 build:SUCCESS lint:SUCCESS; compare develop s19 0
+pr 20 s20 - 1 build:SUCCESS lint:SUCCESS; compare develop s20 0
+echo 1 > "$FIX/pstop-19.rc"; echo "do-not-merge put on by dom" > "$FIX/pstop-19.why"
+live >/dev/null
+want "bot: a stopped member does not merge past the head; an unstopped one does" "20" "$(merges)"
+want_in "  and the log says why it was passed over" '#19 .*a person stopped it: do-not-merge put on by dom' "$(cat "$C/lane.log")"
+cp "$FIX/cfg.pstop" "$HARNESS_CFG_PATH"
 
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0

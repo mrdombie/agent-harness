@@ -23,6 +23,10 @@ import glob, hashlib, json, os, re, shlex, subprocess, sys, tempfile
 #
 # Not judged: a plain `bash x.test.sh` whose bytes match origin's integration branch.
 # Repo tests build scratch harness.json fixtures; an edited or unmerged one is judged.
+# Nor a script whose bytes match the one this guard's own kit ships at the same place:
+# that is the kit's behaviour, not the agent's. A changed copy is judged as written.
+#
+# Writes are judged, not mentions: an assignment that only names the path is a read.
 
 KEYS = ('preApprovedWrites', 'integrationBranch')
 MAX_SCRIPT = 256 * 1024
@@ -37,7 +41,10 @@ READERS = {'cat', 'jq', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'head', 'tail', 'l
            'cmp', 'ls', 'stat', 'file', 'echo', 'printf', 'bat', 'test', '[', 'shasum', 'sha256sum', 'md5',
            'md5sum', 'cksum', 'git', 'gh', 'realpath', 'readlink', 'dirname', 'basename', 'open', 'code',
            'column', 'sort', 'uniq', 'cut', 'tr', 'nl', 'od', 'xxd', 'hexdump', 'true', 'false', ':',
-           'node', 'python', 'python3', 'cd', 'pushd', 'popd', 'source', '.', 'bash', 'sh', 'zsh'}
+           'node', 'python', 'python3', 'cd', 'pushd', 'popd', 'source', '.', 'bash', 'sh', 'zsh', '[['}
+# Builtins that only give a variable a value. Naming the path in one is a read.
+DECLARE = {'local', 'export', 'declare', 'typeset', 'readonly'}
+KIT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # What a script does to a file once it has named it. Text, by necessity: the
 # result cannot be computed without running the script.
 WRITE_MARK = re.compile(r'''(?<!stdout)(?<!stderr)\.write(_text|_bytes)?\(|writeFile|appendFile|createWriteStream|'''
@@ -55,7 +62,13 @@ ASK = ("Only the operator adds, widens or edits `preApprovedWrites` (or the `int
        "For an unrelated edit to harness.json, use the Edit tool: it shows the guard the key is unchanged.")
 
 
+AT = []  # (script or None, line number, line text) of the command being judged
+
+
 def refuse(why):
+    if AT and AT[0][2].strip():
+        script, n, text = AT[0]
+        why += ' That is line %d of %s: `%s`.' % (n, script or 'the command', text.strip()[:160])
     sys.stderr.write('Blocked: ' + why + ' ' + ASK + '\n')
     sys.exit(2)
 
@@ -258,6 +271,7 @@ def scan(text):
                     j = text.find('\n', i)
                     line = text[i:] if j < 0 else text[i:j]
                     i = n if j < 0 else j + 1
+                    out.append('\n')  # the body's lines stay counted
                     if (line.lstrip('\t') if strip else line) == term:
                         break
                     buf.append(line)
@@ -285,16 +299,44 @@ def is_sep(t):
 
 
 def segments(toks):
-    seg = []
+    """Each command's words, with the line it starts on."""
+    seg, line, start = [], 1, 1
     for t in toks:
         if is_sep(t):
             if seg:
-                yield seg
+                yield seg, start
             seg = []
         else:
+            if not seg:
+                start = line
             seg.append(t)
+        line += t.count('\n')
     if seg:
-        yield seg
+        yield seg, start
+
+
+def substitutions(tok):
+    """The commands inside a word's `$( )` and backticks; None when one never closes."""
+    found, i, n = [], 0, len(tok)
+    while i < n:
+        if tok.startswith('$(', i) and not tok.startswith('$((', i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += (tok[j] == '(') - (tok[j] == ')')
+                j += 1
+            if depth:
+                return None
+            found.append(tok[i + 2:j - 1])
+            i = j
+        elif tok[i] == '`':
+            j = tok.find('`', i + 1)
+            if j < 0:
+                return None
+            found.append(tok[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return found
 
 
 def expand(tok, cwd):
@@ -342,10 +384,12 @@ def args_of(seg):
     return args, redirs, assigns
 
 
-def judge_bash(cmd, cwd, depth=0):
+def judge_bash(cmd, cwd, depth=0, script=None, track=True):
+    """script: the file cmd was read from. track off: cmd is a word of the line already being judged."""
     if depth > 3:
         return
     learn(cwd)
+    lines = cmd.split('\n')
     code, bodies = scan(cmd)
     try:
         toks = tokens(code)
@@ -355,7 +399,9 @@ def judge_bash(cmd, cwd, depth=0):
                    'what it does. Rewrite it in plainer shell (no unbalanced quotes).')
         return
     body_i = 0
-    for seg in segments(toks):
+    for seg, line in segments(toks):
+        if track:
+            AT[:] = [(script, line, lines[line - 1] if line <= len(lines) else '')] if script or len(lines) > 1 else []
         args, redirs, assigns = args_of(seg)
         here = None
         nhere = sum(1 for op, _ in redirs if op in ('<<', '<<-'))
@@ -396,20 +442,32 @@ def judge_bash(cmd, cwd, depth=0):
                 learn(cwd)
             continue
         if name in SHELLS or name in ('eval', 'source', '.'):
-            inner = None
+            inner, inner_script = None, None
             if name == 'eval':
                 inner = ' '.join(args[1:])
             elif '-c' in args[1:]:
                 k = args.index('-c')
                 inner = args[k + 1] if k + 1 < len(args) else None
             elif len(args) > 1 and not args[1].startswith('-'):
-                if name in SHELLS and plain_run(args, assigns, cwd) and trusted_test(expand(args[1], cwd)[0]):
+                target = expand(args[1], cwd)[0]
+                if name in SHELLS and plain_run(args, assigns, cwd) and trusted_test(target):
                     continue
-                inner = read(expand(args[1], cwd)[0])
+                if name in SHELLS and kit_script(target) and not names_cfg(args[2:] + list(assigns.values()), cwd):
+                    continue
+                inner, inner_script = read(target), target
             elif here is not None:
                 inner = here
             if inner:
-                judge_bash(inner, cwd, depth + 1)
+                judge_bash(inner, cwd, depth + 1, inner_script or script, bool(inner_script))
+            continue
+        if name in DECLARE:
+            for a in args[1:]:
+                inner = substitutions(a)
+                if inner is None and names_cfg([a], cwd):
+                    refuse('`%s` names harness.json inside a command substitution that never closes, so the guard '
+                           'cannot see what runs there.' % name)
+                for sub in inner or []:
+                    judge_bash(sub, cwd, depth + 1, script, False)
             continue
         if name == 'git':
             judge_git(args, cwd, here, assigns)
@@ -440,8 +498,13 @@ def judge_bash(cmd, cwd, depth=0):
                     or a.startswith('--method') or a.startswith('-X') for a in args[1:]):
                 refuse('this writes harness.json on the remote through the GitHub API, where the guard cannot see the value.')
             continue
-        if INTERPRETERS.match(name) or os.path.isfile(expand(args[0], cwd)[0]):
+        # A bare pattern (`*)` in a case) is not a file being run: the shell never globs one out of this folder.
+        pattern = '/' not in args[0] and any(c in args[0] for c in '*?[')
+        if INTERPRETERS.match(name) or (not pattern and os.path.isfile(expand(args[0], cwd)[0])):
             if not INTERPRETERS.match(name) and plain_run(args, assigns, cwd) and trusted_test(expand(args[0], cwd)[0]):
+                continue
+            if not INTERPRETERS.match(name) and kit_script(expand(args[0], cwd)[0]) and \
+                    not names_cfg(args[1:] + list(assigns.values()), cwd):
                 continue
             judge_script(name, args, cwd, here, depth)
             continue
@@ -487,6 +550,24 @@ def trusted_test(path):
     return bool(merged and disk) and merged.strip() == disk.strip()
 
 
+def kit_script(path):
+    """A file byte-identical to the one this guard's own kit ships at the same place."""
+    p = os.path.realpath(path)
+    root = os.path.realpath(KIT)
+    if not os.path.isfile(os.path.join(root, '.claude-plugin', 'plugin.json')) or not os.path.isfile(p):
+        return False
+    parts = p.split(os.sep)
+    for k in range(1, len(parts)):
+        mine = os.path.realpath(os.path.join(root, *parts[k:]))
+        if os.path.isfile(mine) and mine.startswith(root + os.sep):
+            try:
+                with open(mine, 'rb') as a, open(p, 'rb') as b:
+                    return hashlib.sha256(a.read()).digest() == hashlib.sha256(b.read()).digest()
+            except OSError:
+                return False
+    return False
+
+
 def plain_run(args, assigns, cwd):
     # Only `<shell> <script>` or `<script>` alone: an argument or variable could aim it at the real file.
     return len(args) == 1 + (os.path.basename(args[0]) in SHELLS) and not names_cfg(list(assigns.values()), cwd)
@@ -512,7 +593,7 @@ def judge_script(name, args, cwd, here, depth):
             return
         first = src.split('\n', 1)[0]
         if re.search(r'\b(ba|z|da|k)?sh\b', first):
-            judge_bash(src, cwd, depth + 1)
+            judge_bash(src, cwd, depth + 1, p)
             return
         texts.append(src)
     for t in texts:

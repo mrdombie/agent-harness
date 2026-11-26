@@ -118,6 +118,7 @@ want "the review step is given no Agent tool" "" "$(jq -r '.steps.review.tools /
 # The check reads and judges; it runs nothing and starts nothing.
 want "the review check is given Read, Grep and Glob only" "Read Grep Glob" "$(jq -r '.steps["review-check"].tools // ["(unset: every tool)"] | join(" ")' "$FACTS")"
 want "the review check declares no skill" "" "$(jq -r '.steps["review-check"].skills | join(" ")' "$FACTS")"
+want "the accounting round is given Read, Grep and Glob only" "Read Grep Glob" "$(jq -r '.steps["account-tests"].tools // ["(unset: every tool)"] | join(" ")' "$FACTS")"
 
 # --- the copy probe ------------------------------------------------------------
 # A real measurement of copying: the longest run of words a brief shares with a
@@ -156,6 +157,13 @@ PY
     done
   done
 fi
+
+# The build and fix briefs give one accounting rule, and it covers a deleted file.
+para() { awk '/^## A test you reword or remove is accounted for/{f=1;next} f&&/^(## |\*\*)/{exit} f' "$BRIEFS/$1.md"; }
+want "build.md and fix.md give the same replacedTests rule" "$(para build)" "$(para fix)"
+para build | tr '\n' ' ' | grep -qiE 'delet[a-z]* (a )?(whole )?test file' \
+  && ok "the replacedTests rule names a deleted test file" \
+  || bad "the replacedTests rule no longer names a deleted test file"
 
 [ "$FAILED" = 0 ] && echo "briefs: all good"
 suite_end "$FAILED"
