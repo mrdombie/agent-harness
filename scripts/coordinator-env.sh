@@ -85,6 +85,8 @@ _coord_self="${BASH_SOURCE[0]}"
 COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_coord_self")" && pwd)/branch-ticket.sh" || return 1 2>/dev/null || exit 1
+# host_heavy_untracked: the heavy jobs on this host that no tracked run owns.
+. "$(cd "$(dirname "$_coord_self")" && pwd)/host-heavy.sh" || return 1 2>/dev/null || exit 1
 # driver_repo_self / driver_repo_foreign: a repo:<other> ticket is never seeded, ordered or started here.
 . "$(cd "$(dirname "$_coord_self")/../driver" && pwd)/size-rules.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
@@ -535,13 +537,18 @@ coord_kill_tree() {
   kill -KILL "$1" 2>/dev/null
 }
 coord_lock() { # <dir> <noun> [max-sec]
-  local lock="$1" who="${2:-run}" max="${3:-}" holder age i
+  local lock="$1" who="${2:-run}" max="${3:-}" holder age i m
   COORD_LOCK_WHY=""; COORD_LOCK_STOPPED=""
   case "$max" in ''|*[!0-9]*|0) max="" ;; esac
   if ! mkdir "$lock" 2>/dev/null; then
     holder=$(cat "$lock/pid" 2>/dev/null)
-    if [ -z "$holder" ] && [ $(( $(date +%s) - $(coord_mtime "$lock") )) -lt 60 ]; then
-      COORD_LOCK_WHY="another $who is taking the lock"; return 1
+    if [ -z "$holder" ]; then
+      m=$(coord_mtime "$lock")
+      # An unreadable age is a dir let go mid-read, not an ancient one.
+      case "$m" in ''|0) COORD_LOCK_WHY="another $who just let the lock go"; return 1 ;; esac
+      if [ $(( $(date +%s) - m )) -lt 60 ]; then
+        COORD_LOCK_WHY="another $who is taking the lock"; return 1
+      fi
     fi
     if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
        && [ "$(coord_started_of "$holder")" = "$(cat "$lock/started" 2>/dev/null)" ]; then

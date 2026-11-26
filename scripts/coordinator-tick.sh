@@ -130,6 +130,12 @@ final_line() { # <log> — the run's own last word
   printf '%s' "$r" | tr '\t\n' '  ' | cut -c1-240
 }
 limit_hit() { swarm_usage_log_limited "$1"; }
+# A lost login, read off the CLI's lines or the driver's own requeue for one: the host's, not the ticket's.
+auth_stop() { # <log> [last line]
+  swarm_login_log_lost "$1" && return 0
+  case "${2:-}" in *"Claude login"*"is gone"*) return 0 ;; esac
+  return 1
+}
 # Runs the wall cut off mid-work, waiting to go back on the queue: <ticket> \t <run-id> \t <log> \t <why>
 CUT_PENDING="$COORD_DIR/cut.$(coord_mode)"
 cut_off() { [ -n "$1" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$CUT_PENDING"; }
@@ -180,6 +186,7 @@ no_progress() { # <ticket> <run-id> <exit> <result line> <secs> — notes the ru
   issue_status_set "$t" "$LBL_PARKED" --also "$LBL_PM_DECISION" >/dev/null 2>&1 || say "no progress: #$t could not be labelled $LBL_PARKED"
   say "no progress: #$t parked for the PM — $q"
 }
+CPS_FILE="$COORD_DIR/claim-push-streak"; CPS_ROWS=""
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)
@@ -197,11 +204,14 @@ for ended in "$RUNS_DIR"/*.ended; do
       else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
+  cps_err=""
+  case "$code:$last" in "${DRIVER_E_MACHINE:-33}:"*"machine fault: cannot claim: "*) cps_err="${last#*cannot claim: }"; cps_err="${cps_err%% — *}" ;; esac
+  CPS_ROWS="$CPS_ROWS$(jq -r '.ended_at // ""' "$ended" 2>/dev/null)"$'\t'"$rid"$'\t'"$cps_err"$'\n'
   case "$code" in
     ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}"|"${DRIVER_E_ELSEWHERE:-36}") ;;
     # A claim lost to another machine's coordinator is the race's, not the ticket's.
-    "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
-    *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
+    "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || auth_stop "$log" "$last" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
+    *) limit_hit "$log" || auth_stop "$log" "$last" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
   esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
   if [ -n "$ticket" ]; then
@@ -219,9 +229,8 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif swarm_login_log_lost "$log"; then
     event "login-lost:$rid" login-lost false "$ticket" "" "run $rid stopped: the CLI is not logged in"
     cut_off "$ticket" "$rid" "$log" "a lost login"
-    if event "login-lost:$(swarm_day)" login-lost false "" "" "the agents' CLI is not logged in"; then
-      bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
-    fi
+    # One outage, one owner notice: the auth hold's, raised below under any hold.
+    coord_shadow || swarm_auth_hold >/dev/null || swarm_auth_hold_write "$(swarm_api_auth_log "$log") (run $rid)"
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
     # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
@@ -239,6 +248,9 @@ for ended in "$RUNS_DIR"/*.ended; do
           bash "$NOTIFY" --class owner "host-tools:$(swarm_day)" "A build host is missing tools the builds need: ${last#*machine fault: }"
         fi
         say "machine: run $rid did not start #${ticket:-?} — ${last#*machine fault: }" ;;
+      *"machine fault: cannot claim: "*)
+        cerr="${last#*cannot claim: }"
+        say "machine: run $rid cannot claim #${ticket:-?}: ${cerr%% — *}" ;;
       *) say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again" ;;
     esac
   elif [ "$code" = 26 ]; then
@@ -248,6 +260,28 @@ for ended in "$RUNS_DIR"/*.ended; do
     event "stood-down:$rid" stood-down true "$ticket" "" "run $rid ended exit $code: ${last:-no result line}"
   fi
 done
+
+# Claim pushes failing in a row on this host, in the order the runs ended (the loop above is glob order).
+CPS_N=0; CPS_ERR=""; CPS_RID=""
+[ -f "$CPS_FILE" ] && IFS=$'\t' read -r CPS_N CPS_ERR CPS_RID < "$CPS_FILE"
+case "$CPS_N" in ''|*[!0-9]*) CPS_N=0 ;; esac
+if [ -n "$CPS_ROWS" ]; then
+  while IFS=$'\t' read -r _ cps_r cps_e; do
+    [ -n "$cps_r" ] || continue
+    if [ -n "$cps_e" ]; then
+      CPS_N=$((CPS_N+1)); CPS_ERR="$cps_e"
+      [ "$CPS_N" -lt 3 ] || [ -n "$CPS_RID" ] || CPS_RID="$cps_r"
+    else CPS_N=0; CPS_ERR=""; CPS_RID=""; fi
+  done < <(printf '%s' "$CPS_ROWS" | sort -t$'\t' -k1,1)
+  printf '%s\t%s\t%s\n' "$CPS_N" "$CPS_ERR" "$CPS_RID" > "$CPS_FILE"
+fi
+CLAIM_HOLD=""
+if [ "$CPS_N" -ge 3 ]; then
+  CLAIM_HOLD="3 claim pushes in a row failed on this host ($CPS_N so far; last: $CPS_ERR)"
+  if event "claim-push-fails:$COORD_HOST:${CPS_RID:-?}" claim-push-fails false "" "" "$COORD_HOST takes no builds: $CLAIM_HOLD"; then
+    bash "$NOTIFY" --class owner "claim-push-fails:$COORD_HOST:${CPS_RID:-?}" "claim-push-fails: $COORD_HOST starts no builds: $CPS_N claim pushes in a row failed — git said: $CPS_ERR. Repair that clone, then rm $CPS_FILE"
+  fi
+fi
 
 # ---- 3. live and frozen runs -------------------------------------------------
 # A run's last sign of progress: its log, and any progress_paths its record names
@@ -270,7 +304,7 @@ progress_mtime() { # <record> <log>
   printf '%s' "$best"
 }
 NOW=$(swarm_now)
-LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""
+LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""; TRACKED_PIDS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$rec" ] || continue
   # A run whose pid now answers for another process (macOS reuses pids) is over:
@@ -283,6 +317,7 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   fi
   swarm_record_alive "$rec" || continue
   LIVE=$((LIVE+1)); LIVE_RECS="$LIVE_RECS$rec"$'\n'
+  TRACKED_PIDS="$TRACKED_PIDS $(jq -r '[.pid, .child_pid] | map(select(. != null)) | map(tostring) | join(" ")' "$rec" 2>/dev/null)"
   rid=$(basename "$rec" .json)
   ticket=$(jq -r '.ticket // empty' "$rec" 2>/dev/null)
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
@@ -295,7 +330,19 @@ for rec in "$RUNS_DIR"/claim-*.json; do
     event "frozen:$rid:$seen_at" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
-say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
+# A build no record owns (hand-run, briefed, a proof tree's) still holds a place under the cap.
+UNTRACKED_SAID=""
+# shellcheck disable=SC2086  # a list of pids, split on purpose
+while IFS=$'\t' read -r _upid ukind ulabel; do
+  [ -n "$ukind" ] || continue
+  LIVE=$((LIVE+1))
+  if [ "$ukind" = build ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ulabel"
+  elif [ "$ulabel" = - ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ukind"
+  else UNTRACKED_SAID="$UNTRACKED_SAID, $ukind $ulabel"; fi
+done < <(host_heavy_untracked $TRACKED_PIDS)
+LIVE_SAID="${LIVE_TICKETS% }"
+[ -z "$UNTRACKED_SAID" ] || LIVE_SAID="${LIVE_SAID:+$LIVE_SAID }untracked: ${UNTRACKED_SAID#, }"
+say "live: $LIVE run(s) ${LIVE_SAID:+[$LIVE_SAID]}"
 
 # ---- 4. pull requests --------------------------------------------------------
 # One read of the open PRs serves the whole tick and the queue refresh. A refused
@@ -679,6 +726,11 @@ say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 # A host whose builds cannot run their step's skill takes none, and says why on the sheet.
 COORD_CLI_VERSION=$(harness_claude_cli_version)
 SKILL_HOLD=$(coord_skill_hold "$COORD_CLI_VERSION" "$HARNESS_RUNNING") || SKILL_HOLD=""
+# A host whose Claude login is lost starts nothing: every build would die at its first call.
+# A shadow tick only reads the hold: a probe is a paid call and can move the real hold.
+coord_shadow || swarm_auth_check >/dev/null || true
+AUTH_HOLD=$(swarm_auth_hold) && AUTH_HOLD=$(printf '%s' "$AUTH_HOLD" | cut -c1-240) || AUTH_HOLD=""
+AUTH_SINCE=$(swarm_usage_hold_field "${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" 1 2>/dev/null)
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -714,7 +766,8 @@ ticket_tooling() { # <ticket> — 0 when the tick's read holds it as tooling und
     | $i != null and any(($i.labels // [])[]; . as $l | $want | index($l) != null)' >/dev/null 2>&1 <<<"$ISSUES"
 }
 # The tooling runs live on every host: this host's runs, and the other hosts' claims.
-TOOLING_LIVE=0; TOOLING_LIVE_TICKETS=""
+TOOLING_LIVE=0; TOOLING_LIVE_TICKETS=""; LIVE_TOOLING=0
+for t in $LIVE_TICKETS; do ticket_tooling "$t" && LIVE_TOOLING=$((LIVE_TOOLING+1)); done
 while IFS= read -r t; do
   [ -n "$t" ] || continue
   ticket_tooling "$t" && { TOOLING_LIVE=$((TOOLING_LIVE+1)); TOOLING_LIVE_TICKETS="$TOOLING_LIVE_TICKETS #$t"; }
@@ -804,7 +857,7 @@ fi
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
+  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool placed=0
   local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
   local sk_rel="" sk_proc="" sk_pace="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
   local exempt exm exempt_said
@@ -874,7 +927,8 @@ candidates() {
     if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
     [ "$proc" = 1 ] || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
-    [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+    # Only a row that takes a free place spends tooling room: the next pick listed past them starts nothing.
+    [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
     [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:$([ "$exm" = fix ] && printf 'fix-round' || printf 'P%s' "$pri")"
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
@@ -901,7 +955,7 @@ candidates() {
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" new "$note"); then say "skip #$t (new, quick): $why"; continue; fi
       qn=$((qn+1)); capped=$((capped-1)); other=1
-      [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+      [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
       QUICK_OK="$QUICK_OK $t"
       rows="$rows$i"$'\t'"$t"$'\t'new$'\t'0$'\t'0$'\t'"$note"$'\n'
     done <<< "$qwait"
@@ -918,7 +972,7 @@ candidates() {
       [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): $why"; continue; fi
-      nn=$((nn+1)); [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+      nn=$((nn+1)); [ "$tool" = 0 ] || [ "$placed" -ge "$SLOTS" ] || tool_left=$((tool_left-1)); placed=$((placed+1))
       rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'0$'\t'"$note"$'\n'
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
@@ -931,7 +985,9 @@ candidates() {
   [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
   [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"
   [ -z "$sk_polish" ] || say "skip${sk_polish}: polish — rides along while other work can start"
-  [ -z "$sk_behind" ] || say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"
+  if [ -n "$sk_behind" ] && [ "$SLOTS" -le 0 ] && [ "$LIVE" -gt 0 ]; then
+    say "skip${sk_behind}: all $LIVE place(s) are held — $(( LIVE - LIVE_TOOLING )) by product work, $LIVE_TOOLING by tooling ($(printf '#%s ' $LIVE_TICKETS | sed 's/ $//'))"
+  elif [ -n "$sk_behind" ]; then say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"; fi
   coord_release_on && say "scope: release only — $(( $(jq -r '.release_held // 0' "$COORD_QUEUE" 2>/dev/null || echo 0) + rel_held )) new outside scope held back"
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
   [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP; the places go to product work"
@@ -985,12 +1041,37 @@ if [ -n "$DISK_HOLD" ]; then
   event "disk-hold:$(swarm_day)" disk-low false "" "" "$DISK_HOLD" || true
 fi
 
+# Raised under any hold: the owner clearing a disk hold must not learn of the login a tick later.
+if [ -n "$AUTH_HOLD" ]; then
+  if event "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" auth-hold false "" "" "$COORD_HOST is paused for auth: $AUTH_HOLD"; then
+    bash "$NOTIFY" --class owner "auth-hold:$COORD_HOST:${AUTH_SINCE:-?}" "$COORD_HOST lost its Claude login ($AUTH_HOLD) — it starts nothing until someone runs /login there" || true
+  fi
+fi
+
+# A CI lane with every runner offline holds every check that needs it; only the owner restarts that machine.
+RUNNER_LANES="${COORDINATOR_RUNNER_LANES:-$(swarm_opt coordinator.runnerLanes '')}"
+if [ -n "$RUNNER_LANES" ]; then
+  RUNNERS_JSON="$COORD_DIR/runners.json"
+  if swarm_gh api "repos/$REPO_SLUG/actions/runners?per_page=100" > "$RUNNERS_JSON" 2>/dev/null; then
+    while IFS=$'\t' read -r kind lane key msg; do
+      case "$kind" in
+        down) say "runners: $msg"; bash "$NOTIFY" --class owner "runners-offline:${key#runners-offline:}" "$msg" || true ;;
+        back) say "runners: the $lane lane has a runner online again" ;;
+      esac
+    done < <(bash "$SELF_DIR/runner-offline.sh" "$RUNNERS_JSON")
+  fi
+fi
+
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true
 elif [ -n "$DISK_HOLD" ]; then
   say "spawn: starting nothing new — $DISK_HOLD"
   coord_act_log disk-hold - "$DISK_HOLD"
+  held_view
+elif [ -n "$CLAIM_HOLD" ]; then
+  say "spawn: starting nothing new — $CLAIM_HOLD"
+  coord_act_log claim-push-hold - "$CLAIM_HOLD"
   held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"
@@ -1001,6 +1082,9 @@ elif [ -n "$SKILL_HOLD" ]; then
   say "spawn: starting nothing new — $SKILL_HOLD"
   coord_act_log skill-hold - "$SKILL_HOLD"
   event "skill-hold:$COORD_HOST:${COORD_CLI_VERSION:-?}:$HARNESS_RUNNING" skill-hold false "" "" "$COORD_HOST takes no builds: $SKILL_HOLD" || true
+elif [ -n "$AUTH_HOLD" ]; then
+  say "spawn: paused for auth — $AUTH_HOLD; it takes work again once someone logs in on $COORD_HOST"
+  coord_act_log auth-hold - "$AUTH_HOLD"
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"

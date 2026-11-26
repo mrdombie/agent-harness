@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# coordinator-usage-window.test.sh — a usage reading "only rises" inside ONE window,
-# and a window is named by its reset. On 2026-10-22 the plan account was switched: the
+# coordinator-usage-window.test.sh — a window is named by its reset, and inside ONE
+# window the newest observed reading wins. On 2026-10-22 the plan account was switched: the
 # new account read seven_day 0% (one reset), the old account's logs and the other
 # host's heartbeat still read 95-97% (a reset an hour later), and the pacer kept the
 # highest reading near the latest reset, so every build held until 27 Oct. Now the
@@ -50,7 +50,17 @@ cases() { # <kit>
   got=$(stephold "$k"); [ -z "$got" ] && echo "ok switch-no-hold" || echo "bad switch-no-hold: $got"
 
   clean; log7 claim-1-old.log 0.95 "$A" $(( NOWE - 3600 )); log7 claim-2-new.log 0.90 "$A" $(( NOWE - 600 ))
-  got=$(fresh "$k"); [ "$got" = "0.95"$'\t'"$A" ] && echo "ok same-window-only-rises" || echo "bad same-window-only-rises: $got"
+  got=$(fresh "$k"); [ "$got" = "0.9"$'\t'"$A" ] && echo "ok same-window-newest-wins" || echo "bad same-window-newest-wins: $got"
+
+  # 2026-11-15: 95% then 13% with one reset. The heartbeat is written and read back twice,
+  # as two ticks do: the 13% must still win and nothing may hold.
+  clean; log7 claim-1-old.log 0.95 "$A" $(( NOWE - 3600 )); log7 claim-2-new.log 0.13 "$A" $(( NOWE - 600 ))
+  pace "$k"; jq -c '{hosts:[{host:"here", tick:.at, usage:.usage}]}' "$C/pace.json" > "$C/fleet.json" 2>/dev/null
+  pace "$k"; jq -c '{hosts:[{host:"here", tick:.at, usage:.usage}]}' "$C/pace.json" > "$C/fleet.json" 2>/dev/null
+  got=$(fresh "$k"); [ "$got" = "0.13"$'\t'"$A" ] && echo "ok fallen-week-newest-wins" || echo "bad fallen-week-newest-wins: $got"
+  got=$(jq -r '.usage.seven_day.at // "none"' "$C/pace.json" 2>/dev/null)
+  [ "$got" = "$(( NOWE - 600 ))" ] && echo "ok fallen-week-keeps-observed" || echo "bad fallen-week-keeps-observed: $got"
+  got=$(stephold "$k"); [ -z "$got" ] && echo "ok fallen-week-no-hold" || echo "bad fallen-week-no-hold: $got"
 
   clean; log7 claim-2-new.log 0.00 "$B" $(( NOWE - 600 )); fleet yomato 0.95 "$A"
   got=$(stephold "$k"); [ -z "$got" ] && echo "ok old-heartbeat-no-hold" || echo "bad old-heartbeat-no-hold: $got"
@@ -74,7 +84,7 @@ out=$(cases "$KIT")
 printf '%s\n' "$out" | sed 's/^/  /'
 n=$(printf '%s\n' "$out" | grep -c '^bad')
 [ "$n" = 0 ] && ok "every case passes" || bad "$n case(s) failed"
-[ "$(printf '%s\n' "$out" | grep -c '^ok')" = 8 ] && ok "all 8 cases ran" || bad "not all 8 cases ran"
+[ "$(printf '%s\n' "$out" | grep -c '^ok')" = 11 ] && ok "all 11 cases ran" || bad "not all 11 cases ran"
 
 # plant <name> <python edit> — a copy of the kit with one rule removed; the cases must go red.
 plant() {
@@ -88,6 +98,11 @@ if which == "window":
     old = "              if (n == 1 || A[n] > na || (A[n] == na && R[n] > nr)) { na = A[n]; nr = R[n] }\n"
     if old not in s: sys.exit(1)
     s = s.replace(old, "              if (R[n] > nr) nr = R[n]\n")
+elif which == "highest":
+    p = root + "/swarm/swarm-env.sh"; s = open(p).read()
+    old = "(!p || A[i] >= ba)"
+    if old not in s: sys.exit(1)
+    s = s.replace(old, "(!p || U[i] > bu)")
 elif which == "observed":
     p = root + "/scripts/coordinator-env.sh"; s = open(p).read()
     old = "reset: ($r7 | tonumber), at: ($a7 | tonumber)}"
@@ -103,6 +118,13 @@ P=$(plant window window) && {
   out=$(cases "$P"); printf '%s\n' "$out" | sed 's/^/  /'
   printf '%s\n' "$out" | grep -q '^bad switch-newest-wins' && ok "planted → the switch case goes red" || bad "planted → the switch case stayed green"
   printf '%s\n' "$out" | grep -q '^bad old-heartbeat-no-hold' && ok "planted → the heartbeat case goes red" || bad "planted → the heartbeat case stayed green"
+}
+echo "--- planted: the highest reading in a window wins, not the newest ---"
+P=$(plant highest highest) && {
+  grep -q 'A\[i\] >= ba' "$P/swarm/swarm-env.sh" && bad "plant: the rule is still in the copy"
+  out=$(cases "$P"); printf '%s\n' "$out" | sed 's/^/  /'
+  printf '%s\n' "$out" | grep -q '^bad fallen-week-newest-wins' && ok "planted → the fallen week reads its old high → red" || bad "planted → the fallen week stayed green"
+  printf '%s\n' "$out" | grep -q '^bad fallen-week-no-hold' && ok "planted → the fallen week holds a step → red" || bad "planted → no hold, stayed green"
 }
 echo "--- planted: pace.json drops when the reading was observed ---"
 P=$(plant observed observed) && {

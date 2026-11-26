@@ -40,6 +40,7 @@ driver_fixture() {
   export HARNESS_LOCAL_EVIDENCE=1
   # The runner's own disk is no case's input: the guard's suite plants the free space it tests.
   export HARNESS_DISK_GUARD=off
+  export DRIVER_ALLOW_TEMP_CLONE=1   # the fixture repo lives in a temp dir by design
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"
@@ -191,7 +192,7 @@ SH
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
-  export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1 SWARM_IDLE=90
+  export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1 SWARM_IDLE=90 SWARM_FREE_MEM_PCT=60 SWARM_SWAP_PCT=0
   # Each case writes its own PRs: the shared copy is read fresh.
   export DRIVER_PRS_MAX_AGE=0
   # The machine's gate slots are shared by every session on it; a suite takes its own.
@@ -214,6 +215,15 @@ exit "$(cat "$FIX/person-stop.rc" 2>/dev/null || echo 0)"
 PS
   chmod +x "$BIN/person-stop"
   export DRIVER_PERSON_STOP="$BIN/person-stop"
+  # A person's hold (scripts/person-hold.sh) answers the same way, from $FIX/person-hold.{rc,out}.
+  cat > "$BIN/person-hold" <<'PH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/person-hold.log"
+[ -f "$FIX/person-hold.out" ] && cat "$FIX/person-hold.out"
+exit "$(cat "$FIX/person-hold.rc" 2>/dev/null || echo 0)"
+PH
+  chmod +x "$BIN/person-hold"
+  export DRIVER_PERSON_HOLD="$BIN/person-hold"
   # Anything the OPERATOR'S shell exports that would let a suite be answered by
   # the real world instead of this one. CLAIM_REPO is the dangerous one: the claim
   # lock resolves it ahead of the working directory, so a session that happens to

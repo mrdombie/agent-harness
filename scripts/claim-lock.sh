@@ -252,24 +252,35 @@ cmd_acquire() {
   sha=$(make_claim_commit "$issue" "$branch" "$worktree" "$pid" "$at")
 
   # The CAS. An empty expect-value means "must not already exist".
-  if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
-    printf 'acquired #%s\n' "$issue"
-    note_run_worktree "$worktree"
-    poke_board
-    return 0
-  fi
-
-  if grep -qiE 'stale info|already exists|non-fast-forward|rejected' <<<"$out"; then
+  local try holder
+  for try in 1 2; do
+    if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
+      printf 'acquired #%s\n' "$issue"
+      note_run_worktree "$worktree"
+      poke_board
+      return 0
+    fi
+    grep -qiE 'stale info|already exists|non-fast-forward|rejected' <<<"$out" || break
     sync_cache
-    local holder
     holder=$(read_claim "$CACHE/$issue" 2>/dev/null || true)
-    printf 'lost the race for #%s\n' "$issue" >&2
-    [ -n "$holder" ] && printf 'held by: %s\n' "$holder" >&2
-    return 10
-  fi
+    if [ -n "$holder" ]; then
+      printf 'lost the race for #%s\n' "$issue" >&2
+      printf 'held by: %s\n' "$holder" >&2
+      return 10
+    fi
+    # A refusal with no holder is origin's, never a lost race; live ones have cleared on retry.
+    [ "$try" = 1 ] && sleep "${CLAIM_RETRY_DELAY:-2}"
+  done
 
   printf '%s\n' "$out" >&2
   die "push failed for #$issue"
+}
+
+# True when a merged PR names the ticket in its title: it shipped, it was not abandoned.
+shipped_by_merged_pr() {
+  gh_call pr list --repo "$REPO_SLUG" --state merged --limit 20 \
+    --search "$1 in:title" --json number --jq 'length' 2>/dev/null \
+    | grep -qv '^0$'
 }
 
 cmd_release() {
@@ -329,6 +340,9 @@ cmd_release() {
         *,"$LBL_NEEDS_HUMAN",*|*,"$LBL_BLOCKED",*) : ;;           # escalated
         *,"$LBL_DRAFTING",*|*,"$LBL_GATED",*) : ;;                # not claimable anyway
         *,"$LBL_PM_DECISION",*|*,"$LBL_EXTERNAL_BLOCKED",*|*,"$LBL_PM_TRACK",*) : ;;
+        # A park for the machine's own fault leaves it ready beside its draft PR; the
+        # catch-all below would read that PR and hide it from every retry as in review.
+        *,"$LBL_READY",*) : ;;
         *,"$LBL_CLAIMED",*)
           # A SHIPPED ticket is not an abandoned one. /finish releases (7a) BEFORE
           # it closes the issue (7d), so at this moment a just-merged ticket still
@@ -339,9 +353,7 @@ cmd_release() {
           #
           # A merged PR naming the ticket is the discriminator: abandoned claims
           # do not have one.
-          if gh_call pr list --repo "$REPO_SLUG" --state merged --limit 20 \
-               --search "$issue in:title" --json number --jq 'length' 2>/dev/null \
-               | grep -qv '^0$'; then
+          if shipped_by_merged_pr "$issue"; then
             printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"
           else
             issue_status_set "$issue" "$LBL_READY" >/dev/null 2>&1 \
@@ -351,11 +363,17 @@ cmd_release() {
         *)
           # No status label at all — the shape this guard exists to prevent. Ready,
           # unless an open PR already closes it: then it is in review, not free.
+          # A merged ticket whose claimed label is already gone reads the same as an
+          # abandoned one; the merged PR tells them apart here too.
           local _pr _to="$LBL_READY"
-          _pr=$(open_pr_closing "$issue")
-          [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
-          issue_status_set "$issue" "$_to" >/dev/null 2>&1 \
-            && printf '  #%s had no status — set %s\n' "$issue" "$_to"
+          if shipped_by_merged_pr "$issue"; then
+            printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"
+          else
+            _pr=$(open_pr_closing "$issue")
+            [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
+            issue_status_set "$issue" "$_to" >/dev/null 2>&1 \
+              && printf '  #%s had no status — set %s\n' "$issue" "$_to"
+          fi
           ;;
       esac
     fi

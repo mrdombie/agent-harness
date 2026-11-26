@@ -25,6 +25,7 @@ cat > "$REPO/t/agent.test.sh" <<SH
 n=\$(cat "$FIX/busy" 2>/dev/null || echo 0)
 if [ "\$n" -gt 0 ]; then echo \$((n - 1)) > "$FIX/busy"
   [ -f "$FIX/plain" ] && { echo "expected 2, got 3"; exit 1; }
+  [ -f "$FIX/service" ] && { echo "Error: connect ECONNREFUSED 127.0.0.1:6379"; exit 1; }
   echo '{"orgId":"org1","error":"Transaction API error: timed out","level":"error"}'; exit 1; fi
 exit 0
 SH
@@ -47,30 +48,36 @@ step() { # <ticket> — self-check from ${SUT_KIT:-the kit}; R_RC its exit, R_OU
     . "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" && . "$1/driver/steps/self-check.sh" && driver_step_self_check "$2"' \
     _ "${SUT_KIT:-$ROOT}" "$1" 2>&1) || R_RC=$?
 }
-reset() { rm -f "$FIX/busy" "$FIX/plain" "$STATE/swarm/base-checks.tsv"; : > "$STATE/swarm/develop-red.tsv"; }
+reset() { rm -f "$FIX/busy" "$FIX/plain" "$FIX/service" "$STATE/swarm/base-checks.tsv"; : > "$STATE/swarm/develop-red.tsv"; }
 findings() { [ -e "$(driver_state_dir "$1")/steps/self-check.findings.json" ] && echo present || echo absent; }
 
 N=800
 case_flake() { N=$((N + 1)); reset; echo 1 > "$FIX/busy"; branch "$N"; step "$N"; R="rc=$R_RC findings=$(findings "$N")"; }
 case_touched() { N=$((N + 1)); reset; echo 9 > "$FIX/busy"; branch "$N" t/agent.test.sh; step "$N"; R="rc=$R_RC"; }
+case_service() { N=$((N + 1)); reset; echo 1 > "$FIX/busy"; : > "$FIX/service"; branch "$N"; step "$N"; R="rc=$R_RC findings=$(findings "$N")"; }
 case_plain() { N=$((N + 1)); reset; echo 1 > "$FIX/busy"; : > "$FIX/plain"; branch "$N"; step "$N"; R="rc=$R_RC"; }
 
 echo "--- a database timeout outside the change, green alone: not counted, never parked ---"
 case_flake
 want "self-check is green"                    "rc=0 findings=absent" "$R"
-want_in "and says why"                        'a database timeout in t/agent.test.sh, outside this change; each passed run again alone' "$R_OUT"
+want_in "and says why"                        'a database or service timeout in t/agent.test.sh, outside this change; each passed run again alone' "$R_OUT"
 want "the files are on the record"            "t/agent.test.sh" "$(driver_state_get "$N" db_flake)"
 want "never parked"                           "" "$(driver_state_get "$N" park_note)"
+
+echo "--- a local service that refused the connection, green alone once it is back: not counted ---"
+case_service
+want "self-check is green"                    "rc=0 findings=absent" "$R"
+want_in "and says why"                        'a database or service timeout in t/agent.test.sh, outside this change' "$R_OUT"
 
 echo "--- under set -u, as the driver runs it, the timeout is still the load's ---"
 STEP_U=1 case_flake
 want "self-check is green under set -u"       "rc=0 findings=absent" "$R"
 want_not_in "and no unbound variable"         'unbound variable' "$R_OUT"
 
-echo "--- a database timeout in a file the change touched still blocks ---"
+echo "--- a database or service timeout in a file the change touched still blocks ---"
 case_touched
 want "it goes to fix"                         "rc=$DRIVER_E_REWORK" "$R"
-want_not_in "and is not called the load's"    'database timeout in' "$R_OUT"
+want_not_in "and is not called the load's"    'service timeout in' "$R_OUT"
 
 echo "--- a plain red outside the change, not a timeout, still blocks ---"
 case_plain
@@ -94,7 +101,7 @@ SUT_KIT="$KIT" case_flake; want "the unplanted kit: the load's red is not counte
 plant "the timeout is run again alone" driver/steps/self-check.sh '    elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
          && _driver_gate_db_flake "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$gsecs"; then
 ' && { SUT_KIT="$KIT" case_flake; want "planted (no run alone): the load's red goes to fix" "rc=$DRIVER_E_REWORK findings=present" "$R"; }
-plant "only a database timeout" driver/steps/self-check.sh '  perl -pe '"'"'s/\e\[[0-9;]*[A-Za-z]//g'"'"' "$out" 2>/dev/null | grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" || return 1
+plant "only a database timeout" driver/steps/self-check.sh '  grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" <<<"$(perl -pe '"'"'s/\e\[[0-9;]*[A-Za-z]//g'"'"' "$out" 2>/dev/null)" || return 1
 ' && { SUT_KIT="$KIT" case_plain; want "planted (any red outside): a plain red passes" "rc=0" "$R"; }
 
 suite_end "$FAILED"

@@ -81,15 +81,14 @@ and a change touching a screen fills `screenChecklist`.
 
 ## One change, worked through by behaviour
 
-A ticket that changes what a person sees or does gets `features`: one behaviour
-per item (`F1`, `F2`…), each with test steps and their test file, a
-fast component or logic test, never a browser check. All start failing; the list
-is then fixed. Every task names its `item`, never a layer. The list builds
-as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
-`foundation` is shared groundwork, with its reason. An `expand-contract`
-foundation needs `cleanup` tasks that remove the old path. A mechanical change has no list: the
-recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its ticket's
-test file.
+A ticket that changes what a person sees or does gets `features`: one tab-sized behaviour
+per item (`F1`, `F2`…), each with steps in a fast component or logic test
+file, never a browser check. All start failing; the list is fixed. Every task
+names its `item`, never a layer. The list builds as one change: any `foundation`,
+F1, F2…, then `cleanup`. Never plan parts. A `foundation`, shared groundwork, comes with
+its reason; `expand-contract` needs `cleanup` removing the old path; one already
+on this branch says `built: true`, no task. A mechanical change has no list:
+its recipe in `tasks`, 5 to 30 `units`. A split part runs its ticket's test file.
 
 `outside` is what the plan leaves out: a ticket item by id
 (`{"item": "A3", "why": "…"}`), anything else in words
@@ -122,6 +121,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `tasks[].tests[].redWhen`: string
 - `tasks[].risks`: list of string
 - `tasks[].item`: string
+- `tasks[].group`: string
 - `question`: string
 - `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
@@ -155,6 +155,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `foundation`: object
 - `foundation.reason` (required): one of "expand-contract", "refactor", "hidden-backend"
 - `foundation.why` (required): string
+- `foundation.built`: boolean
 - `units`: list of object
 - `units[].title` (required): string
 - `units[].files` (required): list of object

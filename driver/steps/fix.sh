@@ -71,6 +71,8 @@ _driver_fix_gate_reds() {
       driver_base_red_say "$t" fix "$id" "$bred"
       continue
     fi
+    # What the trunk run found goes with the gate: a later "it is the base's" is answered from it.
+    [ -z "$of" ] || [ ! -f "$of" ] || row=$(jq -c --arg w "$(driver_base_red_gate "$wt" "$cmd" "$of" >/dev/null 2>&1; printf '%s' "${DRIVER_BASE_RED_WHY:-}")" '. + {baseWhy: $w}' <<<"$row")
     keep="$keep$row"$'\n'
   done
   if [ -z "$keep" ]; then rm -f "$f" "$f.head"; return 1; fi
@@ -224,7 +226,7 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
   if [ -z "$body" ]; then
     printf 'cites PM answer "%s", which is not a ## PM answer comment on the ticket\n' "$ref"; return 3
   fi
-  if ! _driver_fix_pm_allows "$pa" "$bid" "$kind" | grep -qxF -- "$ref"; then
+  if ! grep -qxF -- "$ref" <<<"$(_driver_fix_pm_allows "$pa" "$bid" "$kind")"; then
     printf 'PM answer %s does not name %s and accept a %s proof for it\n' "$ref" "$bid" "$kind"; return 3
   fi
   cs=$(git -C "$wt" rev-parse --verify -q "$c^{commit}" 2>/dev/null) || {
@@ -243,7 +245,7 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
       done
       [ -n "$named" ] || { printf 'PM answer %s names no commit that is %s\n' "$ref" "$(printf '%s' "$c" | cut -c1-10)"; return 3; }
       tf=$(jq -r --arg b "$bid" '[.findings[]? | select(.id == $b) | .file] | first // ""' "$review" 2>/dev/null)
-      if [ -z "$tf" ] || ! git -C "$wt" show --name-only --format= "$cs" 2>/dev/null | grep -qxF -- "$tf"; then
+      if [ -z "$tf" ] || ! grep -qxF -- "$tf" <<<"$(git -C "$wt" show --name-only --format= "$cs" 2>/dev/null)"; then
         printf 'commit %s does not touch %s, the file the finding names\n' "$(printf '%s' "$c" | cut -c1-10)" "${tf:-(none)}"; return 3
       fi
       printf 'commit %s is on the branch, is the one PM answer %s names, and touches %s\n' "$(printf '%s' "$c" | cut -c1-10)" "$ref" "$tf"
@@ -459,6 +461,27 @@ _driver_fix_drop_nonblocking() {
   driver_say "   fix: $(jq -r 'length' <<<"$dropped") deferred finding(s) do not block in review round $round ($late) — $(jq -r '[.[] | "\(.blockerId) (\(.grade))"] | join(", ")' <<<"$dropped"): a Minor was dropped or sent to the sweep, a Nit was dropped; no refusal"
 }
 
+# _driver_fix_whole_ids <answer> <review> — an answered id that is short for exactly one of the
+# review's finding ids (R1 for R1-undone-note, or the same id in another case) is rewritten
+# to that id. Short for two, or for none, is left as written and refused as unanswered.
+_driver_fix_whole_ids() {
+  local ans="$1" review="$2" ids
+  ids=$(jq -c '[.findings[]? | (.id // empty) | tostring]' "$review" 2>/dev/null) || return 0
+  [ -n "$ids" ] && [ "$ids" != "[]" ] || return 0
+  jq --argjson ids "$ids" '
+    def whole: . as $a
+      | if ($a | type) != "string" or ($ids | index($a)) != null then $a
+        else ($a | ascii_downcase) as $l
+          | [ $ids[] | select((ascii_downcase) as $i
+              | $i == $l or (($i | startswith($l)) and ($i[($l | length):($l | length) + 1] | test("^[-_.: ]$")))) ] as $m
+          | if ($m | length) == 1 then $m[0] else $a end
+        end;
+    reduce ("cleared", "pmProofs", "autoProofs", "bodyProofs", "deferred") as $k (.;
+      if (.[$k] | type) == "array"
+      then .[$k] |= map(if type == "object" and has("blockerId") then .blockerId |= whole else . end)
+      else . end)' "$ans" > "$ans.ids" 2>/dev/null && mv "$ans.ids" "$ans" || rm -f "$ans.ids"
+}
+
 driver_step_fix() { # <ticket>
   local t="${1:?driver_step_fix: need a ticket}"
   local d review round wt trunk r diff blockers n rc ans i ncleared
@@ -549,7 +572,7 @@ $basenote"
   # asked once more, pointed at autoProofs, and the driver checks what comes back.
   local autokinds; autokinds=$(driver_auto_proof_kinds)
   if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && [ -z "$proofnote" ] && [ -n "$autokinds" ] \
-     && jq -r '.question // ""' "$d/steps/fix.json" 2>/dev/null | grep -qiE -- "$DRIVER_FIX_AUTO_ASK_RE"; then
+     && grep -qiE -- "$DRIVER_FIX_AUTO_ASK_RE" <<<"$(jq -r '.question // ""' "$d/steps/fix.json" 2>/dev/null)"; then
     driver_state_set "$t" fix_proof_note "- you asked: $(jq -r '.question' "$d/steps/fix.json" | tr '\n' ' ' | cut -c1-600)
   That is not a question for a person. A finding no red-then-green pair can show, fixed by a commit that is only $autokinds, goes in autoProofs naming the kind and the commit (test-only also names testFile, command and a break in non-test code). The driver reads the commit's diff itself and, for test-only, plants the break: red, then green once restored."
     driver_say "↩ fix: asked whether a docs/comment/wording/test-only fix can be accepted without a red-then-green pair — the driver checks that itself; asking the fix step once more, pointed at autoProofs"
@@ -575,6 +598,7 @@ $basenote"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix
   ans="$d/steps/fix.json"
+  _driver_fix_whole_ids "$ans" "$review"
   # The tests this round reworded or removed, on the same ledger build appends to.
   jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
 
@@ -603,7 +627,7 @@ EOB
   [ -z "$pb" ] || { jq --argjson d "$pb" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"; }
   _driver_fix_drop_nonblocking "$t" "$ans" "$graded" "$fround"
   if [ -n "$unanswered" ]; then
-    driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships."
+    driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships. The review's ids, to be answered as written: $(jq -r '[.findings[]? | (.id // empty)] | join(", ")' "$review" 2>/dev/null)"
     driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a blocking finding is neither cleared nor deferrable"
     return "$DRIVER_E_REFUSED"
   fi

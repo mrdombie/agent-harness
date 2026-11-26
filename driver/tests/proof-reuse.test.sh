@@ -63,6 +63,24 @@ want "nor the dir"                             "no" "$([ -e "$D" ] && echo yes |
 # Read with grep on the file: a whole build-ticket piped into grep -q dies on SIGPIPE under pipefail.
 want "build-ticket drops them on exit"         "1" "$(grep -cE "^trap .*driver_proof_trees_drop.* EXIT$" "$ROOT/driver/build-ticket")"
 
+echo "--- a dead run's trees are swept; a live run's stay ---"
+( exit 0 ) & DEADPID=$!; wait "$DEADPID"
+sleep 300 & LIVEPID=$!
+DEAD="${TMPDIR:-/tmp}/driver-proof-t401-run$DEADPID"; LIVE="${TMPDIR:-/tmp}/driver-proof-t401-run$LIVEPID"
+ODD="${TMPDIR:-/tmp}/driver-proof-t401-runabc"
+mkdir -p "$LIVE/before" "$ODD"
+git -C "$REPO" worktree add -q --detach "$DEAD/before" HEAD
+driver_proof_trees_sweep_dead
+want "the dead run's dir is gone"               "no"  "$([ -e "$DEAD" ] && echo yes || echo no)"
+want "and its tree is off the repo's list"      "0"   "$(git -C "$REPO" worktree list | grep -c "run$DEADPID" || true)"
+want "the live run's dir stays"                 "yes" "$([ -e "$LIVE/before" ] && echo yes || echo no)"
+want "a dir with no pid in its name stays"      "yes" "$([ -e "$ODD" ] && echo yes || echo no)"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null
+driver_proof_trees_sweep_dead
+want "once that run is gone, so is its dir"     "no"  "$([ -e "$LIVE" ] && echo yes || echo no)"
+rm -rf "$ODD"
+want "build-ticket sweeps at the start of a run" "1" "$(grep -cE "^declare -F driver_proof_trees_sweep_dead .*driver_proof_trees_sweep_dead .*&" "$ROOT/driver/build-ticket")"
+
 echo "--- driver.proofReuse false builds fresh trees, as before ---"
 jq '.driver = ((.driver // {}) + {proofReuse: false})' "$FIX/cfg.json" > "$FIX/off.json"; : > "$FIX/prepare.log"
 task 5; HARNESS_CFG="$FIX/off.json" prove 5

@@ -67,6 +67,15 @@ rm -f "$S/build-task-3.proved"
 want_in "its run and the commit it was green on" 're-run the failed job.*no code changed \(a runner fault\): CI run https://github.com/acme/widgets/actions/runs/555 concluded success on cccccccc,' "$nbody"
 want_in "and it is not counted as a test"   '^How it was tested: 1 test ' "$nbody"
 
+echo "--- a trunk merge resolved by hand names its files and the gates that judged it ---"
+jq -n '{title: "merge the trunk", merged: false, commits: ["dddddddd22222222"],
+        proof: {kind: "trunk-merge-resolved", files: ["shared.txt", "b.txt"]}}' > "$S/build-task-3.proved"
+mbody=$(bash "$SUT" compose --steps "$S" --repo "$R" --base main 2>&1)
+rm -f "$S/build-task-3.proved"
+want_in "its commit and files"              'merge the trunk.*resolved by hand at dddddddd \(shared\.txt, b\.txt\).*self-check' "$mbody"
+want_not_in "not counted as a red-green test" 'testFile|`\?`' "$mbody"
+want_in "and said in how it was tested"     '^How it was tested: 1 test .*1 trunk merge resolved by hand, judged by the gates below' "$mbody"
+
 echo "--- a migration is named in the undo line ---"
 mkdir -p "$R/prisma/migrations/20261102_x"; echo "ALTER TABLE t ADD c int;" > "$R/prisma/migrations/20261102_x/migration.sql"
 git -C "$R" add -A; git -C "$R" commit -qm "migration"

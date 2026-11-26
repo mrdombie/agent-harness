@@ -191,6 +191,22 @@ want "#14363: its commit is on develop — (h), closes" "h commit $ON" "$(done_o
 want "  a commit not on develop: it asks"             "park" "$(done_of "${Q14363//COMMIT/$OFF}" 14363)"
 want "#13904 at quick: a duplicate whose fix is on develop — (h)" "h commit $ON" "$(done_of "${Q13904//COMMIT/$ON}" 13904 quick)"
 want "  its commit not on develop: it asks"           "park" "$(done_of "${Q13904//COMMIT/$OFF}" 13904 quick)"
+# 2026-11-15: a fix round asked "the PR already has develop's tip, close this round?"; (h) verified
+# develop's own tip and closed a PR of 21 unmerged commits as done.
+own_of() { # <ticket> <ref the ticket's tree sits on> <question>
+  rm -rf "$STATE/driver/$1" "$FIX/own-$1"; driver_state_init "$1" >/dev/null; SA_PARENT=""
+  git -C "$REPO" worktree prune; git -C "$REPO" worktree add -q --detach "$FIX/own-$1" "$2"
+  driver_state_set "$1" worktree "$FIX/own-$1"
+  if driver_standard_answer "$1" plan "$3" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_PARENT"; else printf park; fi; }
+want "its own tree holds a commit develop lacks: it asks, whatever develop commit is named" "park" "$(own_of 14401 side-14363 "${Q14363//COMMIT/$ON}")"
+want "  its own tree level with develop: (h), closes"                                      "h commit $ON" "$(own_of 14402 develop "${Q14363//COMMIT/$ON}")"
+pr_merged 14101 true
+want "  nor does a merged PR it names close a branch that holds work"                      "park" "$(own_of 14403 side-14363 "$Q14109")"
+rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
+# Planted: the count of its own commits is never over the bar. The branch that holds work closes again.
+want "  planted (own work unread): it closes again" "h commit $ON" "$( eval "$(declare -f _driver_sa_already_done | sed 's/"\$ahead" -gt 0/"$ahead" -gt 999999/')"
+  declare -f _driver_sa_already_done | grep -q 'gt 999999' || echo "the plant did not land"
+  own_of 14404 side-14363 "${Q14363//COMMIT/$ON}")"
 # Planted: the kit's answers without the duplicate wording — #13904 asks again, as it did.
 jq --slurpfile k "$HERE/../standard-answers.json" '.release = {mergeFirst: true, done: false,
   standardAnswers: ($k[0] | .classes.h.any |= map(select(test("duplicate|nothing \\(left") | not)))}' "$FIX/cfg.base" > "$CFGF"

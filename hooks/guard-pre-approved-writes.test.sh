@@ -58,6 +58,24 @@ printf '%s\n' "$WIDE" > "$TDIR/wide.json"; printf '%s\n' "$SAME" > "$TDIR/same.j
 printf 'import re\np=".claude/harness.json"\ns=open(p).read().replace("[\\"Staging\\"]","[\\"Staging\\",\\"Production\\"]")\nopen(p,"w").write(s)\n' > "$R/widen.py"
 printf '#!/usr/bin/env bash\nsed -i "" "s/\\"Staging\\"]/\\"Staging\\", \\"Production\\"]/" .claude/harness.json\n' > "$R/widen.sh"
 chmod +x "$R/widen.sh"
+# A script that only reads the file: an assignment naming the path, a test, a query. Then the
+# same script with one more line, once per way of writing the file.
+READS='#!/usr/bin/env bash
+f(){ local cfg="${HARNESS_CFG_PATH:-$1/.claude/harness.json}" c=""
+  [[ -f "$cfg" ]] && c=$(jq -r ".repo // empty" "$cfg"); echo "$c"; }
+export HARNESS_CFG_PATH=.claude/harness.json
+test -f .claude/harness.json && grep -c repo .claude/harness.json
+f .'
+printf '%s\n' "$READS" > "$R/reads.sh"
+wscript(){ printf '%s\n%s\n' "$READS" "$2" > "$R/w-$1.sh"; }
+wscript redirect "jq . $TDIR/wide.json > .claude/harness.json"
+wscript tee      "jq . $TDIR/wide.json | tee .claude/harness.json"
+wscript sed      'sed -i "" "s/\"Staging\"]/\"Staging\", \"Production\"]/" .claude/harness.json'
+wscript jqmv     "jq '.preApprovedWrites.environments += [\"Production\"]' .claude/harness.json > $TDIR/h.tmp && mv $TDIR/h.tmp .claude/harness.json"
+wscript cp       "cp $TDIR/wide.json .claude/harness.json"
+wscript python   "python3 -c 'open(\".claude/harness.json\", \"w\").write(open(\"$TDIR/wide.json\").read())'"
+wscript node     "node -e 'require(\"fs\").writeFileSync(\".claude/harness.json\", \"{}\")'"
+WFORMS="redirect tee sed jqmv cp python node"
 [ "$(cat "$C")" = "$BASE" ] && [ -z "$(g status --porcelain .claude)" ] || bad "fixture: harness.json not at base"
 
 # rc of the guard at $1 (a dir holding the hook) on a payload.
@@ -197,6 +215,16 @@ add -      allow "$(bashp "cat .claude/harness.json")"
 add -      allow "$(bashp "jq .preApprovedWrites .claude/harness.json > /tmp/out.json")"
 add -      allow "$(bashp "git commit -m 'edit harness.json docs'")"
 add -      allow "$(bashp "python3 -c 'import json; print(json.load(open(\".claude/harness.json\")))'")"
+# Writes are judged, not mentions.
+add declare allow "$(bashp "bash reads.sh")"
+add declare allow "$(bashp "export HARNESS_CFG_PATH=.claude/harness.json && jq -r .repo \"\$HARNESS_CFG_PATH\"")"
+add dbracket allow "$(bashp "[[ -f .claude/harness.json ]] && echo yes")"
+add declsub block "$(bashp "export X=\"\$(cp $TDIR/wide.json .claude/harness.json)\"")"
+add declsub block "$(bashp "export X=\"\`cp $TDIR/wide.json .claude/harness.json\`\"")"
+add declopen block "$(bashp "export X='\$(cp $TDIR/wide.json .claude/harness.json'")"
+add pattern allow "$(bashp "case x in ''|widen.s?) echo y;; esac")"
+for w in $WFORMS; do add shell block "$(bashp "bash w-$w.sh")"; done
+add -      allow "$(bashp "bash $KIT/scripts/builder-install.sh")"
 
 run_cases(){ # $1 hook dir, $2 id filter ("" = all), $3 case file; prints "<id> <want> <got>" per case
   while IFS=$'\t' read -r id want p; do
@@ -325,14 +353,87 @@ plant copy     "def judge_copy(name, args, cwd):" "def judge_copy(name, args, cw
 plant script   "def judge_script(name, args, cwd, here, depth):" "def judge_script(name, args, cwd, here, depth):
     return"
 plant shell    "            if inner:
-                judge_bash(inner, cwd, depth + 1)" "            if False:
-                judge_bash(inner, cwd, depth + 1)"
+                judge_bash(inner, cwd, depth + 1, inner_script or script, bool(inner_script))" "            if False:
+                pass"
 plant checkout "            judge(read(cfg), after, cfg + ' (git checkout %s)' % (ref or 'from the index'), shared)" "            pass"
 plant restore  "                judge(read(cfg), at(src) if src else at(''), cfg + ' (git restore)', shared)" "                pass"
 plant apply    "            judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub, shared)" "            pass"
 plant gh       "            if names_cfg(args[1:], cwd) and any(" "            if False and any("
-plant exec     "            judge_bash(src, cwd, depth + 1)
+plant exec     "            judge_bash(src, cwd, depth + 1, p)
             return" "            return"
+plant declsub  "                for sub in inner or []:" "                for sub in []:"
+plant declopen "                if inner is None and names_cfg([a], cwd):" "                if False:"
+# The other way: with the rule off, a script that only reads the file is refused again.
+allowed_by(){ # id, old, new: every allow case of that id is refused once the rule is off
+  local pd n=0 held=0; pd=$(plant_dir "$1" "$2" "$3"); [ -n "$pd" ] || { bad "plant $1 did not land"; return; }
+  while IFS=$'\t' read -r id want got what; do
+    n=$((n+1)); [ "$got" = block ] && held=$((held+1))
+  done < <(run_cases "$pd" "$1")
+  [ "$n" -gt 0 ] && [ "$held" -eq "$n" ] && ok "plant $1 off: all $n of its reads are refused, so the rule is what allows them" ||
+    bad "plant $1 off: only $held of $n reads are refused: the allow cases prove nothing"
+}
+allowed_by declare  "DECLARE = {'local', 'export', 'declare', 'typeset', 'readonly'}" "DECLARE = set()"
+allowed_by pattern  "        pattern = '/' not in args[0] and any(c in args[0] for c in '*?[')" "        pattern = False"
+allowed_by dbracket "'source', '.', 'bash', 'sh', 'zsh', '[['}" "'source', '.', 'bash', 'sh', 'zsh'}"
+
+# 3b. A refusal inside a script names the script and the line it could not pass.
+for w in $WFORMS; do
+  judge "$D" "$(bashp "bash w-$w.sh")" >/dev/null
+  grep -qF "line 7 of $R/w-$w.sh" "$TDIR/err" && ok "block  w-$w.sh: the refusal names line 7 of the script" ||
+    bad "w-$w.sh: the refusal does not name the line: $(cat "$TDIR/err")"
+  # The same script without its last line only reads the file.
+  sed '$d' "$R/w-$w.sh" > "$R/r-$w.sh"
+  [ "$(judge "$D" "$(bashp "bash r-$w.sh")")" -eq 0 ] && ok "allow  w-$w.sh without its write" || bad "w-$w.sh without its write is refused: $(cat "$TDIR/err")"
+done
+pd=$(plant_dir line "        if track:" "        if False:"); [ -n "$pd" ] || bad "plant line did not land"
+judge "$pd" "$(bashp "bash w-tee.sh")" >/dev/null
+grep -q "Blocked" "$TDIR/err" && ! grep -q "line 7 of" "$TDIR/err" && ok "plant: line tracking off, the refusal names no line" ||
+  bad "plant: line tracking off, yet the refusal still names the line (or nothing was refused)"
+
+# 3c. The kit's own scripts. A guard is in a kit when the folder above it carries the plugin manifest.
+mkkit(){ mkdir -p "$1/.claude-plugin" "$1/hooks/lib" "$1/scripts"; printf '{}\n' > "$1/.claude-plugin/plugin.json"
+  cp "$D/guard-pre-approved-writes.sh" "$D/guard-pre-approved-writes.py" "$1/hooks/"; cp "$D/lib/python.sh" "$1/hooks/lib/"
+  cp "$KIT/scripts/builder-install.sh" "$1/scripts/"
+  # Stands for any kit script the judge would refuse line by line.
+  printf '#!/usr/bin/env bash\ncp %s .claude/harness.json\n' "$TDIR/wide.json" > "$1/scripts/kit-writes.sh"; chmod +x "$1/scripts/kit-writes.sh"; }
+FK="$TDIR/kit"; mkkit "$FK"
+NK="$TDIR/nokit/hooks"; mkdir -p "$NK/lib"; cp "$D/guard-pre-approved-writes.sh" "$D/guard-pre-approved-writes.py" "$NK/"; cp "$D/lib/python.sh" "$NK/lib/"
+want(){ # want, hook dir, command, label
+  local rc got=allow; rc=$(judge "$2" "$(bashp "$3")"); [ "$rc" -eq 2 ] && got=block; [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && got="error$rc"
+  [ "$got" = "$1" ] && ok "$1  $4" || bad "$1 wanted, got $got: $4: $(cat "$TDIR/err")"; }
+want allow "$FK/hooks" "bash $FK/scripts/builder-install.sh"              "the kit's unmodified installer"
+want allow "$FK/hooks" "cd $TDIR && bash $FK/scripts/builder-install.sh $R 2>&1 | tail -4" "the kit's unmodified installer, given a tree"
+want allow "$FK/hooks" "bash $FK/scripts/kit-writes.sh"                   "an unmodified kit script is not scanned"
+want allow "$FK/hooks" "$FK/scripts/kit-writes.sh"                        "an unmodified kit script run by name"
+want block "$FK/hooks" "bash $FK/scripts/kit-writes.sh .claude/harness.json" "a kit script aimed at the file by an argument is judged on its content"
+want block "$FK/hooks" "HARNESS_CFG_PATH=.claude/harness.json $FK/scripts/kit-writes.sh" "a kit script aimed at the file by a variable is judged on its content"
+want block "$NK"       "bash $FK/scripts/kit-writes.sh"                   "the same script, judged by a guard outside that kit"
+# Plant: kit trust off, the kit script is read again.
+FK2="$TDIR/kit2"; mkkit "$FK2"
+python3 - "$FK2/hooks/guard-pre-approved-writes.py" <<'PY' || bad "plant kit did not land"
+import sys
+s=open(sys.argv[1]).read(); old="    p = os.path.realpath(path)\n    root = os.path.realpath(KIT)\n"
+assert s.count(old)==1; open(sys.argv[1],'w').write(s.replace(old, old + "    return False\n"))
+PY
+want block "$FK2/hooks" "bash $FK2/scripts/kit-writes.sh"                 "plant: kit trust off, the kit script is refused, so the trust is what lets it run"
+# A copy is the kit's while its bytes are; changed, it is judged on what it now says.
+mkdir -p "$R/scripts"; cp "$FK/scripts/kit-writes.sh" "$R/scripts/kit-writes.sh"; cp "$FK/scripts/builder-install.sh" "$R/scripts/"
+want allow "$FK/hooks" "bash scripts/kit-writes.sh"                       "a byte-identical copy of a kit script"
+printf '# a note\n' >> "$R/scripts/kit-writes.sh"
+want block "$FK/hooks" "bash scripts/kit-writes.sh"                       "a modified copy of a kit script is judged on its content, not its name"
+printf '# a note\n' >> "$R/scripts/builder-install.sh"
+want allow "$FK/hooks" "bash scripts/builder-install.sh"                  "a modified installer that still only reads the file"
+printf 'cp %s .claude/harness.json\n' "$TDIR/wide.json" >> "$R/scripts/builder-install.sh"
+want block "$FK/hooks" "bash scripts/builder-install.sh"                  "a modified installer that writes the file"
+grep -qE "line [0-9]+ of $R/scripts/builder-install.sh: \`cp " "$TDIR/err" && ok "block  the refusal names the added line" ||
+  bad "the modified installer's refusal does not name the added line: $(cat "$TDIR/err")"
+# The installer read line by line, outside any kit: allowed for what it does, and refused again
+# on its assignment once naming the path counts as a write.
+want allow "$NK" "bash $KIT/scripts/builder-install.sh"                   "the installer judged on its content"
+pd=$(plant_dir instdecl "DECLARE = {'local', 'export', 'declare', 'typeset', 'readonly'}" "DECLARE = set()"); [ -n "$pd" ] || bad "plant instdecl did not land"
+want block "$pd" "bash $KIT/scripts/builder-install.sh"                   "plant: assignments judged as writes, the installer is refused as it was"
+grep -qE "\`local\` names harness.json.*line [0-9]+ of $KIT/scripts/builder-install.sh: \`local cfg=" "$TDIR/err" &&
+  ok "block  that refusal is the one reported, on the installer's own line" || bad "the planted refusal is not the reported one: $(cat "$TDIR/err")"
 
 plant fold     "os.path.basename(p).lower() == 'harness.json' and os.path.basename(os.path.dirname(p)).lower() == '.claude'" "os.path.basename(p) == 'harness.json' and os.path.basename(os.path.dirname(p)) == '.claude'"
 plant link     "        return (st.st_dev, st.st_ino) in KNOWN" "        return False"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # coordinator-tick-hung-call.test.sh — one hung outside call never stops the tick. The
-# account check (`claude auth status`) and the usage probe (`claude -p`) each run under a
-# time limit, and a tick that has run past coordinator.tickMaxMin is stopped by the next
+# account check (`claude auth status`), the usage probe and the auth probe (`claude -p`) each
+# run under a time limit, and a tick that has run past coordinator.tickMaxMin is stopped by the next
 # one, which takes the lock and carries on. On 2026-10-31 an account check hung for
 # 1 h 57 min and both machines started nothing.
 # Run: bash "$0"
@@ -33,7 +33,7 @@ cat > "$BIN/claude-b" <<'SH'
 echo '{"orgId":"acct-b"}'
 SH
 chmod +x "$BIN/claude-hang" "$BIN/claude-b"
-export SWARM_ACCOUNT_TIMEOUT=2 SWARM_USAGE_PROBE_TIMEOUT=2
+export SWARM_ACCOUNT_TIMEOUT=2 SWARM_USAGE_PROBE_TIMEOUT=2 SWARM_AUTH_PROBE_TIMEOUT=2
 
 DEADLINE=60
 # run_tick — the tick in a process group of its own, stopped at DEADLINE: RC is its exit, or

@@ -24,6 +24,8 @@ pr 3 '{"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion"
 pr 4 '{"state":"MERGED","mergeable":"UNKNOWN","statusCheckRollup":[]}'
 pr 5 '{"state":"OPEN","mergeable":"CONFLICTING","statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
 pr 6 '{"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"},{"status":"IN_PROGRESS"}]}'
+pr 7 '{"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Typecheck + Unit tests","conclusion":"SUCCESS"},{"name":"Does this diff need pixels?","conclusion":"FAILURE"}]}'
+pr 8 '{"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"name":"Typecheck + Unit tests","conclusion":"FAILURE"},{"name":"Does this diff need pixels?","conclusion":"SUCCESS"}]}'
 
 # A watch that never gives up would hang the suite: each run gets 5 seconds.
 w5() { perl -e 'alarm shift; exec @ARGV' 5 bash "$@" 2>/dev/null; }
@@ -36,6 +38,8 @@ core() { # <script> → failed cases, one per line
   o=$(w5 "$s" 5); [ "$o" = "PR #5 CONFLICT" ] || echo "a clash is not CONFLICT ($o)"
   o=$(w5 "$s" 6); case "$o" in TIMEOUT*) ;; *) echo "a check still running reported $o" ;; esac
   o=$(w5 "$s" 2 3); [ "$o" = "PR #3 RED" ] || echo "two PRs: the one with news is not reported alone ($o)"
+  o=$(PR_WATCH_REQUIRED='["typecheck + unit tests"]' w5 "$s" 7); [ "$o" = "PR #7 GREEN" ] || echo "a red check the trunk does not require is not ignored ($o)"
+  o=$(PR_WATCH_REQUIRED='["typecheck + unit tests"]' w5 "$s" 8); [ "$o" = "PR #8 RED" ] || echo "a red required check is not RED ($o)"
 }
 echo "pr-watch"
 r=$(core "$HERE/pr-watch.sh"); [ -z "$r" ] && ok "every event reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
@@ -55,5 +59,6 @@ PY
 echo "plants"
 plant "an empty rollup reads green" 'elif ($c | length) > 0 and ($c' 'elif ($c' 'an empty rollup reported'
 plant "a running check reads green" '(SUCCESS|NEUTRAL|SKIPPED)' '(SUCCESS|NEUTRAL|SKIPPED|IN_PROGRESS|)' 'a check still running reported'
+plant "every red check counts, required or not" '($req | length) == 0 or' 'true or' 'a red check the trunk does not require is not ignored'
 plant "the watch never gives up" '-ge "$MAX" ]' '-ge 999999999 ]' 'an empty rollup reported'
 suite_end "$fail"

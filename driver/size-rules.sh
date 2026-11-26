@@ -99,7 +99,7 @@ driver_size_is_fix() {
       '(.driver.quick.fixLabels // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
       "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_FIX_LABELS_DEFAULT")"
   re=$(jq -r --arg d "$DRIVER_QUICK_FIX_TITLE_DEFAULT" '.driver.quick.fixTitle // $d | strings' "$HARNESS_CFG" 2>/dev/null) || re="$DRIVER_QUICK_FIX_TITLE_DEFAULT"
-  [ -n "$re" ] && printf '%s\n' "$2" | tr '[:upper:]' '[:lower:]' | grep -qE -- "$re"
+  [ -n "$re" ] && grep -qE -- "$re" <<<"$(printf '%s\n' "$2" | tr '[:upper:]' '[:lower:]')"
 }
 # driver_quick_max_for <kind> — the most files a quick change of that kind touches.
 driver_quick_max_for() { if [ "${1:-}" = fix ]; then driver_quick_fix_max_files; else driver_quick_max_files; fi; }
@@ -350,8 +350,8 @@ _driver_size_paths() {
 # (a diff or a snippet), or a "set/change/replace/rename/bump … to/with …" line.
 _driver_size_stated() {
   printf '%s\n' "$1" | grep -qE '^[[:space:]]*```' && return 0
-  printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' \
-    | grep -qE '(^|[^a-z])(set|change|replace|rename|bump|swap|move)[^a-z][^.]{0,120}[^a-z](to|with|from)[^a-z]'
+  grep -qE '(^|[^a-z])(set|change|replace|rename|bump|swap|move)[^a-z][^.]{0,120}[^a-z](to|with|from)[^a-z]' \
+    <<<"$(printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
 # driver_size_read <ticket> <title> <labels-csv> <body> — the mechanical read, as

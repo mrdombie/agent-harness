@@ -247,10 +247,8 @@ swarm_usage_log_limited() { # <log>
   swarm_usage_cli_events "$1" \
     | awk -F'\t' '$2=="rejected" || ($2=="error" && $3 ~ /hit your (session|weekly) limit/){f=1} END{exit !f}'
 }
-# Did this run stop because the CLI lost its login.
-swarm_login_log_lost() { # <log>
-  swarm_usage_cli_events "$1" | awk -F'\t' '$2=="auth"{f=1} END{exit !f}'
-}
+# Did this run stop because the CLI lost its login: the one reader, swarm_api_auth_log.
+swarm_login_log_lost() { swarm_api_auth_log "$1" >/dev/null; } # <log>
 # When the plan's limit stopped this log, `<epoch>\t<text>` for a hold to wait out:
 # the rejection's own epoch, else the reset the error text names, else an hour.
 swarm_usage_log_reset() { # <log>
@@ -367,11 +365,12 @@ swarm_account_since() {
 # The window is the account's, so any host's reading counts. The NEWEST observed
 # reading names the window by its reset: a reading with another reset is another
 # window (the account was switched, or the window reset) and is dropped, never
-# compared. Only inside that one window does utilization only rise, so the highest
-# of its readings wins. Resets within 10 min are one window. A reading with no `at`
-# (an older harness's heartbeat) is the oldest. Except after a probe call: its log is one
-# call, so its reading is dated exactly and everything observed before it is superseded
-# (2026-11-11: one week read 99%, then 56% with the same reset, and the 99% kept winning).
+# compared. Inside that one window the NEWEST observed reading wins, never the highest,
+# and it keeps its own observed time: a week can fall with its reset unchanged
+# (2026-11-11: 99% then 56%; 2026-11-15: 95% held for hours while the CLI read 13%), and
+# the highest reading paired with the newest time was re-stamped by every heartbeat.
+# Resets within 10 min are one window. A reading with no `at` (an older harness's
+# heartbeat) is the oldest. A probe call still supersedes everything observed before it.
 swarm_usage_freshest_at() {
   local w="${1:-five_hour}" extra="${2:-[]}" now files f m best acct since p
   now=$(swarm_now); acct=$(swarm_account); since=$(swarm_account_since)
@@ -397,8 +396,8 @@ swarm_usage_freshest_at() {
               if (n == 1 || A[n] > na || (A[n] == na && R[n] > nr)) { na = A[n]; nr = R[n] }
             }
             END { for (i = 1; i <= n; i++) { d = R[i] - nr; if (d < 0) d = -d
-                    if (d <= 600 && A[i] >= pa && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] } }
-                  if (p) printf "%s\t%d\t%d", bu, br, na }')
+                    if (d <= 600 && A[i] >= pa && (!p || A[i] >= ba)) { p = 1; bu = U[i]; br = R[i]; ba = A[i] } }
+                  if (p) printf "%s\t%d\t%d", bu, br, ba }')
   [ -n "$best" ] || return 1
   printf '%s' "$best"
 }
@@ -497,6 +496,32 @@ swarm_api_refusal_log() { # <log>
   [ -n "$r" ] || return 1
   printf '%s' "$r"
 }
+# swarm_api_auth_log <log> — 0 when the host's Claude login is gone, so no call on this
+# host can run until someone logs in again: the last result is an error naming a failed
+# authentication, an expired or revoked OAuth token or session, authentication_error, invalid_grant or
+# "run /login", or carrying status 401; or the CLI's authentication_failed event with no
+# clean answer after it. Prints the CLI's words (200 chars). Read from the CLI's own lines
+# only, as swarm_api_refusal_log: an answer that quotes one is not. The one lost-login reader.
+swarm_api_auth_log() { # <log>
+  local r
+  [ -s "$1" ] || return 1
+  r=$(grep -F '"type":"result"' "$1" 2>/dev/null | jq -r -s '
+    ([.[] | select(.type == "result")] | last) as $r
+    | if $r == null or ($r.structured_output? // null) != null or ($r.is_error // false) != true then empty
+      else (($r.result // "") | tostring | gsub("\\s+"; " ")) as $x
+        | if (($r.api_error_status? // 0) | tonumber? // 0) == 401
+             or ($x | test("failed to authenticate|oauth (token|session)[^.]{0,40}(expired|revoked)|authentication_error|invalid_grant|run /login"; "i"))
+          then (if $x == "" then "401 with no message" else ($x | .[0:200]) end)
+          else empty end
+      end' 2>/dev/null)
+  # The CLI's own authentication_failed event, unless a clean answer came after it.
+  if [ -z "$r" ] && ! grep -F '"type":"result"' "$1" 2>/dev/null \
+       | jq -e -s '[.[] | select(.type == "result")] | last | . != null and (.is_error // false) == false' >/dev/null 2>&1; then
+    r=$(swarm_usage_cli_events "$1" | awk -F'\t' '$2 == "auth" { t = $3; f = 1 } END { if (f) print (t == "" ? "authentication_failed" : substr(t, 1, 200)) }')
+  fi
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
 # ---- cli-signal reader: end ------------------------------------------------
 
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) and the driver write
@@ -575,6 +600,91 @@ swarm_usage_hold_write() {
   [ "$(swarm_usage_hold_field "$f" 3)" = "$acct" ] || cur=0
   [ "$1" -gt "$cur" ] || return 0
   printf '%s\t%s\t%s\t%s\n' "$1" "$(printf '%s' "${2:-}" | tr '\n\t' '  ' | cut -c1-200)" "$acct" "${3:-}" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
+}
+
+# swarm_host — this machine's short name (SWARM_HOST overrides).
+swarm_host() { printf '%s' "${SWARM_HOST:-$(hostname -s 2>/dev/null || hostname | cut -d. -f1)}"; }
+
+# swarm_auth_hold_write <text> — this host lost its Claude login: SWARM_AUTH_HOLD_FILE
+# ($STATE_DIR/auth-hold) as `<epoch since>\t<text>\t<host>\t<account>`. A re-write keeps
+# the first since, so the hold says how long the host has been out.
+swarm_auth_hold_write() {
+  local f="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" since
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  since=$(swarm_usage_hold_field "$f" 1); case "$since" in ''|*[!0-9]*) since=$(swarm_now) ;; esac
+  printf '%s\t%s\t%s\t%s\n' "$since" "$(printf '%s' "${1:-}" | tr '\n\t' '  ' | cut -c1-200)" \
+    "$(swarm_host)" "$(swarm_account)" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
+}
+
+# swarm_auth_hold — 0, printing `<text> (since <iso>)`, while the auth hold file exists.
+# It never expires by time: only a re-probe that is answered (swarm_auth_check) clears it.
+swarm_auth_hold() {
+  local f="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" since
+  [ -f "$f" ] || return 1
+  since=$(swarm_usage_hold_field "$f" 1); case "$since" in ''|*[!0-9]*) since=$(swarm_now) ;; esac
+  printf '%s (since %s)' "$(swarm_usage_hold_field "$f" 2)" "$(swarm_iso "$since")"
+}
+
+# swarm_auth_hold_aside <why> — move an auth hold that no longer binds to logs/, and say so.
+swarm_auth_hold_aside() {
+  local f="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" e to
+  e=$(swarm_usage_hold_field "$f" 1); case "$e" in ''|*[!0-9]*) e=$(swarm_now) ;; esac
+  to=$(swarm_usage_hold_field "$f" 3); to=$(printf '%s' "${to:-unknown}" | tr -c 'A-Za-z0-9@._-' '_' | cut -c1-80)
+  to="$SWARM_LOGS/auth-hold.cleared-$to-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$SWARM_LOGS" 2>/dev/null && mv -f "$f" "$to" 2>/dev/null || return 1
+  printf 'auth: the auth hold since %s no longer applies — %s; moved aside to %s\n' "$(swarm_iso "$e")" "$1" "$to"
+}
+
+# swarm_auth_check [--now] — 1, printing the CLI's words, when one small probe call
+# (SWARM_AUTH_PROBE_CMD, bounded by swarm.authProbeTimeout, in an empty dir) reads as a lost
+# login, writing the auth hold; 0 otherwise: a probe that hangs or fails another way proves
+# nothing. A pass is reused for swarm.authCheckMin (10) min unless --now; kept in logs/.auth-check
+# as `<epoch>\t<ok|failed>\t<text>`. The probe's log is deleted: it records no usage reading.
+# While the auth hold stands it is re-probed once per swarm.authProbeMin (5) min, timed from
+# the hold's last write: only a clean answer moves it aside; anything else keeps it.
+swarm_auth_check() {
+  local f="$SWARM_LOGS/.auth-check" hf="${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}" now at v t ttl tmo dir said cmd held="" every
+  now=$(swarm_now)
+  if [ -f "$hf" ]; then
+    held=1
+    every=$(swarm_opt swarm.authProbeMin 5); case "$every" in ''|*[!0-9]*) every=5 ;; esac
+    every="${SWARM_AUTH_PROBE_EVERY:-$(( every * 60 ))}"; case "$every" in ''|*[!0-9]*) every=300 ;; esac
+    at=$(swarm_mtime "$hf")
+    if [ "${1:-}" != --now ] && [ $(( now - ${at:-0} )) -lt "$every" ]; then
+      printf '%s' "$(swarm_usage_hold_field "$hf" 2)"; return 1
+    fi
+  fi
+  ttl=$(swarm_opt swarm.authCheckMin 10); case "$ttl" in ''|*[!0-9]*) ttl=10 ;; esac
+  ttl="${SWARM_AUTH_CHECK_TTL:-$(( ttl * 60 ))}"; case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
+  if [ -z "$held" ] && [ "${1:-}" != --now ] && [ -s "$f" ] && IFS=$'\t' read -r at v t < "$f"; then
+    case "$at" in ''|*[!0-9]*) at=0 ;; esac
+    if [ $(( now - at )) -lt "$ttl" ]; then
+      # A failed verdict with no hold means someone cleared it by hand: probe again.
+      case "$v" in ok) return 0 ;; esac
+    fi
+  fi
+  tmo="${SWARM_AUTH_PROBE_TIMEOUT:-$(swarm_opt swarm.authProbeTimeout 60)}"; case "$tmo" in ''|*[!0-9]*) tmo=60 ;; esac
+  cmd="${SWARM_AUTH_PROBE_CMD:-${SWARM_CLAUDE_BIN:-claude} -p \"Reply with the single word ok.\" --model haiku --output-format stream-json --verbose}"
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/swarm-auth.XXXXXX") || return 0
+  ( cd "$dir" && swarm_bounded "$tmo" bash -c "$cmd" ) > "$dir.log" 2>/dev/null < /dev/null
+  mkdir -p "$SWARM_LOGS" 2>/dev/null
+  if said=$(swarm_api_auth_log "$dir.log"); then
+    swarm_auth_hold_write "$said"
+    printf '%s\tfailed\t%s\n' "$now" "$(printf '%s' "$said" | tr '\n\t' '  ')" > "$f" 2>/dev/null
+    rm -rf "$dir" "$dir.log"
+    printf '%s' "$said"
+    return 1
+  fi
+  if [ -n "$held" ]; then
+    if ! grep -F '"type":"result"' "$dir.log" 2>/dev/null | jq -e -s '[.[] | select(.type == "result")] | last | .is_error == false' >/dev/null 2>&1; then
+      rm -rf "$dir" "$dir.log"; touch "$hf" 2>/dev/null
+      printf '%s' "$(swarm_usage_hold_field "$hf" 2)"; return 1
+    fi
+    swarm_auth_hold_aside "a probe call taken to re-check it was answered" >&2 || { rm -rf "$dir" "$dir.log"; return 1; }
+  fi
+  printf '%s\tok\t\n' "$now" > "$f" 2>/dev/null
+  rm -rf "$dir" "$dir.log"
+  return 0
 }
 
 # swarm_usage_hold_recheck — a hold file is asked again: one probe call at most every
@@ -743,7 +853,7 @@ export LBL_POLISH_LIST LBL_SCREEN_PREFIX
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "${LBL_EXTERNAL_BLOCKED:-}" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 
@@ -752,6 +862,14 @@ swarm_blocking_labels() {
 # "The issue is open" is true of every ticket until its PR MERGES, which is why
 # the open-PR probe is here: on 2026-09-19 a version without it re-spawned three
 # tickets whose PRs were already open and waiting on a person.
+swarm_hold_parked() { # <ticket> — its run record, or on another host its newest park comment, says a person's hold parked it
+  local f="${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json"
+  [ -f "$f" ] && jq -e '(.held_by // "") != ""' "$f" >/dev/null 2>&1 && return 0
+  local v
+  v=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments \
+    -q '[.comments[]? | .body // "" | select(startswith("**Parked —"))] | last // "" | contains("<!-- driver-park: hold -->")' 2>/dev/null)
+  [ "$v" = true ]
+}
 swarm_spawnable() { # <ticket>
   local t="$1" meta st lab l openpr
   meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels \
@@ -767,7 +885,8 @@ $(swarm_blocking_labels)
 EOS
   openpr=$(swarm_gh pr list --repo "$REPO_SLUG" --state open \
              --search "head:$BRANCH_PREFIX$t/" --json number -q 'length' 2>/dev/null)
-  [ "${openpr:-0}" = "0" ] || { echo "  #$t has an open PR — skip"; return 1; }
+  # A person's hold park drafts its PR and leaves it open; the run resumes on that PR.
+  [ "${openpr:-0}" = "0" ] || swarm_hold_parked "$t" || { echo "  #$t has an open PR — skip"; return 1; }
   swarm_ticket_live "$t" && { echo "  #$t already running — skip"; return 1; }
   return 0
 }

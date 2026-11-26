@@ -28,10 +28,28 @@ want_in "the item's steps run in a test its part writes"  'F2 .*filter-list.test
 want_in "a foundation names its reason"                   'foundation tasks and no `foundation`' "$(problems "$(plan_with 'del(.foundation)')")"
 want_in "a reason with no foundation task"                '`foundation` .* no task' "$(problems "$(plan_with 'del(.tasks[0]) | .features[0].needsFoundation = false')")"
 want_in "an item cannot wait on a foundation there is not" 'F1 needs a foundation' "$(problems "$(plan_with 'del(.tasks[0]) | del(.foundation)')")"
+want "a foundation an earlier round built needs no task"  "" "$(problems "$(plan_with 'del(.tasks[0]) | del(.tasks[-1]) | .foundation.reason = "refactor" | .foundation.built = true')")"
+want_in "  and a built one with tasks is a contradiction" 'built: true` and has tasks' "$(problems "$(plan_with '.foundation.built = true')")"
 want_in "expand/contract has a clean-up part to contract" 'expand-contract .* clean-up' "$(problems "$(plan_with 'del(.tasks[3])')")"
 want "a refactor needs no clean-up"                       "" "$(problems "$(plan_with 'del(.tasks[3]) | .foundation.reason = "refactor"')")"
 want_in "a mechanical change has no feature list"         'units .* no feature list' "$(problems "$(plan_with '.units = [range(5) as $i | {title:"u\($i)", files:[{path:"u\($i).ts",action:"modify"}], tests:[{file:"u\($i).test.ts",behaviour:"b"}]}]')")"
 want "a plan with no list has nothing to check"          "" "$(problems "$(plan_with 'del(.features) | del(.foundation) | .tasks |= map(del(.item))')")"
+
+echo "--- a list is short: past the cap it is sent back to be folded ---"
+long_plan() { # <n> — the example with n items, each built by its own task
+  jq --argjson n "$1" '.features[0] as $f | .tasks[1] as $t
+    | .features = [range($n) | . as $i | $f | .id = "F\($i + 1)" | .test = "src/f\($i).test.tsx" | .needsFoundation = false]
+    | .tasks = [.tasks[0]] + [range($n) | . as $i | $t | .item = "F\($i + 1)" | .tests[0].file = "src/f\($i).test.tsx"] + [.tasks[-1]]' "$EX" > "$FIX/long.json"
+  printf '%s' "$FIX/long.json"
+}
+want "six items: nothing to say"                          "" "$(problems "$(long_plan 6)")"
+want_in "seven items: fold them"                          'the list has 7 items and a change builds at most 6: fold' "$(problems "$(long_plan 7)")"
+want "  it is the only complaint"                         "1" "$(problems "$(long_plan 7)" | grep -c .)"
+want "the project's own limit is read"                    "" "$(DRIVER_PLAN_FEATURES_MAX=9 problems "$(long_plan 9)")"
+want_in "  and held"                                      'has 10 items .* at most 9' "$(DRIVER_PLAN_FEATURES_MAX=9 problems "$(long_plan 10)")"
+want "0 is no limit"                                      "" "$(DRIVER_PLAN_FEATURES_MAX=0 problems "$(long_plan 13)")"
+want "the second ask drops it (FEATURE_LIST_MAX=0)"       "" "$(FEATURE_LIST_MAX=0 problems "$(long_plan 13)")"
+want "a limit that is not a number is the default"        "" "$(DRIVER_PLAN_FEATURES_MAX=lots problems "$(long_plan 6)")"
 
 echo "--- the list itself: every item failing, its parts not yet filed ---"
 feature_list_of "$EX" 501 > "$FIX/list.json"

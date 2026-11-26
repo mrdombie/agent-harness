@@ -32,6 +32,8 @@ export SWARM_GH_BACKOFF="${SWARM_GH_BACKOFF:-$(gh_backoff_file)}"
 # The coordinator's queue, and what hold-status.sh needs to answer without
 # resolving the project config again on every ask.
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
+# The coordinator's log: the page's "What the coordinator did" rows.
+export SWARM_COORD_LOG="${SWARM_COORD_LOG:-$SWARM_LOGS/coordinator.out.log}"
 # The disk guard's floor and resume mark, read the one way the guard reads them.
 read -r SWARM_DISK_STOP_BELOW_GB SWARM_DISK_RESUME_AT_GB <<<"$(bash "$KIT_ROOT/scripts/disk-guard.sh" limits 2>/dev/null)"
 export SWARM_DISK_STOP_BELOW_GB SWARM_DISK_RESUME_AT_GB

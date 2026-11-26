@@ -138,6 +138,15 @@ branch_for() {
     | branch_tickets | awk -F'\t' -v n="$n" '$1 == n { print $2; exit }'
 }
 
+# Work a rebuild closed is kept at refs/stale/<ticket>/pr-<n> after its branch is deleted:
+# a ticket with such a ref has work to lose, never "nothing". Listed once a run.
+STALE=""
+stale_for() { # <ticket> — the newest kept ref for it, or nothing
+  [ -n "$STALE" ] || STALE=$(git -C "$REPO" ls-remote "$CLAIM_REMOTE" 'refs/stale/*' 2>/dev/null)
+  [ -n "$STALE" ] || STALE=" "
+  printf '%s\n' "$STALE" | awk -v p="refs/stale/$1/" 'index($2, p) == 1 { print $2 }' | sort -V | tail -1
+}
+
 pr_state_for() {
   # Prints "<number> <state>" for this branch's PR, or nothing.
   #
@@ -528,6 +537,16 @@ for n in $tickets; do
     recover_lock "$n" "partial"
     relabel "$n" "$LBL_PARTIAL" \
       "**Claim released, work stranded.** The agent holding this is gone and left branch \`$branch\` with no PR. Marked \`$LBL_PARTIAL\` — resume from that branch rather than starting over."
+    partial=$((partial + 1)); continue
+  fi
+
+  kept_ref=$(stale_for "$n")
+  if [ -n "$kept_ref" ]; then
+    say "  PARTIAL    #$n — no branch and no open PR, but closed work is kept at $kept_ref; not releasing to ready"
+    free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
+    recover_lock "$n" "partial"
+    relabel "$n" "$LBL_PARTIAL" \
+      "**Claim released, work kept.** The agent holding this is gone. Its closed pull request's work is kept at \`$kept_ref\`. Marked \`$LBL_PARTIAL\` — restore that work rather than starting over."
     partial=$((partial + 1)); continue
   fi
 

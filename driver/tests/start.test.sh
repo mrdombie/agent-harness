@@ -4,6 +4,7 @@
 # mostly about saying no: to a closed ticket, to one a person holds, to one the
 # PM has gated, and to one a peer already claimed.
 # Run: bash "$0"
+# case-filter: SUITE_ONLY='<a case title, or a pattern over them>' bash driver/tests/start.test.sh
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -28,10 +29,12 @@ t="$2"
 argval() { local k="$1"; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1" in
   acquire)
+    [ -n "${CLAIM_PUSH_SILENT:-}" ] && exit 1
+    [ -n "${CLAIM_PUSH_FAIL:-}" ] && { printf '%s\n' "$CLAIM_PUSH_FAIL" "claim-lock: push failed for #$t" >&2; exit 1; }
     [ -n "$(field "$t" 2)" ] && exit 10
     printf '%s\t%s\t%s\t%s\n' "$t" "$me" "$(argval --branch "$@")" "$(argval --worktree "$@")" >> "$CLAIMS"
     echo "acquired #$t" ;;
-  holds) o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
+  holds) [ -n "${CLAIM_HOLDS_RC:-}" ] && exit "$CLAIM_HOLDS_RC"; o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
   show)
     o=$(field "$t" 2); [ -n "$o" ] || { echo "#$t is not claimed" >&2; exit 11; }
     jq -n --arg a "$o" --arg b "$(field "$t" 3)" --arg w "$(field "$t" 4)" \
@@ -56,6 +59,9 @@ claimed_tickets() { awk '{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//'; }
 # claim_row <ticket> <owner> <branch> <worktree>
 claim_row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "${4:-}" >> "$CLAIMS"; }
 
+# The cases below this fence build on each other (101 is started, then resumed), so
+# they run as one; a case that plants its own fixture is its own suite_case after it.
+if suite_case "start's sequential cases, from a ready ticket to a Fix: run"; then
 echo "--- a ready ticket starts ---"
 fix_issue 101 OPEN "status:ready,type:feature"
 mkdir -p "$(driver_state_dir 101)/steps"
@@ -90,8 +96,9 @@ want_in "and a resume keeps the ledger its commits still need" 'kept.test.sh' "$
 echo "--- a closed ticket ---"
 fix_issue 102 CLOSED "status:ready"
 out=$(driver_step_start 102 2>&1); rc=$?
-want "closed refuses"   "24" "$rc"
+want "closed ends the run with nothing owed, not a refusal that parks" "$DRIVER_E_NOOP" "$rc"
 want_in "and says so"   'CLOSED' "$out"
+want_in "and takes the ready label off the closed ticket" 'issue edit 102 .*--remove-label status:ready' "$(cat "$GH_LOG")"
 
 echo "--- a ticket a person is holding ---"
 fix_issue 103 OPEN "status:ready,needs:human-approval"
@@ -379,6 +386,21 @@ want "a branch left in the clone does not stop start" "0" "$rc"
 want "the tree is on the ticket's branch"             "tkt-150/ticket-150" "$(git -C "$(driver_state_get 150 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 want "the left-behind commit is kept on origin first" "1" "$(git -C "$REPO" ls-remote origin 'refs/stale/150/*' | grep -c "^$lone")"
 
+echo "--- a branch reset to the cut reopens the steps that built on it ---"
+# Live, #15616: the reset kept the old run's finished steps, so the walk went straight
+# to ship on a branch with nothing on it.
+fix_issue 158 OPEN "status:ready,type:feature"
+git -C "$REPO" branch -q tkt-158/ticket-158 develop
+git -C "$REPO" worktree add -q "$FIX/old-158" tkt-158/ticket-158
+printf 'old run\n' > "$FIX/old-158/old.txt"; git -C "$FIX/old-158" add old.txt; git -C "$FIX/old-158" commit -qm "feat(#158)"
+rm -rf "$FIX/old-158"; git -C "$REPO" worktree prune
+driver_state_init 158
+for s in start size plan build review record; do driver_state_done 158 "$s"; done
+rc=0; out=$(driver_step_start 158 2>&1) || rc=$?
+want "start goes ahead"                      "0" "$rc"
+want "only start stays finished"             "start" "$(jq -r '.done | join(" ")' "$(driver_state_dir 158)/state.json")"
+want_in "and it says the steps run again"    'run again' "$out"
+
 echo "--- the branch checked out in an orphan tree: that tree is freed, start succeeds ---"
 fix_issue 151 OPEN "status:ready,type:feature"
 git -C "$REPO" worktree add -q "$FIX/orphan-151" -b tkt-151/ticket-151 develop
@@ -462,5 +484,59 @@ rc=0; out=$(driver_step_start 162 2>&1) || rc=$?
 want "  a Fix: of another PR than the open one: has-a-PR" "31" "$rc"
 want "  no worktree was cut"               "" "$(driver_state_get 162 worktree)"
 printf '[]\n' > "$FIX/gh/prs.json"
+fi
+
+if suite_case "a claim push that fails for a reason other than a race is the machine's"; then
+# A corrupt object in the clone failed every acquire push for 23 h, and each one was
+# reported as a peer winning a race that never happened.
+fix_issue 191 OPEN "status:ready"
+out=$(CLAIM_PUSH_FAIL="fatal: bad object 6332dafe
+fatal: the remote end hung up unexpectedly" driver_step_start 191 2>&1); rc=$?
+want "a failed push is a machine fault"        "33" "$rc"
+want_not_in "and never blames a peer"          'peer' "$out"
+want_in "it names the first git error"         'cannot claim: fatal: bad object 6332dafe' "$out"
+want_in "the git error is in the park note"    'fatal: bad object 6332dafe.*remote end hung up' "$(driver_state_get 191 park_note)"
+want "no claim was taken"                      "" "$(awk '$1==191' "$CLAIMS")"
+want "no worktree was cut"                     "" "$(driver_state_get 191 worktree)"
+want_in "the run's park line names git's error" 'cannot claim: fatal: bad object 6332dafe' "$(driver_state_get 191 machine_fault)"
+# A push that failed with nothing on stderr still names something after the colon.
+fix_issue 193 OPEN "status:ready"
+out=$(CLAIM_PUSH_SILENT=1 driver_step_start 193 2>&1); rc=$?
+want "a silent failed push is a machine fault" "33" "$rc"
+want_in "it names the lock's exit"             'cannot claim: claim-lock exit 1' "$(driver_state_get 193 machine_fault)"
+fi
+
+if suite_case "a lost compare-and-swap is still a peer's"; then
+fix_issue 192 OPEN "status:ready"
+# Free in the cache (holds says 11), taken on origin by the time acquire pushes.
+claim_row 192 somebody@else tkt-192/theirs "$FIX/theirs"
+out=$(CLAIM_HOLDS_RC=11 driver_step_start 192 2>&1); rc=$?
+want "a lost race is busy"                     "29" "$rc"
+want_in "and says a peer took it first"        'peer took the claim on #192 first' "$out"
+bash "$CL" release 192
+fi
+
+if suite_case "a build never starts from a clone in a temp area"; then
+echo "--- a clone in a temp area: nothing is claimed into a tree a restart would orphan ---"
+# A screen build was started from a PM session's clone under /private/tmp; a restart wiped the clone and orphaned its tree.
+fix_issue 195 OPEN "status:ready,type:feature"
+out=$(DRIVER_ALLOW_TEMP_CLONE= driver_step_start 195 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "and says why"                     'is in a temp area a restart wipes' "$out"
+want "no worktree is recorded"             "" "$(driver_state_get 195 worktree)"
+want_in "the park note says where to run it" "Start it from the project's own clone" "$(driver_state_get 195 park_note)"
+want "a home path is not a temp area"      "1" "$(DRIVER_ALLOW_TEMP_CLONE= _driver_start_temp_clone "$HOME"; echo $?)"
+want "the fixture's own clone is one"      "0" "$(DRIVER_ALLOW_TEMP_CLONE= _driver_start_temp_clone "$REPO"; echo $?)"
+fix_issue 196 OPEN "status:ready,type:feature"
+out=$(driver_step_start 196 2>&1); rc=$?
+want "with the fixture's leave, it starts" "0" "$rc"
+# Planted: with the temp roots matching nothing, the same start goes ahead.
+PK="$FIX/tc-kit"; mkdir -p "$PK"; cp -R "$HERE/../../driver" "$HERE/../../scripts" "$HERE/../../swarm" "$HERE/../../shared" "$HERE/../../briefs" "$PK/"
+python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = "/tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;"; n = s.count(o); open(p, "w").write(s.replace(o, "/nowhere/*) return 0 ;;")); sys.exit(0 if n == 1 else 1)' "$PK/driver/steps/start.sh" \
+  && { fix_issue 197 OPEN "status:ready,type:feature"
+       out=$( . "$PK/driver/steps/start.sh"; DRIVER_ALLOW_TEMP_CLONE= driver_step_start 197 2>&1 ); rc=$?
+       want "planted (no temp root matches): the build starts in the temp clone" "0" "$rc"; } \
+  || bad "plant: the edit did not land"
+fi
 
 suite_end "$FAILED"
