@@ -66,7 +66,7 @@
 #   - BASE-RED: every failing required check also failed on the base's newest completed
 #     run (read per check, never assumed). No change on the PR can fix that, so it waits
 #     for the base; its clock is stopped and it is told once. When the base passes again
-#     its failed jobs are re-run once on that head (free) before the clock starts again.
+#     it is brought up to date from the base once, re-run only when that is refused.
 #   - a red only on a check the base does not require, or on release.nonBlockingChecks,
 #     or the sign-off hold's own check: that is not red (pr-red.sh).
 #
@@ -83,6 +83,7 @@ _REBUILD_SH=1
 : "${FINDING_CLASS:=$KIT_ROOT/scripts/finding-class.sh}"
 declare -F say >/dev/null || say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work.sh" || return 1
+declare -F person_hold_labels >/dev/null || . "$(dirname "${BASH_SOURCE[0]}")/person-hold.sh" || return 1
 
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
@@ -160,8 +161,8 @@ _rebuild_base_latest_done() {
 
 # rebuild_base_red <ticket> <pr-json> [hold] [nb-json] [also-required-json] — 0 when the
 # PR's red is its own; else echoes why it waits: every failing required check failed on the
-# base's newest completed run too (base-red), or the base went green and its failed jobs
-# are re-run first. Measured 31 Oct - 1 Nov: 32 of 61 repair spawns and 13 of 17 rebuilds
+# base's newest completed run too (base-red), or the base went green and it is updated
+# from the base first (re-run when refused). Measured 31 Oct - 1 Nov: 32 of 61 repair spawns and 13 of 17 rebuilds
 # were of PRs whose only red required check had failed on develop's newest push run too.
 rebuild_base_red() {
   local t="$1" pj="$2" n head base fails name rid c r notred="" unread="" names="" rids="" did
@@ -174,7 +175,7 @@ rebuild_base_red() {
     [ -n "$name" ] || continue
     names="$names${names:+, }$name"; [ -z "$rid" ] || case " $rids " in *" $rid "*) ;; *) rids="$rids${rids:+ }$rid" ;; esac
     r=$(_rebuild_base_latest_done "$base" "$name" "$c") && [ -n "$r" ] || { unread=1; continue; }
-    jq -r '.conclusion // ""' <<<"$r" 2>/dev/null | grep -qE '^(FAILURE|ERROR|TIMED_OUT)$' || notred="$notred${notred:+, }$name"
+    grep -qE '^(FAILURE|ERROR|TIMED_OUT)$' <<<"$(jq -r '.conclusion // ""' <<<"$r" 2>/dev/null)" || notred="$notred${notred:+, }$name"
   done <<<"$fails"
   if [ -z "$notred" ] && [ -z "$unread" ]; then
     if ! awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null; then
@@ -185,12 +186,18 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
     echo "base-red on $names — waits for $base to go green"; return 1
   fi
   [ -n "$notred" ] || return 0
-  # The base passes again: a head that waited on it is re-run once before its clock runs.
+  # The base passes again: a head that waited on it is updated once (re-run when refused) before its clock runs.
   awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null || return 0
+  if rebuild_stale_update "$n" "$head" "$base" "$base passes $notred again" >&2; then
+    if [ "$STALE_UPDATE_DID" = waits ]; then echo "PR #$n waited on $base, which passes $notred now — its update from $base was accepted; waits for the new head"
+    else echo "PR #$n waited on $base, which passes $notred now — brought up to date from $base first"; fi
+    return 1
+  fi
+  if [ "$STALE_UPDATE_DID" = would ]; then echo "PR #$n waited on $base, which passes $notred now — would bring it up to date from $base first"; return 1; fi
   [ -n "$rids" ] || return 0
   if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would re-run its failed jobs ($rids) first"; return 1; fi
   did=$(pr_red_rerun "$n" "$head" "$rids" "$REBUILD_BASE_RERUNS" 1) || return 0
-  echo "PR #$n waited on $base, which passes $notred now — $did, its failed jobs, first"; return 1
+  echo "PR #$n waited on $base, which passes $notred now — its update was refused; $did, its failed jobs, first"; return 1
 }
 
 # rebuild_pr_state <ticket> <pr-json> — one line "<state>\t<why>":
@@ -226,9 +233,9 @@ rebuild_pr_state() {
 }
 
 # The ticket labels that mean a person acts next: a PR under one is theirs, never closed.
+# A parked, gated or batched ticket's PR is left as it is too.
 rebuild_person_labels() {
-  printf '%s\n' "$LBL_NEEDS_HUMAN" "$LBL_OWNER_DECISION" "${LBL_PM_DECISION:-}" "$LBL_PARKED" "$LBL_BLOCKED" \
-    "$LBL_EXTERNAL_BLOCKED" "$LBL_GATED" "${LBL_BATCHED:-}" "$HOLD_LABEL" $DECISION_LABELS | awk 'NF && !seen[$0]++'
+  { person_hold_labels; printf '%s\n' "${LBL_PARKED:-}" "${LBL_GATED:-}" "${LBL_BATCHED:-}"; } | awk 'NF && !seen[$0]++'
 }
 # rebuild_held <ticket> <pr-json> <ticket-labels-csv> — 0 when a person owns the PR or its
 # ticket; echoes why. An unreadable draft timeline is held too: unknown is never "the machine's".
@@ -476,6 +483,7 @@ rebuild_base_tip() {
 # the round is spent.
 rebuild_stale_update() {
   local pr="$1" head="$2" base="$3" why="$4" tip uh="" ub="" at="" res="" after="" now
+  STALE_UPDATE_DID=""   # sent | waits | would — what this call did, for a caller that logs it
   tip=$(rebuild_base_tip "$base"); now=$(swarm_now)
   IFS=$'\t' read -r uh ub at res after <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 } END { print r }' "$STALE_UPDATES" 2>/dev/null)"
   if [ "$res" = ok ]; then
@@ -483,7 +491,7 @@ rebuild_stale_update() {
       case "$at" in ''|*[!0-9]*) at=0 ;; esac
       if [ $((now - at)) -lt "$REBUILD_UPDATE_WAIT_SEC" ]; then
         say "rebuild: PR #$pr is stuck ($why) — its update from $base was accepted and the new head is not read yet; it waits for that"
-        return 0
+        STALE_UPDATE_DID=waits; return 0
       fi
     elif [ "${after:--}" = - ]; then
       after="$head"; rebuild_ledger_put "$STALE_UPDATES" "$pr" "$uh" "$ub" "$at" ok "$after"
@@ -492,9 +500,10 @@ rebuild_stale_update() {
     [ "$after" != "$head" ] || return 1
   fi
   [ "$uh" != "$head" ] || [ "$ub" != "$tip" ] || return 1
-  if coord_shadow; then say "rebuild: would bring PR #$pr up to date with $base once ($why) before any fix round"; return 1; fi
+  if coord_shadow; then say "rebuild: would bring PR #$pr up to date with $base once ($why) before any fix round"; STALE_UPDATE_DID=would; return 1; fi
   if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT -f expected_head_sha="$head" >/dev/null 2>&1; then
     rebuild_ledger_put "$STALE_UPDATES" "$pr" "$head" "$tip" "$now" ok -
+    STALE_UPDATE_DID=sent
     say "rebuild: PR #$pr is red ($why) and was brought up to date with $base first — no builder sent, no fix round spent"
     return 0
   fi

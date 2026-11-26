@@ -35,11 +35,19 @@ branch() {
   printf 'own\n' > "$wt/own-$1.txt"; git -C "$wt" add -A; git -C "$wt" commit -qm "feat: $1"
 }
 
-printf 'one\n' > "$REPO/shared.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
-for b in clean edited conflict side more notmerge asked single found; do branch "$b"; done
-# The conflict branch and the trunk both change the same line.
-printf 'branch\n' > "$FIX/conflict/shared.txt"; git -C "$FIX/conflict" commit -qam "feat: the branch's line"
+printf 'one\n' > "$REPO/shared.txt"; printf 'base\n' > "$REPO/base.txt"
+# Names git quotes unless asked not to: a non-ASCII one, and one with quotes and a backslash.
+mkdir -p "$REPO/docs"; printf 'one\n' > "$REPO/docs/café.md"; printf 'one\n' > "$REPO/docs/say \"hi\" \\.md"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm base
+for b in clean edited conflict side more notmerge asked single found resolve marker neither redgate foundres quoted quotedok; do branch "$b"; done
+# The conflict branches and the trunk all change the same line.
+for b in conflict resolve marker neither redgate foundres; do
+  printf 'branch\n' > "$FIX/$b/shared.txt"; git -C "$FIX/$b" commit -qam "feat: the branch's line"
+done
+printf 'branch\n' > "$FIX/quoted/docs/café.md"; git -C "$FIX/quoted" add -A; git -C "$FIX/quoted" commit -qm "docs: the branch's line"
+printf 'branch\n' > "$FIX/quotedok/docs/say \"hi\" \\.md"; git -C "$FIX/quotedok" add -A; git -C "$FIX/quotedok" commit -qm "docs: the branch's line"
 printf 'trunk\n' > "$REPO/shared.txt"; printf 'new\n' > "$REPO/trunk.txt"
+printf 'trunk\n' > "$REPO/docs/café.md"; printf 'trunk\n' > "$REPO/docs/say \"hi\" \\.md"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: the trunk moved"
 
 # session <tree> — the next build session merges the trunk into <tree> before it answers.
@@ -124,16 +132,109 @@ want_in "naming the edited file"       'carries edits beyond the clean merge \(o
 want_in "the next try is told why"     'beyond the clean merge' "$(cat "$(driver_state_dir 152)/steps/build-task-1.refused" 2>/dev/null)"
 want "and nothing is recorded as proved" "no" "$([ -e "$(driver_state_dir 152)/steps/build-task-1.proved" ] && echo yes || echo no)"
 
-echo "--- a conflict resolved by hand is a change ---"
+echo "--- a conflict resolved by hand is accepted, and no gate runs here: self-check's run next ---"
 WT="$FIX/conflict"
 X_P1=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
 want "the merge did conflict" "UU shared.txt" "$(git -C "$WT" status --porcelain --untracked-files=no | grep shared)"
 printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
 X_M=$(git -C "$WT" rev-parse HEAD)
-out=$(driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" 2>&1); rc=$?
+# A gate that reads stdin, and one that would show it ran: the build must run neither.
+jq --arg f "$FIX/x-ran" '.gates = {lint: ("cat >/dev/null; echo lint >> " + $f), test: ("echo test >> " + $f)}' "$HARNESS_CFG_PATH" > "$FIX/x-cfg.json"
+out=$(HARNESS_CFG="$FIX/x-cfg.json" driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" "$FIX/x-res.json" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want_in "naming the files resolved"    'resolves its conflicts by hand \(shared\.txt\)' "$out"
+want_in "and who judges them"          "self-check's gates judge it on this head" "$out"
+want "no gate ran in the build"        "" "$(cat "$FIX/x-ran" 2>/dev/null)"
+want "the resolution is kept as the proof" "trunk-merge-resolved shared.txt" \
+  "$(jq -r '"\(.kind) \(.files | join(","))"' "$FIX/x-res.json" 2>/dev/null)"
+
+echo "--- under gates.localOnly with no local list, the changed list is not run either ---"
+jq --arg f "$FIX/lo-ran" '.gates = {changed: [("echo changed >> " + $f)], localOnly: true}' "$HARNESS_CFG_PATH" > "$FIX/lo-cfg.json"
+out=$(HARNESS_CFG="$FIX/lo-cfg.json" driver_prove_trunk_merge "$WT" "$X_P1" "$X_M" "$X_M" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want "and the changed list never ran"  "" "$(cat "$FIX/lo-ran" 2>/dev/null)"
+
+# Through the step: the session merges, resolves the conflict and commits.
+WT="$FIX/resolve"
+R_P1=$(git -C "$WT" rev-parse HEAD)
+driver_state_init 154 --worktree "$WT" --repo "$REPO"
+fix_plan 154
+fix_ai build "$(fix_merge refs/heads/tkt-resolve)" superpowers:subagent-driven-development
+printf '#!/usr/bin/env bash\ngit -C "%s" merge -q --no-edit develop >/dev/null 2>&1\nprintf "resolved\\n" > "%s/shared.txt"; git -C "%s" add -A; git -C "%s" commit -qm "Merge branch develop" >/dev/null 2>&1\ncp "$FIX/claude.keep" "$BIN/claude"\nexec "$FIX/claude.keep" "$@"\n' \
+  "$WT" "$WT" "$WT" "$WT" > "$BIN/claude"
+chmod +x "$BIN/claude"
+rc=0; out=$(DRIVER_TICKET=154 driver_step_build 154 2>&1) || rc=$?
+R_M=$(git -C "$WT" rev-parse HEAD)
+want "the session made a merge commit" "2 $R_P1" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1, $2}')"
+want "the step finishes"               "0" "$rc"
+want "it is recorded as proved, on the merge" "$R_M" "$(jq -r '.commits[0]' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want "with the resolution as its proof" "trunk-merge-resolved shared.txt" \
+  "$(jq -r '"\(.proof.kind) \(.proof.files | join(","))"' "$(driver_state_dir 154)/steps/build-task-1.proved" 2>/dev/null)"
+want_in "the summary counts it as resolved by hand" '1 of 1 task\(s\) merged the trunk — 1 resolved by hand' "$out"
+want_not_in "and does not call it a clean merge" 'clean merge' "$out"
+want "and nothing refused"             "no" "$([ -e "$(driver_state_dir 154)/steps/build-task-1.refused" ] && echo yes || echo no)"
+
+echo "--- a resolution that keeps a conflict marker is refused ---"
+WT="$FIX/marker"
+K_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf '<<<<<<< HEAD\nresolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+K_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$K_P1" "$K_M" "$K_M" 2>&1); rc=$?
 want "it is refused"                   "1" "$rc"
-want_in "as a resolution by hand"      'with conflicts, so its resolution is a change by hand' "$out"
+want_in "naming the file"              'conflict marker in shared\.txt' "$out"
+
+echo "--- a marker left in a file git quotes the name of is still found ---"
+WT="$FIX/quoted"
+Q_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf '<<<<<<< HEAD\nresolved\n' > "$WT/docs/café.md"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+Q_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$Q_P1" "$Q_M" "$Q_M" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming the file as it is"     'conflict marker in docs/café\.md \(line 1\)' "$out"
+
+echo "--- a clean resolution of a file with quotes in its name is accepted and named as it is ---"
+WT="$FIX/quotedok"
+QO_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/docs/say \"hi\" \\.md"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+QO_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$QO_P1" "$QO_M" "$QO_M" "$FIX/qo-res.json" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want "the proof names the file verbatim" 'docs/say "hi" \.md' "$(jq -r '.files | join(",")' "$FIX/qo-res.json" 2>/dev/null)"
+
+echo "--- a resolution that edits a file neither side changed is refused ---"
+WT="$FIX/neither"
+B_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; printf 'slipped in\n' >> "$WT/base.txt"
+git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+B_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$B_P1" "$B_M" "$B_M" 2>&1); rc=$?
+want "it is refused"                   "1" "$rc"
+want_in "naming that file"             'base\.txt, which neither side changed' "$out"
+
+echo "--- a resolution is not refused here for a red gate: self-check owns that red ---"
+WT="$FIX/redgate"
+G2_P1=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+G2_M=$(git -C "$WT" rev-parse HEAD)
+jq '.gates = {lint: "echo lint-ok", test: "false"}' "$HARNESS_CFG_PATH" > "$FIX/red-cfg.json"
+out=$(HARNESS_CFG="$FIX/red-cfg.json" driver_prove_trunk_merge "$WT" "$G2_P1" "$G2_M" "$G2_M" 2>&1); rc=$?
+want "it is accepted"                  "0" "$rc"
+want_not_in "no gate exit is claimed"  'exit [0-9]' "$out"
+
+echo "--- a resolved merge found on the branch before the task is still refused ---"
+WT="$FIX/foundres"
+git -C "$WT" merge -q --no-edit develop >/dev/null 2>&1
+printf 'resolved\n' > "$WT/shared.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
+FR_M=$(git -C "$WT" rev-parse HEAD)
+out=$(driver_prove_trunk_merge "$WT" "$FR_M" "$FR_M" "$FR_M" 2>&1); rc=$?
+want "it is refused"                   "2" "$rc"
+want_in "as found before the task"     'was on the branch before this task started' "$out"
 
 echo "--- a merge of something that is not the trunk is refused ---"
 WT="$FIX/side"

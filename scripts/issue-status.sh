@@ -17,6 +17,10 @@
 # state the work is in — and labels.batched, a child built by its batch's PR. `set`
 # keeps them; `mark` adds one; whoever answers the question takes it off (--drop).
 #
+# labels.blocked, labels.needsHuman and labels.externalBlocked are lifecycle statuses
+# that are also a person's hold: `set` keeps them beside the new status, and only an
+# explicit --drop takes one off.
+#
 # --also adds a marker or a non-status label (the owner's hold) in the same call;
 # --drop removes any label in the same call. Every other label family is untouched.
 # After `set`, ISSUE_STATUS_ADDED is 1 when <status> was not already on the ticket, and
@@ -46,11 +50,16 @@ issue_status_markers() {
   for d in ${DECISION_LABELS:-}; do case "$d" in "$p"*) printf '%s\n' "$d" ;; esac; done
 }
 
-issue_status_is_marker() { issue_status_markers | grep -qxF -- "$1"; }
+issue_status_is_marker() { grep -qxF -- "$1" <<<"$(issue_status_markers)"; }
 
 # A lifecycle status: status-prefixed and not a marker.
 issue_status_is_lifecycle() {
   case "$1" in "$(issue_status_prefix)"*) ! issue_status_is_marker "$1" ;; *) return 1 ;; esac
+}
+
+# A person's hold that is itself a status.
+issue_status_is_hold() {
+  [ -n "$1" ] && { [ "$1" = "${LBL_BLOCKED:-}" ] || [ "$1" = "${LBL_NEEDS_HUMAN:-}" ] || [ "$1" = "${LBL_EXTERNAL_BLOCKED:-}" ]; }
 }
 
 issue_status_set() {
@@ -82,7 +91,8 @@ issue_status_set() {
   local args="" add=0 rm_any=0 kept=""
   while IFS= read -r l; do
     [ -n "$l" ] || continue
-    if issue_status_is_lifecycle "$l" && [ "$l" != "$want" ]; then
+    # A person's hold stays on until a lifter --drops it.
+    if issue_status_is_lifecycle "$l" && [ "$l" != "$want" ] && ! issue_status_is_hold "$l"; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1
     elif printf '%s' "$dropx" | grep -qxF -- "$l"; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1

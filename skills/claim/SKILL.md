@@ -246,7 +246,7 @@ The status labels classify WHY a ticket isn't claimable — saves you from re-re
 - `external-blocked` — waiting on external party (Stripe, lawyer, customer, third-party API review). Includes paid subscriptions / DNS / OAuth re-registration.
 - `dependency-blocked` — spec is COMPLETE; waiting on a prerequisite ticket (Phase 0 / Phase 1 / sister) to ship before claiming makes sense. That is the gated label (`$LBL_GATED`).
 - `epic-gated` — epic/programme umbrella that is NOT cleared for single-agent end-to-end execution (#3572). An epic only becomes `claimable` (with `mode=epic`) when the PM attaches BOTH `epic:run-ready` and `$LBL_READY`.
-- `needs-human` — a human has to work out what happened before this is claimable again. **Never auto-claim these.** Whoever does that flips it back to `$LBL_READY` (ready) deliberately. (`reconcile-claims.sh` does NOT set it: a dead claim is judged on evidence — see Step 0c.)
+- `needs-human` — a human has to work out what happened before this is claimable again. **Never auto-claim these.** Whoever does that flips it back to `$LBL_READY` (ready) deliberately, with `issue-status.sh set <n> "$LBL_READY" --drop "$LBL_NEEDS_HUMAN"` (a plain `set` keeps it). (`reconcile-claims.sh` does NOT set it: a dead claim is judged on evidence — see Step 0c.)
 - `xxl-multi-phase` — too big for the ship-whole rule
 - `parked` / `drafting` / `in-review` / `reverted` / `blocked` — out of scope for /agent-harness:claim
 

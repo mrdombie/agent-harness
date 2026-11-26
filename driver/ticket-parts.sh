@@ -86,7 +86,8 @@ _ticket_parts_on_branch() {
   local wt="$1" p="$2" touched="$3"
   [ -e "$wt/$p" ] && return 0
   grep -qxF -- "$p" "$touched" 2>/dev/null && return 0
-  git -C "$wt" ls-files 2>/dev/null | grep -qE "(^|/)$(printf '%s' "$p" | sed 's/[][\.*^$+?(){}|]/\\&/g')\$" && return 0
+  # grep -q after a pipe kills git with SIGPIPE, which a pipefail caller reads as a miss.
+  grep -qE "(^|/)$(printf '%s' "$p" | sed 's/[][\.*^$+?(){}|]/\\&/g')\$" <<<"$(git -C "$wt" ls-files 2>/dev/null)" && return 0
   grep -qE "(^|/)$(printf '%s' "$p" | sed 's/[][\.*^$+?(){}|]/\\&/g')\$" "$touched" 2>/dev/null
 }
 

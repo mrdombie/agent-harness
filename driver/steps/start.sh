@@ -54,12 +54,24 @@
 # so: prune dead registrations; move a stray dir at <tree> aside;
 # free the branch from a tree nothing holds, when that tree is clean; and keep a
 # branch tip the cut lacks on origin (or a local ref) before `-B` moves it.
+# _driver_start_forget_built <ticket> — the branch goes back to the cut, so every
+# finished step after start built on work that is no longer there: reopen them.
+_driver_start_forget_built() {
+  local f done
+  f=$(_driver_state_file "$1"); [ -f "$f" ] || return 0
+  done=$(jq -r '(.done // [])[] | select(. != "start")' "$f" 2>/dev/null)
+  [ -n "$done" ] || return 0
+  # shellcheck disable=SC2086 # one step name per word
+  driver_state_reopen "$1" $done
+  driver_say "   start: the branch's earlier steps ($(printf '%s' "$done" | paste -sd' ' -)) built on what the reset drops — they run again"
+}
+
 _driver_start_clear_way() {
   local t="$1" repo="$2" wt="$3" b="$4" cut="$5" other tip holder stamp
   DRIVER_START_WHY=""
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   git -C "$repo" worktree prune 2>/dev/null || true
-  if [ -e "$wt" ] && ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(wt_real "$wt")"; then
+  if [ -e "$wt" ] && ! grep -qxF "worktree $(wt_real "$wt")" <<<"$(git -C "$repo" worktree list --porcelain 2>/dev/null)"; then
     if mv "$wt" "$wt.aside-$stamp" 2>/dev/null; then
       driver_say "   start: $wt was there and is no worktree — moved aside to $wt.aside-$stamp"
     else
@@ -90,8 +102,9 @@ _driver_start_clear_way() {
   tip=$(git -C "$repo" rev-parse -q --verify "refs/heads/$b" 2>/dev/null) || return 0
   git -C "$repo" merge-base --is-ancestor "$tip" "$cut" 2>/dev/null && return 0
   if [ -n "$(git -C "$repo" for-each-ref --contains "$tip" --format=x refs/remotes/origin/ 2>/dev/null)" ] \
-     || git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1 | grep -qxF "$tip"; then
+     || grep -qxF "$tip" <<<"$(git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1)"; then
     driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10), already on origin — the branch is reset to the cut"
+    _driver_start_forget_built "$t"
     return 0
   fi
   if driver_keep_ref "$t" "$repo" "$tip"; then
@@ -101,10 +114,22 @@ _driver_start_clear_way() {
   else
     DRIVER_START_WHY="$b holds commits at $(printf '%s' "$tip" | cut -c1-10) that are nowhere else and could not be kept"; return 1
   fi
+  _driver_start_forget_built "$t"
 }
 
 # _driver_start_cut <ticket> <repo> <tree> <branch> <cut> — clear the way, add the
 # worktree, and retry once. 1 with DRIVER_START_WHY carrying git's own words.
+# _driver_start_temp_clone <repo> — 0 when the clone's real path is under a system temp root.
+# DRIVER_ALLOW_TEMP_CLONE=1 is for the test fixtures, which live there by design.
+_driver_start_temp_clone() {
+  [ "${DRIVER_ALLOW_TEMP_CLONE:-}" != 1 ] || return 1
+  local p; p=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  case "$p/" in
+    /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+  esac
+  return 1
+}
+
 _driver_start_cut() {
   local t="$1" repo="$2" wt="$3" b="$4" cut="$5" n=0 flag err
   while [ "$n" -lt 2 ]; do
@@ -119,13 +144,19 @@ _driver_start_cut() {
 
 # _driver_start_acquire <ticket> <branch> — the claim's compare-and-swap, handed the PRs
 # that close the ticket from the run's copy of it rather than a read of its own.
+# Returns the lock's code (10 only for a lost race); its stderr is left in
+# DRIVER_START_ACQUIRE_ERR.
 _driver_start_acquire() {
-  local closing
+  local closing ef rc
+  ef=$(mktemp "${TMPDIR:-/tmp}/start-acquire.XXXXXX") || ef=/dev/null
   if closing=$(driver_ticket_view "$1" closedByPullRequestsReferences '[.closedByPullRequestsReferences[]?.number] | join(" ")' 2>/dev/null); then
-    CLAIM_CLOSING_PRS="$closing" bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+    CLAIM_CLOSING_PRS="$closing" bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>"$ef"; rc=$?
   else
-    bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+    bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>"$ef"; rc=$?
   fi
+  DRIVER_START_ACQUIRE_ERR=$(cat "$ef" 2>/dev/null)
+  [ "$ef" = /dev/null ] || rm -f "$ef"
+  return "$rc"
 }
 
 # _driver_start_stranded <ticket> <record's branch> — the branch a dead run left on origin
@@ -145,7 +176,7 @@ _driver_start_stranded() {
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
-  local meta st labels repo slug branch wt sha l hrc cw cb ow ob
+  local meta st labels repo slug branch wt sha l hrc cw cb ow ob arc aerr
   # A start has built nothing yet: on a spent allowance it gives up in seconds and the
   # ticket goes back on the queue (DRIVER_E_UNREAD), rather than hold a builder's place
   # asleep until the reset. Only the later steps wait a spent allowance out.
@@ -168,8 +199,16 @@ driver_step_start() { # <ticket>
   driver_state_set "$t" title "$(printf '%s' "$meta" | cut -d$'\001' -f3)"
 
   if [ "$st" != "OPEN" ]; then
+    # A SHIPPED TICKET IS NOT PARKED. A park here opened a draft pull request from the
+    # head that had just merged and left the closed ticket ready to be picked again.
     driver_say "✋ start: #$t is $st. There is nothing to build."
-    return "$DRIVER_E_REFUSED"
+    for l in "$LBL_READY" "$LBL_PARKED"; do
+      case ",$labels," in *",$l,"*)
+        swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$l" >/dev/null 2>&1 || true ;;
+      esac
+    done
+    driver_state_set "$t" noop_note "is $st, so nothing is built, parked or opened"
+    return "$DRIVER_E_NOOP"
   fi
   # ANOTHER REPO'S TICKET IS NEVER BUILT IN THIS ONE. A repo:<name> ticket started here
   # got a worktree of this repo, where none of its files exist: the plan and the first
@@ -382,11 +421,20 @@ driver_step_start() { # <ticket>
         driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
         return "$DRIVER_E_BUSY" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
-        # settles it, and losing it means a peer won between the two calls.
-        if ! _driver_start_acquire "$t" "$branch"; then
+        # settles it: exit 10 means a peer won between the two calls; any other failure
+        # is the push itself (a corrupt clone, a dead remote) and blames no peer.
+        _driver_start_acquire "$t" "$branch"; arc=$?
+        if [ "$arc" = 10 ]; then
           driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
           driver_state_set "$t" park_note "a peer took the claim on #$t first"
           return "$DRIVER_E_BUSY"
+        elif [ "$arc" != 0 ]; then
+          aerr=$(printf '%s\n' "$DRIVER_START_ACQUIRE_ERR" | sed '/^[[:space:]]*$/d')
+          l=$(printf '%s\n' "$aerr" | head -1); [ -n "$l" ] || l="claim-lock exit $arc"
+          driver_state_set "$t" machine_fault "cannot claim: $l"
+          driver_say "✋ start: machine fault: cannot claim: $l (claim-lock exit $arc on #$t). Nothing was claimed or cut."
+          driver_state_set "$t" park_note "machine fault, nothing to answer: the claim push for #$t failed (exit $arc): $(printf '%s' "$aerr" | tr '\n' ' ' | cut -c1-600)"
+          return "$DRIVER_E_MACHINE"
         fi ;;
   esac
   driver_state_set "$t" branch "$branch"
@@ -402,6 +450,12 @@ driver_step_start() { # <ticket>
     fi
   else
     repo="$MAIN_REPO"
+    # A RESTART WIPES A TEMP AREA: a tree cut from a clone there loses its repository with it.
+    if _driver_start_temp_clone "$repo"; then
+      driver_say "✋ start: $repo is in a temp area a restart wipes, and the worktree cut from it would be orphaned with it. Run the build from the project's own clone."
+      driver_state_set "$t" park_note "the build was started from a clone in a temp area ($repo); nothing was cut. Start it from the project's own clone."
+      return "$DRIVER_E_REFUSED"
+    fi
     git -C "$repo" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
     sha=$(git -C "$repo" rev-parse --verify "origin/$INTEGRATION_BRANCH" 2>/dev/null) \
       || sha=$(git -C "$repo" rev-parse --verify "$INTEGRATION_BRANCH" 2>/dev/null)

@@ -668,6 +668,16 @@ check
 expect_rc 2 "a merge-base copy whose object is gone refuses"
 expect_out "could not read src/desk.test.ts at $MBF" "naming the file and the commit"
 
+# --- a piped body larger than a pipe, on a branch that deletes nothing ------------
+# The clean exit comes before the body is read; a writer left on a full pipe dies of
+# SIGPIPE, and a pipefail caller (the driver's ship step) read that as a refusal.
+repo bigbody
+printf 'export const more = 1;\n' >> "$R/src/desk.ts"
+commit "touch source only"
+head -c 300000 /dev/zero | tr '\0' 'x' > "$SB/big.md"
+OUT=$( (set -o pipefail; cat "$SB/big.md" | bash "$SUT" --repo "$R" --base main --head work --body-file - ) 2>&1); RC=$?
+expect_rc 0 "a 300 KB piped body on a clean branch passes under pipefail"
+
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
 suite_end "$fail"

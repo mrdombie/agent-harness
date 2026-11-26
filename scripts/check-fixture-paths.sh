@@ -22,7 +22,7 @@ for f in "${suites[@]}"; do
       case "$line" in *"$v=\$(mktemp"* | *"$v=\"\$(mktemp"* | *"$v=\$(cd "* | *"$v=\"\$(cd "*) continue ;; esac
       next=$(sed -n "$((n + 1))p" "$f")
       if printf '%s\n%s\n' "$line" "$next" \
-        | grep -qE "fixture_path[[:space:]]+${v}[[:space:]]|\[ -n \"\\\$$v\" \] \|\| suite_skip"; then
+        | grep -E "fixture_path[[:space:]]+${v}[[:space:]]|\[ -n \"\\\$$v\" \] \|\| suite_skip" >/dev/null; then
         held=$((held + 1))
       else
         echo "  $f:$n: \$$v is read back from a command and handed to git -C, with no fixture_path $v"

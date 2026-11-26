@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The runner's own swarm settings are no case's input: a driver session exports its live ones.
+for _v in $(compgen -e | grep -E '^(SWARM|COORDINATOR|MERGE_LANE)_'); do unset "$_v"; done; unset _v
 # No suite reads the real login: the account is unknown, and readings count as they did (swarm_account).
 export SWARM_CLAUDE_BIN=false
 # fixture.sh — the world every swarm test runs against: a throwaway repo with a
@@ -28,6 +30,8 @@ swarm_fixture() {
   export HARNESS_DISK_GUARD=off
   # Nor is its own plugin estate: no case updates the runner's installed harness.
   export COORDINATOR_SELF_UPDATE=off COORDINATOR_PLUGINS_ENSURE=off
+  # Nor are its own builds: the host lists no process unless a case plants its ps.
+  export COORDINATOR_HOST_PS=true
   FIX=$(mktemp -d)
   # The runner's installed harness is no case's version: the floor and the self-update read this.
   export SWARM_PLUGIN_REGISTRY="$FIX/no-plugin-registry.json"

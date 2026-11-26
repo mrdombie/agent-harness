@@ -2,7 +2,7 @@
 # ai-step.sh — the one place the driver hands control to a model, and therefore
 # the one place it has to be suspicious.
 #
-#   driver_ai_step <ticket> <step> [--as <slot>] [context-file…]
+#   driver_ai_step <ticket> <step> [--as <slot>] [--continue <log>] [context-file…]
 #
 # It fills the brief's placeholders, runs the step INSIDE the ticket's worktree,
 # keeps the transcript, and then checks four things before it believes the answer:
@@ -232,6 +232,40 @@ driver_usage_wall() {
   return 0
 }
 
+# driver_step_model <step> — the model a step asks for; empty is the session's own
+# (ANTHROPIC_MODEL). The thinking steps (plan, review, compare) ask for
+# DRIVER_THINK_MODEL while it has allowance; the steps that write code take the
+# session's. DRIVER_STEP_MODEL_<STEP> (upper case, - as _) sets one step outright.
+driver_step_model() {
+  local v m f until om
+  v="DRIVER_STEP_MODEL_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+  if [ -n "${!v+x}" ]; then printf '%s' "${!v}"; return 0; fi
+  case "$1" in plan|review|review-check|compare) ;; *) return 0 ;; esac
+  m="${DRIVER_THINK_MODEL-claude-fable-5-2}"; [ -n "$m" ] || return 0
+  f="${DRIVER_MODEL_OUT_FILE:-$STATE_DIR/model-out}"
+  if [ -s "$f" ]; then
+    IFS=$'\t' read -r until om _ < "$f"
+    case "$until" in ''|*[!0-9]*) until=0 ;; esac
+    [ "$om" = "$m" ] && [ "$until" -gt "$(swarm_now)" ] && return 0
+  fi
+  printf '%s' "$m"
+}
+
+# driver_model_wall <ticket> <step> <log> — 0 when a step that asked for its own model
+# was stopped by a limit: that model is marked out until the reset the log names
+# (DRIVER_MODEL_OUT_FILE) and the caller makes the call again on the session's model.
+# No spawning hold: if the whole plan is out, the call on the session's model meets the
+# wall too, and driver_usage_wall writes the hold then.
+driver_model_wall() {
+  local m="${_driver_ran_model:-}" hold epoch why
+  [ -n "$m" ] || return 1
+  hold=$(swarm_usage_log_reset "$3") || return 1
+  epoch=$(printf '%s' "$hold" | cut -f1); why=$(printf '%s' "$hold" | cut -f2-)
+  printf '%s\t%s\t%s\n' "$epoch" "$m" "$why (#$1 $2)" > "${DRIVER_MODEL_OUT_FILE:-$STATE_DIR/model-out}" || return 1
+  driver_say "↻ $2: $m is out of allowance until $(swarm_iso "$epoch") ($why) — the thinking steps run on the session's model until then."
+  return 0
+}
+
 # driver_ticket_answers <ticket> <out> — the answers a person already gave on the ticket
 # ("**The owner answered**" relays, and comments opening "PM answer" or "Cleared:" read
 # by scripts/person-words.sh, the rules person-stop.sh clears by), oldest first and
@@ -250,12 +284,38 @@ driver_ticket_answers() { # <ticket> <out>
     | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || { : > "$2"; return 1; }
 }
 
-driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
+_DRIVER_STEP_PUSH_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/step-push-guard.sh"
+
+# driver_step_git_shim <shim_dir> <worktree> <real_git> — write the step's git shim
+# and stamp the step's start; a push goes through step-push-guard.sh first.
+driver_step_git_shim() {
+  local dir=$1 wt=$2 real=$3 guard=$_DRIVER_STEP_PUSH_GUARD t ts
+  mkdir -p "$dir"
+  # Backdated 1s: mtime is whole seconds on some filesystems.
+  t=$(( $(date +%s) - 1 ))
+  ts=$(date -r "$t" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$t" +%Y%m%d%H%M.%S)
+  touch -t "$ts" "$dir/.step-start"
+  cat > "$dir/git" <<SHIM
+#!/usr/bin/env bash
+a=("\$@"); i=0; sub=""
+while [ "\$i" -lt "\${#a[@]}" ]; do
+  case "\${a[\$i]}" in -C|-c|--git-dir|--work-tree|--namespace) i=\$((i+2)) ;; -*) i=\$((i+1)) ;; *) sub="\${a[\$i]}"; break ;; esac
+done
+if [ "\$sub" = push ]; then
+  bash $(printf '%q' "$guard") $(printf '%q' "$real") $(printf '%q' "$wt") $(printf '%q' "$dir/.step-start") "\$@" || exit \$?
+fi
+exec $(printf '%q' "$real") "\$@"
+SHIM
+  chmod +x "$dir/git"
+}
+
+driver_ai_step() { # <ticket> <step> [--as <slot>] [--continue <log>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
-  local slot="$step"
+  local slot="$step" cont_log=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --as) slot="${2:?--as needs a name}"; shift 2 ;;
+      --continue) cont_log="${2:-}"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -341,7 +401,8 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # "push, keep auto-merge armed, hand off", and a step has Bash: a push from inside a
   # step lands through auto-merge before self-check, review and ship have run. Two
   # guards, and only the second is the guarantee:
-  #   - git and gh on the step's PATH refuse push, pr ready, pr merge and pr create;
+  #   - git and gh on the step's PATH refuse push (bar temp-to-temp, step-push-guard.sh),
+  #     pr ready, pr merge and pr create;
   #   - origin's head for the branch is read before and after the step, and a step
   #     it moved under refuses, whatever path it used to get there.
   # One shim per slot: the review's voters write theirs at the same moment.
@@ -349,17 +410,7 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   [ "$slot" = "$step" ] || shim="$shim-$slot"
   real_git=$(command -v git); real_gh=$(command -v gh 2>/dev/null || true)
   mkdir -p "$shim"
-  cat > "$shim/git" <<SHIM
-#!/usr/bin/env bash
-a=("\$@"); i=0; sub=""
-while [ "\$i" -lt "\${#a[@]}" ]; do
-  case "\${a[\$i]}" in -C|-c|--git-dir|--work-tree|--namespace) i=\$((i+2)) ;; -*) i=\$((i+1)) ;; *) sub="\${a[\$i]}"; break ;; esac
-done
-if [ "\$sub" = push ]; then
-  echo "git push refused inside a driver step: the driver alone pushes, after the review (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1
-fi
-exec "$real_git" "\$@"
-SHIM
+  driver_step_git_shim "$shim" "$wt" "$real_git"
   # And no step writes the repo's settings: a build added a required check to the
   # live develop ruleset with `gh api` from inside a step (2026-10-20).
   local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
@@ -397,7 +448,32 @@ SHIM
   fi
 
   local crc=0
-  _driver_ai_call "$prompt" "$log" || return $?
+  # --continue <log>: the session that log ended in is resumed, so this call starts with
+  # what it already read. Both transcripts are judged, in order: the skills ran in the
+  # first. A resume that left no answer, whatever the cause, is a fresh call with the
+  # usual retries: never a lost task.
+  local csid_prev=""
+  [ -z "$cont_log" ] || [ ! -s "$cont_log" ] || [ "$cont_log" -ef "$log" ] \
+    || csid_prev=$(driver_log_events "$cont_log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+  if [ -n "$csid_prev" ]; then
+    { printf 'This session goes on to the next task of the same plan. What you read stays true except where a commit since changed it. The brief below is the whole brief of this task:\n\n---\n'; cat "$prompt"; } > "$prompt.cont"
+    _driver_ai_run "$prompt.cont" "$log.cont" "$csid_prev"
+    driver_record_usage "$t" "$slot" "$log.cont" "$prompt.cont"
+    if driver_model_wall "$t" "$step" "$log.cont"; then
+      _driver_ai_run "$prompt.cont" "$log.cont" "$csid_prev"
+      driver_record_usage "$t" "$slot" "$log.cont" "$prompt.cont"
+    fi
+    if driver_usage_wall "$t" "$step" "$log.cont" || driver_auth_lost "$t" "$step" "$log.cont"; then
+      cp "$log.cont" "$log" 2>/dev/null; return "$DRIVER_E_USAGE"
+    fi
+    if [ -n "$(driver_log_events "$log.cont" | jq -c 'select(.type == "result" and .is_error != true)' 2>/dev/null | head -1)" ]; then
+      cat "$cont_log" "$log.cont" > "$log.joined" && mv -f "$log.joined" "$log"
+    else
+      driver_say "   $step: the session before could not be resumed — a fresh one for this task"
+      csid_prev=""
+    fi
+  fi
+  [ -n "$csid_prev" ] || _driver_ai_call "$prompt" "$log" || return $?
 
   # ONE RE-ASK, WITH THE REASON, BEFORE A PARK. An answer the driver cannot read
   # parked the ticket outright, and the run's work with it (#13249, 2026-10-17); the
@@ -445,7 +521,7 @@ SHIM
   # A QUESTION ABOUT THE DESIGN CRITIC WHILE IT IS OFF has one answer: carry on without
   # it. Asked once more, told so; asked again, the owner channel refuses it (exit 5).
   if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused "$(driver_critic_labels "$t")" \
-     && jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null | grep -qi 'critic'; then
+     && grep -qi 'critic' <<<"$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)"; then
     local cq creask="$d/steps/$slot.critic-off.prompt" csid
     cq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)
     csid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
@@ -518,6 +594,20 @@ driver_api_error() { swarm_api_error_log "$1"; }
 # skill check: a session that never ran called no Skill, and that is not a skipped Skill.
 driver_api_refusal() { swarm_api_refusal_log "$1"; }
 
+# driver_auth_lost <ticket> <step> <log> — 0 when this host's Claude login is gone
+# (swarm_api_auth_log): the host's, never the ticket's, so it is not retried or waited for.
+# The auth hold is written for the coordinator and the reason goes on the record; the
+# caller returns DRIVER_E_USAGE, so the ticket requeues with its claim released.
+driver_auth_lost() {
+  local err
+  err=$(swarm_api_auth_log "$3") || return 1
+  swarm_auth_hold_write "$err (#$1 $2)" \
+    || driver_say "   $2: the auth hold could not be written to ${SWARM_AUTH_HOLD_FILE:-$STATE_DIR/auth-hold}"
+  driver_say "✋ $2: this host's Claude login is gone — $err. The host's, not the ticket's: $(swarm_host) is held for auth until someone logs in again."
+  driver_state_set "$1" park_note "the $2 step could not run: the Claude login on $(swarm_host) is gone ($err); the host is held for auth until someone logs in again"
+  return 0
+}
+
 # _driver_api_refusal_wait <prompt> <log> [session-id] — a refused session is a wait: the
 # call is made again DRIVER_API_REFUSAL_TRIES (4) times, after 1, 3, 5 and 7 times
 # DRIVER_API_REFUSAL_BASE_SEC (60). 0 once a call ran. Still refused: a 401 or 403 is the
@@ -527,6 +617,7 @@ _driver_api_refusal_wait() {
   local in="$1" out="$2" sid="${3:-}" why err n=0 wait until
   local tries="${DRIVER_API_REFUSAL_TRIES:-4}" base="${DRIVER_API_REFUSAL_BASE_SEC:-60}" hold="${DRIVER_API_REFUSAL_HOLD_SEC:-3600}"
   why=$(driver_api_refusal "$out") || return 0
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   case "$tries" in ''|*[!0-9]*) tries=4 ;; esac
   case "$base" in ''|*[!0-9]*) base=60 ;; esac
   case "$hold" in ''|0|*[!0-9]*) hold=3600 ;; esac
@@ -538,9 +629,11 @@ _driver_api_refusal_wait() {
     _driver_ai_run "$in" "$out" "$sid"
     driver_record_usage "$t" "$slot" "$out" "$in"
     driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+    driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
     if ! why=$(driver_api_refusal "$out"); then
       if err=$(driver_api_error "$out"); then
         driver_say "✋ $step: the API took the session on try $n and the call then failed — $err. A machine fault, not a question."
+        driver_state_set "$t" machine_fault "the $step model call failed at the API on try $n: $err"
         driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API ($err). The next run tries again."
         return "$DRIVER_E_MACHINE"
       fi
@@ -558,6 +651,7 @@ _driver_api_refusal_wait() {
       return "$DRIVER_E_USAGE" ;;
   esac
   driver_say "✋ $step: the session could not run — the API refused it $((tries + 1)) times: $why. A machine fault, not a question."
+  driver_state_set "$t" machine_fault "the API refused the $step session $((tries + 1)) times: $why"
   driver_state_set "$t" park_note "machine fault, nothing to answer: the API refused the $step session: $why. The next run tries again."
   return "$DRIVER_E_MACHINE"
 }
@@ -566,12 +660,12 @@ _driver_api_refusal_wait() {
 # it started had not reported: still running, timed out, or returned nothing. That has
 # one answer (run it again), so it is the machine's, never a person's question.
 driver_question_silent_agent() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eq \
+  grep -Eq <<<"$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
     "(sub-?agent|reviewer|review agent|agent)[^.?!]*((had|has|have|did|was|is)( not|n't)( yet)? (report|return|finish|complet|answer|respond|come back)|still running|timed? ?out|never (report|return|finish|answer))|(timed? ?out|still running)[^.?!]*(sub-?agent|reviewer)"
 }
 
-# _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
-# wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
+# _driver_ai_call <prompt> <log> [session-id] — one model call, its spend, the usage
+# wall and a lost login (driver_auth_lost), from driver_ai_step's locals. A call that failed at the API is made ONCE more
 # after DRIVER_API_RETRY_SEC; failing again it is a machine fault, never a question.
 # No step chunks its diff, so a safeguards flag is retried whole. A session the API
 # refused outright is waited for instead (_driver_api_refusal_wait).
@@ -579,7 +673,13 @@ _driver_ai_call() {
   local in="$1" out="$2" sid="${3:-}" err
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
+  if driver_model_wall "$t" "$step" "$out"; then
+    cp "$out" "$out.modelwall" 2>/dev/null
+    _driver_ai_run "$in" "$out" "$sid"
+    driver_record_usage "$t" "$slot" "$out" "$in"
+  fi
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "↻ $step: the model call failed at the API — $err. Trying once more in ${DRIVER_API_RETRY_SEC:-30}s."
   cp "$out" "$out.apierr" 2>/dev/null
@@ -587,6 +687,7 @@ _driver_ai_call() {
   _driver_ai_run "$in" "$out" "$sid"
   driver_record_usage "$t" "$slot" "$out" "$in"
   driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  driver_auth_lost "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
   err=$(driver_api_error "$out") || { _driver_api_refusal_wait "$in" "$out" "$sid"; return $?; }
   driver_say "✋ $step: the model call failed at the API twice — $err. A machine fault, not a question."
   driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API twice ($err). The next run tries again."
@@ -597,8 +698,10 @@ _driver_ai_call() {
 # worktree, from driver_ai_step's locals. With a session id it resumes that session.
 _driver_ai_run() {
   local in="$1" out="$2" sid="${3:-}"
-  local resume=() dbw=()
+  local resume=() dbw=() mf=()
   [ -z "$sid" ] || resume=(--resume "$sid")
+  _driver_ran_model=$(driver_step_model "$step")
+  [ -z "$_driver_ran_model" ] || mf=(--model "$_driver_ran_model")
   # The steps that run the project's tests get the throwaway database the proof gets.
   case "$step" in build|fix) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
   rm -f "$out.db"
@@ -631,13 +734,13 @@ _driver_ai_run() {
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
     if [ -n "$schema_for_model" ]; then
-      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} ${mf[@]+"${mf[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$in" > "$out" 2>"$out.err"
     else
-      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} ${mf[@]+"${mf[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" < "$in" > "$out" 2>"$out.err"
@@ -693,6 +796,18 @@ EOW
     local sess s_cli s_cause s_said
     sess=$(driver_log_session "$log" "$want"); s_cli=${sess%%$'\t'*}; s_cause=${sess#*$'\t'}
     if [ "$hit" -eq 0 ]; then
+      # A session that errored or never got past its first turn had no chance to call a Skill.
+      local first
+      first=$(driver_log_events "$log" | jq -r -s '[.[] | select(.type=="result")] | last
+        | if . == null or (.num_turns? | type) != "number" then empty
+          elif (.is_error // false) == true or .num_turns <= 1 then ((.result // "") | tostring | gsub("\\s+"; " ") | .[0:200] | if . == "" then "no message" else . end)
+          else empty end' 2>/dev/null)
+      if [ -n "$first" ]; then
+        driver_say "✋ $step: the session ended on its first turn or with an error, before any Skill could run: $first"
+        driver_state_set "$t" machine_fault "the $step session ended on its first turn or with an error: $first"
+        driver_state_set "$t" park_note "machine fault, nothing to answer: the $step session ended on its first turn or with an error ($first). The next run tries again."
+        return "$DRIVER_E_MACHINE"
+      fi
       case "$s_cause" in
         no-init)       s_said="the transcript has no session start to read the session from" ;;
         no-skill-tool) s_said="the session (Claude Code ${s_cli:-?}) had no Skill tool" ;;
@@ -827,6 +942,20 @@ EOC
         mv "$ans.norm" "$ans"
         driver_say "   $step: $moved left-out entr$([ "$moved" = 1 ] && printf y || printf ies) named no ticket item id — kept as a note, not asked again"
       else rm -f "$ans.norm"; fi
+    fi
+    # With no feature list a task's `item` names nothing, so one off the contract is dropped.
+    local itre dropped
+    itre=$(jq -r '.properties.tasks.items.properties.item.pattern // empty' "$DRIVER_SCHEMAS/$step.json" 2>/dev/null)
+    if [ -n "$itre" ]; then
+      dropped=$(jq -r --arg re "$itre" '
+        if ((.features // []) | length) > 0 then 0
+        else [(.tasks | arrays)[] | select(type == "object" and ((.item | type) == "string") and (.item | test($re) | not))] | length end' "$ans" 2>/dev/null)
+      if [ "${dropped:-0}" -gt 0 ] 2>/dev/null && jq --arg re "$itre" '
+          .tasks |= map(if type == "object" and ((.item | type) == "string") and (.item | test($re) | not) then del(.item) else . end)' \
+          "$ans" > "$ans.items" 2>/dev/null && [ -s "$ans.items" ]; then
+        mv "$ans.items" "$ans"
+        driver_say "   $step: $dropped task item$([ "$dropped" = 1 ] || printf s) matched no feature list item and the plan has none — dropped, not asked again"
+      else rm -f "$ans.items"; fi
     fi
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash

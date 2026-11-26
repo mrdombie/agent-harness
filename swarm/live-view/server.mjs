@@ -319,6 +319,55 @@ function tail(file) {
   } catch { return '' }
 }
 
+// The coordinator's own log, turned into the few rows a person follows: started,
+// finished, sent back, red, sign-offs, and why nothing is starting. Newest first.
+const COORD_LOG = process.env.SWARM_COORD_LOG || path.join(RUNS, '..', 'logs', 'coordinator.out.log')
+const FEED_ROWS = 24
+let feedMemo = { key: '', val: null }
+export function feedOf(file = COORD_LOG) {
+  let key = ''
+  try { const st = fs.statSync(file); key = `${file}:${st.size}:${st.mtimeMs}` } catch { return null }
+  if (feedMemo.key === key) return feedMemo.val
+  const rows = []
+  let lastCheck = null
+  // Builds running here that the coordinator did not start: its newest live line names them.
+  let untracked = []
+  for (const line of tail(file).split('\n')) {
+    const m = /^(\d\d:\d\d:\d\d) (.*)$/.exec(line)
+    if (!m) continue
+    const [, t, l] = m
+    const ticket = (/#(\d+)/.exec(l) || [])[1] || ''
+    let row = null
+    if (l === 'tick: done') { lastCheck = t; continue }
+    if (l.startsWith('live: ')) { untracked = ((/untracked: ([\d, ]+)/.exec(l) || [])[1] || '').split(/[ ,]+/).filter(Boolean); continue }
+    if (l.startsWith('spawned ')) row = { kind: 'start', text: `Started ${l.slice(8)}` }
+    else if (l.startsWith('ended: ')) {
+      const said = (l.split(' — ').slice(1).join(' — ') || l.slice(7)).trim()
+      const kind = said.startsWith('✓') ? 'done' : said.startsWith('↻') ? 'requeue' : 'stopped'
+      const took = (/claim→PR (\S+)/.exec(said) || [])[1]
+      const text = kind === 'done' ? `#${ticket} pull request opened${took ? `, ${took} after it started` : ''}`
+        : said.replace(/^[✓↻✗■]\s*/, '').replace(/requeued for the next tick, at the front of its priority as new, not parked/, 'back in the queue')
+      row = { kind, text: text.slice(0, 180) }
+    }
+    else if (l.startsWith('event: requeued')) continue
+    else if (l.startsWith('event: red')) row = { kind: 'red', text: l.replace(/^event: red(-2h|-pr)?\s*/, '').slice(0, 180) }
+    else if (l.startsWith('event: signoff')) row = { kind: 'signoff', text: `Sign-offs ready: ${l.slice(15)}`.slice(0, 180) }
+    else if (l.startsWith('event: ')) row = { kind: 'event', text: l.slice(7).slice(0, 180) }
+    else if (l.startsWith('spawn: ')) {
+      row = { kind: 'held', text: `Not starting: ${l.slice(7).replace(/ — from file \S+:/, ' —')}`.slice(0, 180) }
+    }
+    if (row) rows.push({ t, ticket, ...row })
+  }
+  // The same reason given every check is one row, at its newest time.
+  const seen = new Set(), out = []
+  for (const r of rows.reverse()) {
+    if (r.kind === 'held') { if (seen.has(r.text)) continue; seen.add(r.text) }
+    out.push(r)
+  }
+  feedMemo = { key, val: { lastCheck, untracked, rows: out.slice(0, FEED_ROWS) } }
+  return feedMemo.val
+}
+
 function stepFrom(block) {
   if (block.type === 'text') {
     const t = String(block.text ?? '').replace(/\s+/g, ' ').trim()
@@ -1488,6 +1537,16 @@ export function snapshot(now = Date.now()) {
     return x.title ? { ...x, short: shortTitle(x.title, plainTitles[t], x.project, plainName) } : {}
   }, fleet)
   const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
+  let feed = null
+  guard('feed', () => { feed = feedOf() })
+  // Started here outside the queue (a build run by hand): they hold places, so they are shown.
+  const shown = new Set([...live, ...elsewhere].map((r) => String(r.ticket)))
+  const outside = ((feed && feed.untracked) || []).filter((t) => !shown.has(String(t))).map((t) => {
+    guard('title', () => fetchTitle(t))
+    const x = titleOf(t)
+    return { ticket: String(t), title: x.title || `Ticket ${t}`, short: x.title ? shortTitle(x.title, plainTitles[t], x.project, plainName) : `Ticket ${t}`,
+             tag: x.tag || '', host: THIS_HOST, outside: true }
+  })
   const queue = queued
   for (const r of queue.tickets) {
     guard('title', () => fetchTitle(r.ticket))
@@ -1499,7 +1558,7 @@ export function snapshot(now = Date.now()) {
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
-           hold, queue, capacity: capacityOf(), fleet,
+           hold, queue, capacity: capacityOf(), fleet, feed, outside,
            mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now), measures: measuresOf(),
            hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,

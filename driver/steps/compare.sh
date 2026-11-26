@@ -52,7 +52,7 @@ driver_touched_surfaces() { # <tree> <trunk>
   # Entries are git pathspecs, magic included (`:(exclude)**/*.test.ts`). A list of
   # ONLY excludes means "every other file" to git — every change a screen change —
   # so it is refused rather than read.
-  if ! driver_surface_paths | grep -qvE '^:(\(([^)]*,)?exclude[,)]|[/!^]*[!^])'; then
+  if ! grep -qvE '^:(\(([^)]*,)?exclude[,)]|[/!^]*[!^])' <<<"$(driver_surface_paths)"; then
     driver_say "✋ compare: design.surfacePaths holds only exclude pathspecs, which git reads as every other file — name what a screen IS, then exclude from it." >&2
     return 2
   fi

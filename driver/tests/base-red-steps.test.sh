@@ -135,6 +135,20 @@ step driver_step_fix 705
 want "the question parks, as before"           "$DRIVER_E_QUESTION" "$R_RC"
 want_in "the model was handed the gate"        "gate-local-1" "$(blockers 705)"
 want "nothing for the coordinator"             "0" "$(rows)"
+want_in "the trunk run that found it green stays with the gate" "t/own.test.sh is green on develop@" "$(jq -r '.[0].baseWhy // ""' "$(driver_state_dir 705)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- fix: \"it is the base's\" about a gate the driver ran green on the trunk is answered with that run ---"
+# A fix round said a lint red was develop's, was told to carry on, and parked 47 minutes later with nothing to answer.
+jq '.release = {mergeFirst: true, done: false}' "$FIX/cfg.json" > "$FIX/cfg-mf.json"
+kind_ask() { jq -nc --arg q "$1" '{step:"fix", skills:["superpowers:receiving-code-review"], status:"park", round:1, question:$q, questionKind:"base-red"}'; }
+case_fx_claim() { reset; trunk_set; branch "$N" red-own; findings "$N" "sh run-tests.sh"
+  fix_ai fix "$(kind_ask 'The gate is red only in files this branch never touched. Treat this as develop-red and carry on?')" superpowers:receiving-code-review
+  queue_then "$(gate_answer "$N")"; SUT_KIT="${KIT:-}" step driver_step_fix "$N" "$FIX/cfg-mf.json"
+  R="asked=$(grep -c . "$CLAUDE_LOG") told=$(grep -c 'Not base-red' "$FIX/claude-stdin-fix.txt") carried=$(grep -c 'they are discounted here' "$FIX/claude-stdin-fix.txt")"; }
+N=715; case_fx_claim
+want "asked again, told it passes on the trunk, never told to carry on" "asked=2 told=1 carried=0" "$R"
+want_in "the run says the claim did not hold"  "base-red: claimed, and not so" "$R_OUT"
+want_in "naming the trunk run"                 "t/own.test.sh is green on develop@" "$R_OUT"
 
 echo "--- fix: \"wait or fix here\" about a test red on the trunk is asked once more to carry on ---"
 reset; trunk_set red-legacy
@@ -226,6 +240,8 @@ plant "self-check reads base-red" driver/steps/self-check.sh '    elif [ "$rc" -
 plant "a green trunk run is the branch's" driver/base-red.sh '      green) DRIVER_BASE_RED_WHY="$c is green on $INTEGRATION_BRANCH@$s7, so this branch'"'"'s own"; return 1 ;;
       *) DRIVER_BASE_RED_WHY="$c could not be run on $INTEGRATION_BRANCH@$s7, so this branch'"'"'s own"; return 1 ;;
 ' && { case_sc_own; want "planted (a green trunk run is the branch's): the branch's red passes" "rc=0" "$R"; }
+plant "fix keeps the trunk run with the gate" driver/steps/fix.sh '    [ -z "$of" ] || [ ! -f "$of" ] || row=$(jq -c --arg w "$(driver_base_red_gate "$wt" "$cmd" "$of" >/dev/null 2>&1; printf '"'"'%s'"'"' "${DRIVER_BASE_RED_WHY:-}")" '"'"'. + {baseWhy: $w}'"'"' <<<"$row")
+' && { next; case_fx_claim; want "planted (the trunk run is not kept): the claim is taken from the words again" "asked=2 told=0 carried=1" "$R"; }
 plant "fix reads base-red" driver/steps/fix.sh '    if [ -n "$of" ] && [ -f "$of" ] && bred=$(driver_base_red_gate "$wt" "$cmd" "$of"); then
       DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
       driver_base_red_say "$t" fix "$id" "$bred"
