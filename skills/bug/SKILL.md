@@ -118,6 +118,19 @@ every frame a named evidence region on laptop and phone, real data drawn (duplic
 names, the longest names, the empty state, scrolled), and
 `python3 -I "$KIT_ROOT/scripts/picture-evidence.py" lint` passes before it is sent.
 
+On a new or redesigned screen (`bash "$KIT_ROOT/scripts/flow-audit.sh" owed <its labels>`
+exits 0) the picture also takes the `/agent-harness:flows` audit: the `flow-cartographer` on
+`flow-audit.sh brief cartographer`, then the `flow-checker` on `flow-audit.sh brief checker`
+against its clickable story: the Storybook page the project's `/design` picture phase builds,
+at the URL `flow-audit.sh story <surface>` prints. When that exits 2 the picture has
+no clickable story: park the bug for the operator with that reason and send nothing; never
+skip the audit. Its STRANDS and LIES fixes join the critic's Critical/Major fixes
+in the same single redraw; then the `flow-checker` runs again on just the open STRANDS/LIES
+rows (`brief checker ... --only <ids>`), and its verdicts replace those rows in the ledger. The
+critic still runs once. Post the report on the ticket, its one home:
+`flow-audit.sh report post <ticket> <report.md>`. The picture is sent only when
+`flow-audit.sh gate <report.md>` exits 0.
+
 Once the operator approves the picture, publish it for every machine before the build
 starts: `bash "$KIT_ROOT/scripts/picture-approve.sh" <ticket> <picture.html>` (a secret
 gist and a **Picture for any machine** comment on the ticket; rerunning is a no-op).
