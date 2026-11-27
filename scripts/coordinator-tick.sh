@@ -618,8 +618,14 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
   # A repo:<other> ticket is that repo's work, whatever queue it reached this one by.
   if l=$(driver_repo_foreign "$lab"); then echo "belongs to $l"; return 0; fi
+  # A fix round of its own open PR (a "Fix: PR #<n>" note, rebuild.sh) is not stopped by the
+  # ticket being in review: an open PR is what puts it there, so the round queued to mend
+  # that PR waited for ever (#20947 sat queued six days, 2026-11-20 to 26). spawn_pr_block
+  # still checks the note names the open PR and that it is red or clashing.
+  local fixrun=""; [ -z "$(rebuild_fix_note_pr "$note")" ] || fixrun=1
   while read -r l; do
     [ -n "$l" ] || continue
+    [ -n "$fixrun" ] && [ "$l" = "$LBL_IN_REVIEW" ] && continue
     case ",$lab," in *",$l,"*) echo "$l"; return 0 ;; esac
   done <<< "$(stop_labels)"
   # NO RUN WITHOUT A CHANGE TO MAKE: a new build the queue seeded starts only on a ready

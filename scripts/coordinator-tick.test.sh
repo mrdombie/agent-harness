@@ -772,6 +772,14 @@ want "  no place to start it: nothing spawned"  "" "$(spawned)"
 want "  the round is queued, not spent"         "1 queued" "$(cut -f2,4 "$C/fix-rounds.did.tsv" 2>/dev/null | tr '\t' ' ')"
 out=$(FIX_CAP=0 fix_tick)
 want_in "  the next tick says it has not started" 'rebuild: PR #5501 is stuck .* — fix round 1 of 2 is queued for this head and has not started' "$out"
+echo "  its ticket put back in review while the round waits: the round still starts"
+rb_world
+out=$(FIX_CAP=0 fix_tick)
+jq '.labels |= map(if .name == "status:ready" then .name = "status:in-review" else . end)' "$FIX/gh/issue-501.json" > "$FIX/gh/issue-501.json.t" && mv "$FIX/gh/issue-501.json.t" "$FIX/gh/issue-501.json"
+want_in "  the ticket now reads in review"     'status:in-review' "$(jq -r '[.labels[].name] | join(",")' "$FIX/gh/issue-501.json")"
+out=$(fix_tick)
+want "  the queued fix round is spawned"        "501" "$(spawned)"
+want_not_in "  never skipped as in review"      'skip #501 .*status:in-review' "$out"
 echo "  one free place and a P0 queued: the fix round takes it, ahead of the new build"
 rb_world; fix_issue 601 OPEN "P0,status:ready"; bash "$Q" add 601 >/dev/null
 out="$(FIX_CAP=1 fix_tick)
