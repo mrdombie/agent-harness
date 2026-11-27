@@ -26,14 +26,14 @@ printf '{"passed":1,"total":2,"cases":[{"name":"a","pass":true},{"name":"b","pas
 exit 1
 SH
 chmod +x "$REPO/report.sh"
-mkdir -p "$REPO/holly" "$REPO/other"
-echo base > "$REPO/holly/a.ts"; echo base > "$REPO/other/b.ts"
+mkdir -p "$REPO/agent" "$REPO/other"
+echo base > "$REPO/agent/a.ts"; echo base > "$REPO/other/b.ts"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm base
 git -C "$REPO" checkout -q -b "tkt-$T/x"
 mkdir -p "$(driver_state_dir "$T")/steps"
 
 with_report() {
-  jq --arg run "bash $REPO/report.sh" '.reports = {onTouch: [{name: "Holly replay", paths: ["holly/"], run: $run,
+  jq --arg run "bash $REPO/report.sh" '.reports = {onTouch: [{name: "Agent replay", paths: ["agent/"], run: $run,
       results: "docs/evidence/{ticket}/r.json", maxRuns: 2,
       summary: "\"\\(.passed) of \\(.total) pass\", (.cases[] | select(.pass | not) | \"red: \\(.name)\")"}]}' \
     "$CFG" > "$CFG.new" && mv "$CFG.new" "$CFG"
@@ -43,7 +43,7 @@ edit() { echo "$2" >> "$REPO/$1"; git -C "$REPO" add -A; git -C "$REPO" commit -
 runs() { wc -l < "$RUNS" | tr -d ' '; }
 
 if suite_case "nothing configured: no report runs, no section"; then
-  edit holly/a.ts one
+  edit agent/a.ts one
   driver_touch_reports "$T" "$REPO"; rc=$?
   want "returns OK" 0 "$rc"
   want "the report never ran" 0 "$(runs)"
@@ -64,7 +64,7 @@ if suite_case "a change to its paths runs it, commits the results, names the red
   driver_touch_reports "$T" "$REPO"; rc=$?
   want "returns OK on a red run" 0 "$rc"
   want "ran once" 1 "$(runs)"
-  want "the results file is committed" "chore(#$T): Holly replay report" "$(git -C "$REPO" log -1 --format=%s)"
+  want "the results file is committed" "chore(#$T): Agent replay report" "$(git -C "$REPO" log -1 --format=%s)"
   sec=$(driver_touch_reports_section "$T")
   case "$sec" in *"## Reports (not blocking)"*"exit 1"*"1 of 2 pass"*"red: b"*) got=yes ;; *) got="$sec" ;; esac
   want "the section names the exit, the score and the red" yes "$got"
@@ -76,10 +76,10 @@ if suite_case "the same head of its paths is not run again"; then
 fi
 
 if suite_case "a new head of its paths runs again, up to maxRuns"; then
-  edit holly/a.ts two
+  edit agent/a.ts two
   driver_touch_reports "$T" "$REPO"
   want "a second run" 2 "$(runs)"
-  edit holly/a.ts three
+  edit agent/a.ts three
   driver_touch_reports "$T" "$REPO"
   want "no third run past maxRuns 2" 2 "$(runs)"
 fi

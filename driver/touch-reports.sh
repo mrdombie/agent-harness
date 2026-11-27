@@ -10,9 +10,9 @@
 # The project names each report in harness.json; the kit names none:
 #
 #   "reports": { "onTouch": [ {
-#     "name":        "Holly replay",
-#     "paths":       ["apps/api/src/lib/agent/", …],   path prefixes; any changed file under one runs it
-#     "run":         "npm run eval:holly-real",         run from the tree's root
+#     "name":        "Agent replay",
+#     "paths":       ["src/agent/", …],   path prefixes; any changed file under one runs it
+#     "run":         "<the project's report command>",  run from the tree's root
 #     "results":     "docs/evidence/{ticket}/x.json",   committed when the run writes it
 #     "summary":     "<jq over the results file>",      lines for the pull request
 #     "timeoutSecs": 3600,                              default 3600
@@ -24,7 +24,7 @@
 # and the build goes on. Exit code, timeout and a missing results file are all reported,
 # never returned.
 #
-# WHY ONCE PER HEAD OF ITS PATHS. A run can cost hundreds of model calls (Maktura's replay
+# WHY ONCE PER HEAD OF ITS PATHS. A run can cost hundreds of model calls (one measured replay
 # set: 211 calls, 29 minutes). A fix round that leaves those paths unchanged runs nothing
 # again; one that changes them runs again, up to maxRuns per build.
 
@@ -39,7 +39,7 @@ _driver_touch_rows() {
 
 # _driver_touch_safe <name> — the report's name as a file and state key. Underscores, never
 # hyphens: driver_state_get reads a key with a hyphen as a jq subtraction and answers empty,
-# so a report keyed "holly-replay" never found its own last run and ran on every pass.
+# so a report keyed "agent-replay" never found its own last run and ran on every pass.
 _driver_touch_safe() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_' | tr 'A-Z' 'a-z' | sed 's/__*/_/g; s/^_//; s/_$//'; }
 
 # _driver_touch_base <tree> — where the branch left the trunk.
