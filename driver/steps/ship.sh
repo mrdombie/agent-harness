@@ -24,6 +24,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
 # driver_step_self_check: the gates again, on a tree the merge from origin changed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/touch-reports.sh" || exit 1
 
 # _driver_ship_replaced <ticket> — the "## Deleted tests" lines for the tests this
 # ticket's steps reported rewording or removing (steps/replaced.jsonl), last word per file.
@@ -845,6 +846,7 @@ driver_step_ship() { # <ticket>
   fi
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
   deferred=$(_driver_ship_deferred "$t")
+  local reports; reports=$(driver_touch_reports_section "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes ${ISSUE_REF:-}#$t
@@ -875,6 +877,8 @@ $pmsteps
 $polish
 }${deferred:+
 $deferred
+}${reports:+
+$reports
 }${replaced:+
 ## Deleted tests
 $replaced}
