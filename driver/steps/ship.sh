@@ -883,6 +883,7 @@ PRBODY
   # Written above as the first line; held here so no later section drops it.
   body=$(printf '%s\n' "$body" | pr_closes_ensure "$t" "$closes")
   snote=$(driver_state_get "$t" size_note); [ -z "$snote" ] || body=$(printf '%s\n\n## Size\n%s\n' "$body" "$snote")
+  snote=$(driver_state_get "$t" runtime_note); [ -z "$snote" ] || body=$(printf '%s\n\n## Runtime design (not blocking)\n%s\n' "$body" "$snote")
   snote=$(driver_state_get "$t" archived_ref)
   [ -z "$snote" ] || body=$(printf "%s\n\n## Earlier branch\nOrigin's %s was an earlier run's tip that no open pull request used, and it conflicted with this run. It is kept as \`%s\` (\`git fetch origin %s\`); the branch now holds this run's line.\n" "$body" "$branch" "$snote" "$snote")
   [ -z "$proof" ] || body=$(printf '%s\n\n%s\n' "$body" "$proof")

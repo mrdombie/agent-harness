@@ -25,6 +25,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/size-rules.sh" || exit 1
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/feature-list.sh" || exit 1
+# driver_runtime_check: the third upfront design (where the truth lives), owed by label and path.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/runtime-design.sh" || exit 1
 
 # BUILD WHOLE, SPLIT ONLY WHEN HUGE (owner, 2026-11-05). A plan writes a feature list, one
 # behaviour a person sees or does per item, each with its test steps, all failing, and the
@@ -513,6 +515,11 @@ driver_step_plan() { # <ticket>
     driver_say "✋ plan: it changes the schema and names no approved data model. A database change comes from a reviewed model, never from inside a ticket."
     return "$DRIVER_E_REFUSED"
   fi
+
+  # THE THIRD UPFRONT DESIGN: where the truth lives, owed by the ticket's label and the
+  # plan's paths, never by the model's say-so (driver/runtime-design.sh).
+  rc=0; driver_runtime_check "$t" "$ans" "$(driver_state_get "$t" worktree)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   ntests=$(jq -r '[.tasks[]?.tests[]?] | length' "$ans")
   if [ "${ntests:-0}" -eq 0 ]; then

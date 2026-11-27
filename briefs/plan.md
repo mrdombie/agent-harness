@@ -110,6 +110,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `premise.evidence` (required): string
 - `schemaChange`: boolean
 - `dataModelSpec`: string
+- `runtimeDesign`: string
 - `tasks`: list of object
 - `tasks[].title` (required): string
 - `tasks[].files` (required): list of object
