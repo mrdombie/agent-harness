@@ -64,7 +64,7 @@ if [ -n "$tok" ]; then
 fi
 # A PICTURE ON THE TRUNK IS ON EVERY MACHINE. A branch cut before the approved picture
 # merged does not hold it, yet the trunk does: take that file from the trunk into the tree
-# (the caller commits it) rather than asking a person where it is (maktura #21290, 28 Nov).
+# (the caller commits it) rather than asking a person where it is (seen 28 Nov 2026).
 if [ "$fetch" -eq 1 ] && [ "${path#/}" = "$path" ]; then
   tb="${INTEGRATION_BRANCH:-develop}"
   git -C "$TREE" fetch -q origin "$tb" 2>/dev/null || true
