@@ -592,8 +592,16 @@ swarm_usage_file_hold_stale() {
 # LATER of two walls is kept (a weekly wall outlasts the session wall that hit first); a
 # hold from another account is replaced. The same format hooks/usage-limit.sh writes.
 swarm_usage_hold_write() {
-  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" cur acct
-  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" cur acct until="${1:-}" cap
+  case "$until" in ''|*[!0-9]*) return 1 ;; esac
+  # A WEEKLY WINDOW NEVER HOLDS FOR DAYS. Usage is paced only to the five-hour session
+  # (the owner, 2026-11-04); one rejection on a seven-day window wrote a six-day hold twice
+  # while builders kept answering (2026-11-12, 2026-11-25). It holds to five hours at most,
+  # and the next wall, if the account really is out, writes the next five.
+  case "${3:-}" in
+    seven_day*) cap=$(( $(swarm_now) + 5 * 3600 )); [ "$until" -le "$cap" ] || until=$cap ;;
+  esac
+  set -- "$until" "${2:-}" "${3:-}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
   acct=$(swarm_account)
   cur=$(swarm_usage_hold_field "$f" 1); case "$cur" in ''|*[!0-9]*) cur=0 ;; esac

@@ -100,6 +100,21 @@ want "another account's later wall is replaced" "$(( NOWE + 3600 ))	org-b" "$(cu
   swarm_usage_hold_write $(( NOWE + 1800 )) "nearer wall" five_hour )
 want "on the same account the later wall is kept" "$(( NOWE + 3600 ))" "$(cut -f1 "$HOLD")"
 
+echo "--- a seven-day window holds five hours at most (2026-11-25: one rejection held six days) ---"
+clean
+( export SWARM_NOW="$NOWE" SWARM_ACCOUNT=org-a; . "$KIT/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9
+  swarm_usage_hold_write $(( NOWE + 6 * 86400 )) "overage wall" seven_day_overage_included )
+want "a reset six days out is held to five hours" "$(( NOWE + 5 * 3600 ))" "$(cut -f1 "$HOLD")"
+want "  and the window is still named"           "seven_day_overage_included" "$(cut -f4 "$HOLD")"
+clean
+( export SWARM_NOW="$NOWE" SWARM_ACCOUNT=org-a; . "$KIT/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9
+  swarm_usage_hold_write $(( NOWE + 7200 )) "weekly, near reset" seven_day )
+want "a weekly reset nearer than five hours is kept" "$(( NOWE + 7200 ))" "$(cut -f1 "$HOLD")"
+clean
+( export SWARM_NOW="$NOWE" SWARM_ACCOUNT=org-a; . "$KIT/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9
+  swarm_usage_hold_write $(( NOWE + 4 * 3600 )) "session wall" five_hour )
+want "the five-hour wall still holds to its reset" "$(( NOWE + 4 * 3600 ))" "$(cut -f1 "$HOLD")"
+
 echo "--- spawn-claim's pre-check ---"
 # Stand-ins that record being started: the door must never reach them under a binding hold.
 cat > "$BIN/claude" <<'SH'

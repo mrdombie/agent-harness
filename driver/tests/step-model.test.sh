@@ -88,7 +88,10 @@ fresh; fable_out "$FIX/ai/plan.1.jsonl"
 rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
 want "it ends on the usage code" "$DRIVER_E_USAGE" "$rc"
 want "two calls" "2" "$(cat "$FIX/nth.plan")"
-want "the spawning hold is written" "1792900000" "$(cut -f1 "$SWARM_USAGE_HOLD_FILE" 2>/dev/null)"
+# A seven-day wall holds five hours at most (swarm_usage_hold_write): the hold is written,
+# capped at five hours from the run's clock (SWARM_NOW), never the weekly reset days out.
+want "the spawning hold is written, five hours at most" "$(( SWARM_NOW + 5 * 3600 ))" "$(cut -f1 "$SWARM_USAGE_HOLD_FILE" 2>/dev/null)"
+want "  and it names the weekly window"                 "seven_day" "$(cut -f4 "$SWARM_USAGE_HOLD_FILE" 2>/dev/null)"
 
 echo "--- plant: drop the fallback and the step stops on Fable's wall ---"
 fresh; fable_out "$FIX/ai/plan.1.jsonl"
