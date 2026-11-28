@@ -301,4 +301,21 @@ want "it is refused before planning"                   "$DRIVER_E_REFUSED" "$rc"
 want "  no plan was paid for"                          "" "$(cat "$CLAUDE_LOG")"
 want_in "  and it says so"                             "approved picture ${HSHA:0:12} is not in .design/.*nothing spent" "$out"
 
+echo "--- a picture on the trunk, missing from a branch cut before it merged: taken from the trunk ---"
+wt=$(fresh_tree 811); fixture_path wt "$FIX"
+git init -q --bare "$FIX/origin.git"
+git -C "$REPO" remote add origin "$FIX/origin.git" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/origin.git"
+git clone -q "$FIX/origin.git" "$FIX/late" 2>/dev/null; git -C "$REPO" push -q origin develop 2>/dev/null
+git -C "$FIX/late" fetch -q origin develop && git -C "$FIX/late" checkout -q -B develop origin/develop
+mkdir -p "$FIX/late/.design"; printf 'the approved settings shot\n' > "$FIX/late/.design/settings-looking-laptop.png"
+git -C "$FIX/late" add .design && git -C "$FIX/late" -c user.email=t@example.invalid -c user.name=T commit -q -m "approved picture" && git -C "$FIX/late" push -q origin develop
+issue_with 811 "an unrelated comment"
+rc=0; out=$(bash "$HERE/../../scripts/picture-fetch.sh" 811 ".design/settings-looking-laptop.png" "$wt" 2>&1) || rc=$?
+want "the trunk's picture is used, not a miss"         "0" "$rc"
+want "  and it is now in the tree, byte for byte"      "the approved settings shot" "$(cat "$wt/.design/settings-looking-laptop.png" 2>/dev/null)"
+
+echo "--- not on the trunk either: still a miss ---"
+rc=0; bash "$HERE/../../scripts/picture-fetch.sh" 811 ".design/never-drawn.png" "$wt" >/dev/null 2>&1 || rc=$?
+want "a picture nowhere is still exit 3"               "3" "$rc"
+
 suite_end "$FAILED"
