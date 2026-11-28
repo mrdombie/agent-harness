@@ -45,7 +45,8 @@ RE_MAX_ITEMS=20
 re_die() { echo "review-eval: $*" >&2; exit 2; }
 
 # ---- the match --------------------------------------------------------------------
-# jq definitions: kept(answer) — the findings a review keeps (not a nit), and
+# jq definitions: kept(answer) — the findings a review keeps (not a nit, and not a written-rule
+# finding, which reports and never blocks: Dom, 2026-11-28), and
 # hit($f; $e; $win) — the tally's match.
 RE_JQ='
 def ws: ascii_downcase | [scan("[a-z0-9]+") | select(length >= 4)] | unique;
@@ -54,7 +55,8 @@ def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
     else ([$x[] | . as $w | select($y | index($w))] | length) / ([($x | length), ($y | length)] | min) end;
 def samefile($a; $b): ($a | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $x | ($b | sub("^\\./"; "")) as $y
   | $x == $y or ($x | endswith("/" + $y)) or ($y | endswith("/" + $x));
-def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit")];
+def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit")
+  | select((.kind // "") | IN("breaks-rule", "stale-rule") | not)];
 def hit($f; $e; $win):
   samefile($f.file // "" | tostring; $e.file // "" | tostring)
   and ((($f.line // 0) - ($e.line // 0)) | if . < 0 then -. else . end) <= $win
@@ -190,7 +192,7 @@ re_set() {
 # re_item <run dir> <item json> — one review of one past change. Writes items/<id>.json.
 # Runs in a subshell of its own: the driver's functions and state are per-item.
 re_item() {
-  local run="$1" item="$2" id base head t wt d diff cap bytes effort rc spend out
+  local run="$1" item="$2" id base head t wt d diff cap bytes effort rc spend out p
   id=$(jq -r .id <<<"$item")
   base=$(jq -r .base <<<"$item"); head=$(jq -r .head <<<"$item")
   t="eval-$id"; wt="$run/trees/$id"; out="$run/items/$id.json"
@@ -218,6 +220,11 @@ re_item() {
   driver_fact_put "$t" review TARGET "$base"
   driver_fact_put "$t" review RENDERS "(none — this run took no renders, so judge no screen from them)"
   driver_fact_put "$t" review ROUND 1
+  # The written rules, as the review step hands them: the root files and the changed files' nearest.
+  local -a changed=()
+  while IFS= read -r p; do [ -n "$p" ] && changed+=("$p"); done < <(git -C "$wt" diff --name-only "$base" "$head" 2>/dev/null)
+  driver_fact_put "$t" review RULES "$(driver_fact_rules "$wt" ${changed[@]+"${changed[@]}"})"
+  driver_rule_files "$wt" ${changed[@]+"${changed[@]}"} > "$d/review.rules.txt"
   rc=0; _driver_review_hunt "$t" "$run/none" "$effort" >> "$run/log" 2>&1 || rc=$?
   [ "$rc" -ne 0 ] || _driver_review_check "$t" "$d/review.json" >> "$run/log" 2>&1 || rc=$?
   spend=$(jq -r '.spend // 0' "$(driver_state_dir "$t")/state.json" 2>/dev/null); spend=${spend:-0}

@@ -24,6 +24,7 @@ subagent of its own fails the step.
 - The change: {{DIFF}}
 - The renders of every screen it touches: {{RENDERS}}
 - The round: {{ROUND}}
+- Its written rules, numbered `<file>:<line>`: {{RULES}}
 - This project: {{PROJECT_FACTS}}
 
 ## Report every finding; the check decides what stays
@@ -46,6 +47,9 @@ several places, return ONE finding naming the mistake in `class` and every place
 
 **Never raise a finding twice.** The change may list findings already raised on it;
 do not return any of them again, reworded or not.
+
+**Hold the change to RULES.** Each finding carries a `kind`; a rule kind cites
+`rule` as `<file>:<line>` from RULES; a rule finding never blocks.
 
 ## Grade every finding
 
@@ -106,6 +110,8 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
 - `findings[].class`: string
+- `findings[].kind`: one of "defect", "breaks-rule", "stale-rule"
+- `findings[].rule`: string
 - `findings[].instances`: list of string
 - `findings[].summary` (required): string
 - `findings[].reason` (required): string

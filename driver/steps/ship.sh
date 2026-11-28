@@ -358,12 +358,30 @@ _driver_ship_tier_line() {
 _driver_ship_deferred() {
   local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
   [ -s "$f" ] || return 0
+  # Written-rule findings report and never block (Dom, 2026-11-28): listed here, never a finding.
+  if jq -se 'any(.[]; .list == "rule" and .kind == "breaks-rule")' "$f" >/dev/null 2>&1; then
+    printf '## Written rules this change breaks
+The review found the change at odds with these written rules. Reported only, not blocking:
+'
+    jq -rs '[.[] | select(.list == "rule" and .kind == "breaks-rule")] | unique_by([.rule, .file, .line, .summary])[]
+      | "- \(.rule // "?") — \(.summary // "") (at \(.file // "?"):\(.line // "?"); \(.grade // ""))"' "$f" 2>/dev/null
+    printf '\n'
+  fi
+  if jq -se 'any(.[]; .list == "rule" and .kind != "breaks-rule")' "$f" >/dev/null 2>&1; then
+    printf '## Rules to update
+The review found these written rules out of date against this change. Not blocking:
+'
+    jq -rs '[.[] | select(.list == "rule" and .kind != "breaks-rule")] | unique_by([.rule, .summary])[]
+      | "- \(.rule // "?") — \(.summary // "") (seen at \(.file // "?"):\(.line // "?"))"' "$f" 2>/dev/null
+    printf '\n'
+  fi
+  jq -se 'any(.[]; .list != "rule")' "$f" >/dev/null 2>&1 || return 0
   if driver_merge_first; then
     printf '## Review findings, deferred\nMerge first until the release: only a Critical blocks. Not blocking:\n'
   else
     printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
   fi
-  jq -rs 'unique_by([.file, .line, .summary])[]
+  jq -rs '[.[] | select(.list != "rule")] | unique_by([.file, .line, .summary])[]
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(.grade // "") — \(if .list == "sweep" then "outside the files of this change: to the nightly sweep" else "dropped, not filed" end))"' "$f" 2>/dev/null
 }
 

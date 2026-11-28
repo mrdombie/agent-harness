@@ -65,6 +65,7 @@
         "DIFF": "the change under review, against the trunk it will merge into",
         "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",
         "ROUND": "which review round this is: 1 or 2",
+        "RULES": "the written rules the change is held to: the root CLAUDE.md and AGENTS.md and the instruction file nearest each changed file, every line numbered <file>:<line>, cut at review.rulesMaxBytes",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: the design law, the component kit, the gate commands"
       }
     },
