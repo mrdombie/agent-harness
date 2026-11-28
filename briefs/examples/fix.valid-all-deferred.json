@@ -1,0 +1,15 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "deferred": [
+    {
+      "blockerId": "F2",
+      "reason": "a Major outside every file this change touched; under merge first it is dropped and the change ships",
+      "followUp": "none: merge first files no finding tickets"
+    }
+  ]
+}

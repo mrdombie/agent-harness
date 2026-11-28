@@ -155,7 +155,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `autoProofs`, `bodyProofs`
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `autoProofs`, `bodyProofs`, `deferred`
 - otherwise: requires `question`
 <!-- fields:end -->
 
@@ -169,7 +169,9 @@ the exact command, no placeholders: where the project has a test database,
 
 A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a
-Major is not deferrable: the ship step refuses while one is open.
+Major is not deferrable: the ship step refuses while one is open. A round in
+which every finding is deferred still answers `fixed`, with `deferred` alone;
+the driver decides which deferrals block (under merge first, only a Critical).
 
 A question names who answers it in `questionFor` (`owner`: pixels, product, data
 model; `pm`: repo, split, order, acceptance; unsure is `owner`)
