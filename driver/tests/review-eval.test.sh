@@ -56,7 +56,7 @@ check_says() { # <judgements> <cost>
 }
 # f3 is judged not real; f1 and f2 stand. Each item: hunter $1.25 + check $0.50.
 hunt "$(answer "[$F1,$F2,$F3,$FN]")" 1.25
-check_says '[{"id":"f1","real":true,"reason":"line 45"},{"id":"f2","real":true,"reason":"r"},{"id":"f3","real":false,"reason":"cancelled first"}]' 0.5
+check_says '[{"id":"f1","real":true,"reason":"line 45","rule":"other"},{"id":"f2","real":true,"reason":"r","rule":"other"},{"id":"f3","real":false,"reason":"cancelled first","rule":"other"}]' 0.5
 calls() { local n; n=$(grep -c . "$CLAUDE_LOG" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts" "$ROOT/swarm" "$ROOT/shared" "$ROOT/briefs" "$ROOT/.claude-plugin" "$KIT/"; }

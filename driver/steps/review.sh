@@ -463,6 +463,9 @@ $(_driver_review_context "$wt" "$fl" "$ln")
           | map(select(.id as $x | $cids | index($x))) | unique_by(.id)' "$ans")
       jq --argjson drop "$drop" '.findings = [(.findings // [])[] | select((.id | tostring) as $x | [$drop[].id] | index($x) | not)]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
       k=$((n - $(printf '%s' "$drop" | jq length)))
+      # The rule is the check's label, so the hunter's brief and schema stay out of it.
+      jq --slurpfile a "$ans" '([$a[0].judgements[]? | select(type == "object" and ((.rule // "") | type) == "string" and (.rule // "") != "") | {key: (.id | tostring), value: .rule}] | from_entries) as $r
+          | .findings = [(.findings // [])[] | (.id | tostring) as $x | if $r[$x] then . + {rule: $r[$x]} else . end]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
       [ "$judged" -eq "$n" ] || why=" — $((n - judged)) the check did not judge are kept"
       driver_say "   review: hunter found $n, check kept $k (dropped $((n - k)))$why"
       local line
@@ -521,7 +524,7 @@ _driver_review_posted() {
   fx=$(driver_state_count "$t" fix)
   jq -c --argjson r "$round" --argjson fx "${fx:-0}" "$keydef"' .findings[]? | select((.grade // "") != "nit")
       | select((.id // "" | tostring | startswith("polish-")) | not)
-      | {key: finding_key, id, file, line, grade, summary, round: $r, fix: $fx} + (if .class then {class} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
+      | {key: finding_key, id, file, line, grade, summary, round: $r, fix: $fx} + (if .class then {class} else {} end) + (if .rule then {rule} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
   rm -f "$f.panel"
 }
 
