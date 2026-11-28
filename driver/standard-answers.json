@@ -20,6 +20,7 @@
     "user-facing (copy|words|text|wording)"
   ],
   "order": [
+    "k",
     "i",
     "j",
     "g",
@@ -152,6 +153,15 @@
         "\\b(isn['’]?t|is not|not|wasn['’]?t|was not|never been)( yet)? committed\\b",
         "\\buncommitted\\b",
         "\\bso (it|i) can commit\\b"
+      ]
+    },
+    "k": {
+      "name": "git: reset or merge a pushed branch",
+      "answer": "Never reset or force-push a branch that is pushed with an open pull request. Bring develop in with a merge commit; a local merge that already contains develop and sits on the pushed head is kept as the merge. Carry on from the step you were on.",
+      "action": "carry",
+      "all": [
+        "\\breset(to)?\\b",
+        "\\b(merge|merged|origin|develop|branch|force-?push)\\b"
       ]
     }
   },
