@@ -183,6 +183,26 @@ driver_gh_read() {
   done
 }
 
+# driver_gh_write <command…> — a GitHub write retried only when GitHub itself failed: a 5xx,
+# a timeout or a dropped connection, DRIVER_WRITE_TRIES (4) times with a growing pause
+# (DRIVER_WRITE_RETRY_SEC, 10: 10 s, 20 s, 30 s). A refusal (403, 404, 422: permission,
+# protected base, validation) is final at once, as before. Two finished builds parked at
+# ship in ten minutes on 2026-11-25 when one pull-request write met a GitHub 502.
+driver_gh_write() {
+  local n=0 rc err
+  err=$(mktemp "${TMPDIR:-/tmp}/driver-gh-write.XXXXXX") || { "$@"; return; }
+  while :; do
+    "$@" 2>"$err"; rc=$?
+    if [ "$rc" -eq 0 ]; then rm -f "$err"; return 0; fi
+    n=$((n+1))
+    if [ "$n" -ge "${DRIVER_WRITE_TRIES:-4}" ] \
+       || ! grep -qiE 'HTTP 5[0-9][0-9]|\b50[0-9]\b|bad gateway|service unavailable|gateway time-?out|timed? ?out|connection (reset|refused)|unexpected EOF|i/o timeout' "$err"; then
+      cat "$err" >&2; rm -f "$err"; return "$rc"
+    fi
+    sleep $(( ${DRIVER_WRITE_RETRY_SEC:-10} * n ))
+  done
+}
+
 # THE TICKET, READ ONCE PER RUN UNTIL A MODEL STEP RUNS. One token serves every builder,
 # and a start read its own ticket 7 times over (2026-10-27). build-ticket opens a copy
 # for its run (driver_ticket_snap_open); the first read fills it with every field below,

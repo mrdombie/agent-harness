@@ -904,7 +904,7 @@ PRBODY
     driver_state_set "$t" park_note "the pull request body lacks its proof: $(printf '%s' "$pmiss" | tr '\n' ';')"
     return "$DRIVER_E_REFUSED"
   fi
-  if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
+  if [ -n "$open_pr" ] && ! driver_gh_write swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
     # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
     # body ships "parked" as its squash subject, without the section the gate judged.
     driver_say "✋ ship: pull request #$open_pr for $branch exists and its title and body could not be rewritten, so it would ship carrying the park's words."
@@ -913,7 +913,7 @@ PRBODY
   fi
   # A branch whose pull request is open (a park's draft, a "Fix:" run's own PR) was
   # rewritten above and takes the push: a second one is never asked for.
-  [ -n "$open_pr" ] || swarm_gh pr create --repo "$REPO_SLUG" --draft \
+  [ -n "$open_pr" ] || driver_gh_write swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
