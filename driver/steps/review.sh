@@ -345,14 +345,15 @@ _driver_review_panel() {
   _driver_review_check "$t" "$f" || return 1
   m=$(jq '(.findings // []) | length' "$f" 2>/dev/null)
   dropped=$((dropped + ${n:-0} - ${m:-0}))
-  # A STALE RULE IS THE RULE'S TO CHANGE, never the builder's: to the PR notes, never blocking.
-  n=$(jq '[.findings[]? | select(.kind == "stale-rule")] | length' "$f" 2>/dev/null)
+  # A WRITTEN-RULE FINDING REPORTS AND NEVER BLOCKS (Dom, 2026-11-28), whatever its grade:
+  # breaks-rule and stale-rule both go to the PR notes, never back to the builder.
+  n=$(jq '[.findings[]? | select(.kind == "breaks-rule" or .kind == "stale-rule")] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-    jq -c --argjson r "$round" '.findings[]? | select(.kind == "stale-rule")
-        | {id, grade, file, line, summary, rule, round: $r, list: "rule"}' "$f" >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
-    jq '.findings = [(.findings // [])[] | select(.kind != "stale-rule")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    jq -c --argjson r "$round" '.findings[]? | select(.kind == "breaks-rule" or .kind == "stale-rule")
+        | {id, grade, kind, file, line, summary, rule, round: $r, list: "rule"}' "$f" >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
+    jq '.findings = [(.findings // [])[] | select(.kind != "breaks-rule" and .kind != "stale-rule")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
     dropped=$((dropped + n))
-    driver_say "   review: $n written rule(s) this change shows are out of date — to the PR notes as rules to update, never blocking"
+    driver_say "   review: $n written-rule finding(s) — to the PR notes, reported and never blocking"
   fi
   # STYLE AND CLEANUP NEVER BLOCK, and the drop is said.
   n=$(jq '[.findings[]? | select(.tag == "nit")] | length' "$f" 2>/dev/null)

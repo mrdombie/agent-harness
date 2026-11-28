@@ -3,8 +3,8 @@
 # carries RULES: the root CLAUDE.md and AGENTS.md and the nearest instruction file of each
 # changed file, line-numbered and capped at review.rulesMaxBytes with the cut said. A
 # finding of kind breaks-rule or stale-rule cites the rule (file:line, a file in RULES);
-# one that does not is refused. A stale rule never blocks: it goes to the PR notes as a
-# rule to update.
+# one that does not is refused. Neither ever blocks, whatever its grade (Dom, 2026-11-28):
+# a broken rule is listed in the PR notes, a stale one as a rule to update.
 # Run: env -i HOME="$HOME" PATH="$PATH" bash "$0" (a driver session's exported env points at live state)
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -50,7 +50,7 @@ fresh()  { : > "$CLAUDE_LOG"; : > "$SWEEP_QUEUE"; rm -f "$FIX"/claude-stdin-*.tx
 prompt() { cat "$FIX/claude-stdin-review.txt" 2>/dev/null; }
 rj()     { printf '%s/steps/review.json' "$(driver_state_dir "$1")"; }
 
-BREAKS='{"id":"r1","file":"app/x.ts","line":1,"grade":"major","tag":"important","kind":"breaks-rule","rule":"CLAUDE.md:3","summary":"calls fetch directly","reason":"the written rule says never call fetch directly","fix":"use the api client"}'
+BREAKS='{"id":"r1","file":"app/x.ts","line":1,"grade":"critical","tag":"important","kind":"breaks-rule","rule":"CLAUDE.md:3","summary":"calls fetch directly","reason":"the written rule says never call fetch directly","fix":"use the api client"}'
 STALE='{"id":"s1","file":"app/x.ts","line":1,"grade":"minor","tag":"important","kind":"stale-rule","rule":"CLAUDE.md:3","summary":"the rule predates the api client","reason":"the change shows the rule is out of date","fix":"update the rule"}'
 NORULE='{"id":"r2","file":"app/x.ts","line":1,"grade":"major","tag":"important","kind":"breaks-rule","summary":"calls fetch directly","reason":"r","fix":"f"}'
 OUTSIDE='{"id":"r3","file":"app/x.ts","line":1,"grade":"major","tag":"important","kind":"breaks-rule","rule":"lib/AGENTS.md:2","summary":"calls fetch directly","reason":"r","fix":"f"}'
@@ -81,12 +81,28 @@ want "it ships"                                            "0" "$rc"
 want_in "RULES says there are none"                        "none — no CLAUDE.md, AGENTS.md or instruction file" "$(prompt)"
 git -C "$REPO" revert --no-edit HEAD >/dev/null
 
-echo "--- a breaks-rule finding cites its rule, or is refused ---"
+echo "--- a breaks-rule finding reports and never blocks, even graded Critical (Dom, 2026-11-28) ---"
 tree 804; fresh; hunt "$(answer BLOCKED "[$BREAKS]")"
 rc=0; out=$(on driver_step_review 804 2>&1) || rc=$?
-want "a cited broken rule goes back to fix"                "30" "$rc"
-want "it is kept"                                          "r1 CLAUDE.md:3" "$(jq -r '[.findings[] | .id, .rule] | join(" ")' "$(rj 804)")"
-want_in "and posted like any finding"                      "calls fetch directly" "$(cat "$(driver_state_dir 804)/steps/review.posted.jsonl" 2>/dev/null)"
+want "a Critical broken rule alone ships"                  "0" "$rc"
+want "it never goes back as a finding"                     "" "$(jq -r '[.findings[]?.id] | join(" ")' "$(rj 804)")"
+want_not_in "it is never posted to the builder"            "calls fetch directly" "$(cat "$(driver_state_dir 804)/steps/review.posted.jsonl" 2>/dev/null)"
+want_in "the PR notes list it as a broken rule"            "Written rules this change breaks" "$(_driver_ship_deferred 804)"
+want_in "naming the rule and where"                        "CLAUDE.md:3 — calls fetch directly .at app/x.ts:1; critical" "$(_driver_ship_deferred 804)"
+want_not_in "never as a dropped finding"                   "dropped, not filed" "$(_driver_ship_deferred 804)"
+
+tree 809; fresh; hunt "$(answer SHIP "[$BREAKS]")"
+rc=0; out=$(on driver_step_review 809 2>&1) || rc=$?
+want "SHIP beside a Critical broken rule is not refused"   "0" "$rc"
+want_in "and still lists the rule"                         "Written rules this change breaks" "$(_driver_ship_deferred 809)"
+
+echo "--- a breaks-rule finding beside a real finding: only the real one goes back ---"
+REAL='{"id":"b1","file":"app/x.ts","line":1,"grade":"major","tag":"important","summary":"the url is wrong","reason":"r","fix":"f"}'
+tree 808; fresh; hunt "$(answer BLOCKED "[$BREAKS,$REAL]")"
+rc=0; out=$(on driver_step_review 808 2>&1) || rc=$?
+want "the real finding goes back to fix"                   "30" "$rc"
+want "only the real finding is kept"                       "b1" "$(jq -r '[.findings[]?.id] | join(" ")' "$(rj 808)")"
+echo "--- a rule finding cites its rule, or is refused ---"
 tree 805; fresh; hunt "$(answer BLOCKED "[$NORULE]")"
 rc=0; out=$(on driver_step_review 805 2>&1) || rc=$?
 want "a breaks-rule finding with no rule is refused"       "$DRIVER_E_SCHEMA" "$rc"
