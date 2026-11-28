@@ -34,8 +34,11 @@ the check can test against the code. A finding the check judges not real is drop
 Then tag every finding:
 
 - `important`: a defect this change introduces or re-exposes.
-- `nit`: style, naming, reuse, simplification, efficiency, altitude or any other
-  cleanup. Grade it `nit`; it is dropped.
+- A **second way** is `important` and `major`: a second implementation of something
+  the project has, or a one-case patch in a general mechanism. The `reason` names
+  the existing one by `file:line`, else `nit`.
+- `nit`: style, naming, reuse, simplification, efficiency, altitude or other
+  cleanup. It is dropped.
 - `pre-existing`: a real defect in code this change did not introduce and does
   not re-expose. Grade it honestly; it never blocks and never goes back to the
   builder. The driver sends it to the nightly sweep.
