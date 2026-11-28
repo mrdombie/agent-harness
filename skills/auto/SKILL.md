@@ -420,10 +420,7 @@ what to take; the run sheet is for showing where the work stands. Both, in that 
 Then read `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md` and follow it exactly. The shape:
 
 ```
-🏷️ Working on: the whole board (/agent-harness:auto)
-   Shipped 4 · 1 in flight (feed builder, PR open, gate red)
-   Also running: 2 agents on Welcome Flow
-   Resume: /agent-harness:auto
+Status: on the whole board, 4 shipped and the feed builder's PR is red; waiting on its fix, next check when CI reports.
 ```
 
 `Also running:` comes from a live read of `claim-lock.sh list --json` in the same

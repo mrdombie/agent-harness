@@ -234,10 +234,7 @@ printf '%s\t%s\n' "$SCOPE" "$(date +%Y-%m-%dT%H:%M:%S%z)" \
 ```
 
 ```
-🏷️ Working on: the connection health banner (area:ACCESS)
-   Shipped 1 — the banner stops reporting a dead connection as live
-   Also running: 2 agents on Welcome Flow
-   Resume: nothing — this one is done
+Status: the connection health banner (area:ACCESS) is fixed and merged; nothing else of mine is running.
 ```
 
 This prints whether the bug merged, stalled at the design pause, or turned out to be

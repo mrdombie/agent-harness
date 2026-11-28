@@ -33,6 +33,10 @@ t nag   'fresh label, no banner in the reply'            'All done, merged it.' 
 rm -rf "$MDIR"
 t quiet 'banner already present'                         '🏷️ Working on: Content Lab'    false s2
 rm -rf "$MDIR"
+t quiet 'one closing Status line is the sign-off'        $'Merged it.\nStatus: Content Lab drafts fix merged; nothing else running.'    false s2b
+rm -rf "$MDIR"
+t nag   'Status mid-sentence is not the sign-off'        'the Status: field is fine'    false s2c
+rm -rf "$MDIR"
 t quiet 'stop_hook_active guard'                         'All done, merged it.'          true  s3
 
 # cooldown: same session twice in a row must nag once, then go quiet

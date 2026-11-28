@@ -93,21 +93,19 @@ fi
 # 5. The common path — the flow already complied.
 LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 # A here-string: under pipefail an early match on a long message read as "no match".
-grep -qF '🏷️ Working on:' <<<"$LAST" && { say "exit0 banner-present $SCOPE"; exit 0; }
+# One closing line is the sign-off (the owner, 2026-11-28: the three-part banner was "really
+# confusing"). A line starting 'Status:' carries it; the old banner still counts.
+grep -qE '^(Status: |🏷️ Working on:)' <<<"$LAST" && { say "exit0 banner-present $SCOPE"; exit 0; }
 
 # Nag. Once.
 touch "$MARK"
 say "exit2 nagging scope=$SCOPE session=$SID"
 cat >&2 <<EOF
-You ended a turn without the sign-off banner, and there is live work under the
-scope "$SCOPE".
+You ended a turn without the closing status line, and there is live work under
+the scope "$SCOPE".
 
-Print the banner now — read "$KIT/shared/agent-signoff.md" for the rules, and
-read the live claims in THIS turn rather than from memory:
-
-  "$KIT/scripts/claim-lock.sh" list --json
-
-The first line must begin with the literal string "🏷️ Working on:". Add nothing
-else — no apology, no explanation of this message, no re-doing the work.
+Add one line, as the whole of your next message, starting with the literal
+"Status: ": what you are working on, what you are waiting for, and when you next
+check. Read "$KIT/shared/agent-signoff.md". Add nothing else.
 EOF
 exit 2
