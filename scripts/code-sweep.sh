@@ -23,7 +23,7 @@
 #      <!-- sweep-class: <key> -->, the ones closed as not planned (never refiled),
 #      and every open title for the agent to check against. A failed read is unknown,
 #      never "none": nothing is filed that night.
-#   3. the reviewer's pre-existing queue, $STATE_DIR/review/pre-existing.jsonl, one
+#   3. the reviewer's pre-existing queue (`sweep-queue.sh path`), one
 #      JSON finding a line, read from where the last filing night stopped. No file is
 #      an empty queue. A file shorter than that point was rotated: read from its start.
 #   4. the agent (agent-harness:code-sweeper) in a detached tree of origin/<trunk>,
@@ -80,7 +80,9 @@ EXTS=$(opt extensions "ts tsx js jsx mjs cjs py sh rb go rs java kt swift php cs
 TRUNK="origin/$INTEGRATION_BRANCH"
 SD="$SWARM_DIR/code-sweep"
 RUN="$SD/run"; TREE="$SD/tree"
-QUEUE="${SWEEP_QUEUE:-$STATE_DIR/review/pre-existing.jsonl}"
+# Asked of the writer, never spelled here: from the queue's first day the review step wrote one
+# path and this read another, so 457 set-aside findings were never swept (2026-11-28).
+QUEUE=$(HARNESS_STATE_DIR="$STATE_DIR" bash "$SELF_DIR/sweep-queue.sh" path) || die "no pre-existing queue path"
 mkdir -p "$SD" || die "cannot write $SD"
 LOG="$SWARM_LOGS/code-sweep.log"
 note() { swarm_log "$LOG" "$*"; say "$*"; }

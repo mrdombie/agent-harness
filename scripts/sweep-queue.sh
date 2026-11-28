@@ -6,6 +6,7 @@
 #   sweep-queue.sh add <ticket> [<round>]   findings on stdin (a JSON array or one per line)
 #   sweep-queue.sh list                     the queue, one JSON object a line
 #   sweep-queue.sh count                    how many defects it holds
+#   sweep-queue.sh path                     where the queue is: the one answer every reader uses
 #   sweep-queue.sh key                      the fingerprint of the one finding on stdin
 #   exit 0 done · 2 usage, unreadable input, or no queue path
 #
@@ -33,12 +34,13 @@ case "$CMD" in
   key)
     jq -r "$KEYDEF finding_key" 2>/dev/null || die "the finding on stdin is not JSON"
     exit 0 ;;
-  add|list|count) : ;;
-  *) die "usage: sweep-queue.sh add <ticket> [<round>] | list | count | key" ;;
+  add|list|count|path) : ;;
+  *) die "usage: sweep-queue.sh add <ticket> [<round>] | list | count | path | key" ;;
 esac
 Q=$(queue_path) || die "no queue: set SWEEP_QUEUE, or a stateDir in harness.json"
 
 case "$CMD" in
+  path)  printf '%s\n' "$Q"; exit 0 ;;
   list)  [ -f "$Q" ] && cat "$Q"; exit 0 ;;
   count) if [ -f "$Q" ]; then grep -c . "$Q"; else echo 0; fi; exit 0 ;;
 esac

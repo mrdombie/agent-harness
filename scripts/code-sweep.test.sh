@@ -244,7 +244,9 @@ want "and calls no agent" 0 "$(calls)"
 rm -f "$FIX/gh/sweep-open.fail"
 
 echo "--- the reviewer's pre-existing queue ---"
-Q="$STATE/review/pre-existing.jsonl"; rm -f "$Q"
+# The path the review step writes to, asked of the writer: a path spelled here let the two differ.
+Q=$(HARNESS_STATE_DIR="$STATE" bash "$(dirname "$0")/sweep-queue.sh" path); rm -f "$Q"
+want "the sweep reads the file the review step writes" "$STATE/swarm/sweep/pre-existing.jsonl" "$Q"
 answer '[]'; reset; rc=$(run --file --force)
 want "no queue file is an empty queue" 0 "$rc"
 want_in "and the agent is told so" 'Pre-existing findings: none' "$(last_call)"
