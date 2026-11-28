@@ -155,7 +155,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `autoProofs`, `bodyProofs`
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `autoProofs`, `bodyProofs`, `deferred`
 - otherwise: requires `question`
 <!-- fields:end -->
 
