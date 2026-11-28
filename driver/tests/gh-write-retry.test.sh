@@ -11,7 +11,7 @@ ok()  { printf 'OK       %s\n' "$1"; }
 bad() { printf 'MISMATCH %s\n' "$1"; FAILED=1; }
 want() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 — wanted '$2', got '$3'"; fi; }
 want_in() { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 — no '$2' in: $3"; fi; }
-FIX=$(mktemp -d); BIN="$FIX/bin"; mkdir -p "$BIN"; export FIX; trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); BIN="$FIX/bin"; mkdir -p "$BIN"; export FIX; on_exit_keep_status 'rm -rf "$FIX"'
 # The one function, read out of driver-env.sh, which needs a whole project to source.
 eval "$(awk '/^driver_gh_write\(\) \{/,/^\}/' "$HERE/../driver-env.sh")"
 declare -F driver_gh_write >/dev/null || { echo "MISMATCH driver_gh_write is not in driver-env.sh"; exit 1; }
