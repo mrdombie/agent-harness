@@ -64,7 +64,7 @@ printf '%s %s\n' "$1" "$(pwd -P)" >> "$SPAWNS"
 SH
 chmod +x "$BIN/spawn-live"
 # One live tick: the rebuild clock off, the fix rounds at their default (2).
-tick() { COORDINATOR_REBUILD_AFTER_MIN=0 COORDINATOR_CAP=2 SWARM_GH="$BIN/gh-by-repo" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
+tick() { COORDINATOR_REBUILD_AFTER_MIN=0 COORDINATOR_CAP="${TICK_CAP:-2}" SWARM_GH="$BIN/gh-by-repo" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
 log0() { : > "$FIX/repo.log"; : > "$FIX/wrong-repo.log"; }
 kit_calls() { grep -c '^kit' "$FIX/repo.log"; }
 kit_lists() { grep -c '^kit.*OpenPullRequests' "$FIX/repo.log"; }
@@ -99,8 +99,10 @@ want "it starts in the clone" "801 $KIT_P" "$(cat "$SPAWNS")"
 want "and the start is on the ledger" "801	kit" "$(cat "$C/clone-builds.tsv")"
 
 echo "--- its pull request there is red: it goes back to its builder, as one here would ---"
+# No free place this tick, so the round is queued and seen before it starts: an in-review
+# ticket no longer holds its own fix round back (the round starts the tick a place is free).
 fix_issue 801 OPEN "P1,status:in-review,repo:kit"; : > "$SPAWNS"; log0
-out=$(tick)
+out=$(TICK_CAP=0 tick)
 want "one batched read of the clone repo's open PRs" "1" "$(kit_lists)"
 want_in "the pass says what it found there" 'rebuild: acme/kit — 1 open PR\(s\) on ticket\(s\) this queue built there' "$out"
 want_in "the red PR goes back to its builder" 'rebuild: PR #7 goes back to its builder on tkt-801-x — fix round 1 of 2 \(required check\(s\) failed: tests\)' "$out"

@@ -70,6 +70,11 @@
       "type": "string",
       "minLength": 1
     },
+    "runtimeDesign": {
+      "description": "Where the runtime design this plan builds to is written: a doc path (its 'Runtime design' section: where the truth lives, the view models, the actions and what each returns, what the assistant reads), or 'ticket' when the ticket body carries that section. The driver checks the section exists whenever the project owes one for this ticket.",
+      "type": "string",
+      "minLength": 1
+    },
     "tasks": {
       "type": "array",
       "items": {

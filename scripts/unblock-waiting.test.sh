@@ -270,4 +270,19 @@ labeled 20024 dom 2026-11-01T10:00:00Z
 out=$(HARNESS_CFG_PATH="$FIX/cfg-accounts.json" run)
 want_not_in "a person's late block still is not" '^unblocked #20024$' "$out"
 
+echo "--- a filed step's own "**Starts after:**" line is a wait too ---"
+waiting 20702 status:gated "Step 9 of 13.
+
+**Starts after:** #20701 is merged."
+waiting 20703 status:gated "Step 10 of 13.
+
+**Starts after:** #20702 is merged."
+waiting 20710 status:gated "It starts after lunch, see #20701 for the idea."
+listing status:gated 20702 20703 20710; printf '[]\n' > "$FIX/gh/issue-list-status:blocked.json"
+closed 20701
+out=$(run)
+want_in "the step whose blocker merged is released" '^unblocked #20702$' "$out"
+want_in "the step behind it waits on it"           '^waits: #20703 — still open: #20702$' "$out"
+want_not_in "prose that only says 'starts after' is no wait" '#20710' "$out"
+
 suite_end "$FAILED"

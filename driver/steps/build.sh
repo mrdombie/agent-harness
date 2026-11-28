@@ -895,10 +895,16 @@ driver_prove_trunk_merge() {
 
 # _driver_build_task_start <file> <plan-task> <repo> — the head this task first started
 # from, kept across its tries and a resume until it is proved. A retry measured from its
-# own start would not see what an earlier try of the same task committed.
+# own start would not see what an earlier try of the same task committed. Once another
+# task is proved after it, the kept head is dropped: that task's commits sit between the
+# kept head and HEAD, and would count as this task's (a trunk-merge task retried after
+# the tasks it unblocks were built was refused as "committed more than the trunk merge").
 _driver_build_task_start() {
-  local f="$1" task="$2" repo="$3" h
+  local f="$1" task="$2" repo="$3" h other
   h=$(jq -r --argjson task "$task" 'select(.task == $task) | .head // empty' "$f" 2>/dev/null)
+  for other in "$(dirname "$f")"/*.proved; do
+    [ -e "$other" ] && [ "$other" -nt "$f" ] && { h=""; break; }
+  done
   if [ -n "$h" ] && git -C "$repo" merge-base --is-ancestor "$h" HEAD 2>/dev/null; then printf '%s' "$h"; return 0; fi
   h=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null) || return 1
   jq -n --argjson task "$task" --arg h "$h" '{task: $task, head: $h}' > "$f" 2>/dev/null

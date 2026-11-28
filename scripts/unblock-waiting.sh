@@ -8,7 +8,9 @@
 #
 # A waiting ticket is open and wears the blocked or the gated status (labels.blocked,
 # labels.gated). Its blockers are the #numbers after "Blocked until" on the newest line
-# saying so, in its comments or else its body (a split part's body says it; the PM writes
+# saying so, or after a filed step's "**Starts after:** #N is merged." line (2026-11-26: the
+# 13 permission steps said only that, so none of 11 could ever be released and step 9 sat
+# gated 6 days after its blocker merged), in its comments or else its body (a split part's body says it; the PM writes
 # "**PM answer:** Yes, it waits. Blocked until #14268, #14269 … merge."). A blocker has
 # landed when it is closed as completed, or is a merged pull request; one closed as not
 # planned has not, with one exception: a blocker CLOSED AS SPLIT stands for its parts, read
@@ -87,13 +89,13 @@ TICKETS_JQ='def tickets: [scan("#([0-9]+)(?:[ ]*[–—-][ ]*#?([0-9]+))?")
 read_waiting() { # <label> <1 when it is the blocked label>
   "$GH" issue list --repo "$REPO_SLUG" --label "$1" --state open --limit 200 --json number,body,createdAt,labels,comments 2>/dev/null \
   | jq -r --argjson bl "${2:-0}" "$TICKETS_JQ"'
-      (if $bl == 1 then "blocked until|blocked (on|by) *#[0-9]" else "blocked until" end) as $re
+      (if $bl == 1 then "blocked until|blocked (on|by) *#[0-9]|\\*\\*starts after:\\*\\*" else "blocked until|\\*\\*starts after:\\*\\*" end) as $re
       | .[]? | .number as $n
       | ([(.labels // [])[]?.name] | join(",")) as $labs
       | [{t: (.createdAt // ""), s: (.body // "")}, ((.comments // [])[]? | {t: (.createdAt // ""), s: (.body // "")})] as $ents
       | ($ents | map(.s)) as $texts
       | ($ents | map(.t as $t | .s | split("\n")[] | select(test($re; "i")) | {t: $t, l: .}) | last // {t: "", l: ""}) as $w
-      | ($w.l | sub("(?i).*blocked (until|on|by)"; "") | tickets | map(select(. != ($n | tostring))) | join(" ")) as $b
+      | ($w.l | sub("(?i).*(blocked (until|on|by)|\\*\\*starts after:\\*\\*)"; "") | tickets | map(select(. != ($n | tostring))) | join(" ")) as $b
       | if $b != "" then "\($n)\t\($b)\t\($w.t)\t\($labs)"
         elif $bl == 1 and ($texts | map(test("waits for #[0-9]"; "i")) | any | not) then "\($n)\t?\t\t\($labs)"
         else empty end'
