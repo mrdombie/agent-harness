@@ -40,6 +40,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ticket-parts.sh" || exit 1
+# driver_touch_reports: a project's not-blocking report on a build that touches its paths.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/touch-reports.sh" || exit 1
 
 # _driver_ticket_parts <ticket> <tree> <findings> — what the ticket names as its own, held to
 # the branch with no model: each file it names as created or changed is on the branch or in
@@ -850,5 +852,7 @@ EOS
   # The head the local set passed on: the push tells the project's hook (driver_push).
   [ -z "$fromlocal" ] || driver_state_set "$t" local_gates_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   driver_say "   self-check: $((ran+pushran)) gate(s) green"
+  # A report the project wants on a change to its paths: run here, on green, never blocking.
+  driver_touch_reports "$t" "$wt"
   return "$DRIVER_OK"
 }
