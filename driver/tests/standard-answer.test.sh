@@ -56,6 +56,10 @@ Q14276="This part posts the new 'One question' card, but the part that adds that
 Q14277="Hold this part until parts 2 to 5 (#14273–#14276) merge? Every piece it wires together is missing on develop: the factQuestion/factSaved cards (#14273), the private-life filter (#14274), recordOwnFact (#14275)."
 Q13573="This ticket needs the context loader from part 2 of the programme, and none of it has been built. That part (#13572) was closed as split into #14268, #14269, #14270 and #14271, and all four are still open with no pull request. Should this ticket wait for them?"
 
+Q19353="The release rule I was pointed to covers design evidence, not git permissions, so it cannot unblock a reset my permission mode refuses. Which should happen: (a) a person runs git reset --hard origin/develop on this branch, or (b) the PM lifts the no-merge rule so I merge develop into the old commits?"
+Q21471="The local merge bd6c55e211 already contains develop (5b993393c4), so no new merge is possible, and the auto-mode classifier refused git reset --hard ad2f96bc twice. Should the driver run resetTo ad2f96bc (origin's head) so the next run makes the merge itself? Or should it accept bd6c55e211 as the merge?"
+QRESETFORM="Should the reset button clear the form fields too, or only the filters? (yes / no)"
+
 N=600
 cls() { # <text> [pr] — the class a fresh ticket's question gets, or park
   N=$(( $(cat "$FIX/n" 2>/dev/null || echo 600) + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null
@@ -65,6 +69,9 @@ cls() { # <text> [pr] — the class a fresh ticket's question gets, or park
 
 echo "--- on: each real text takes its standard answer ---"
 mf_on
+want "#19353 reset or merge a pushed branch: (k), carry on" "k carry" "$(cls "$Q19353")"
+want "#21471 keep a local merge or reset: (k), carry on"   "k carry" "$(cls "$Q21471")"
+want "a product question about a reset button is not (k)"  "park"    "$(cls "$QRESETFORM")"
 want "#13044 wait or fix-here: (a), carries on past the base's red" "a carry"   "$(cls "$Q13044" 77)"
 want "#12209 develop itself fails: (a)"                       "a carry"   "$(cls "$Q12209A" 77)"
 want "#12209 red on pristine develop: (a)"                    "a carry"   "$(cls "$Q12209B" 77)"
