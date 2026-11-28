@@ -185,7 +185,7 @@ reviewed model in `dataModelSpec`.
 `designSource` says where what you are building was settled. Use
 **approved-picture** whenever a person approved a design before this build — a
 mock-up, a rendered concept, a screenshot signed off on the ticket — and put the
-URL or the path on this branch in `designRef`; compare holds the renders against it. Picture missing locally: name it anyway. The other three are:
+URL or the path on this branch in `designRef`, that alone with no spaces (shots, stories and where it was approved go in `notes`); compare holds the renders against it. Picture missing locally: name it anyway. The other three are:
 **ticket-body** when the ticket itself is the whole design, **brainstormed** when
 the spec was settled in the ticket thread, and **debugged** when the plan follows
 a reproduction.
