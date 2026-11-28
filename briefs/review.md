@@ -49,7 +49,7 @@ several places, return ONE finding naming the mistake in `class` and every place
 do not return any of them again, reworded or not.
 
 **Hold the change to RULES.** Each finding carries a `kind`; a rule kind cites
-`rule` as `<file>:<line>` from RULES; a rule finding reports and never blocks.
+`rule` as `<file>:<line>` from RULES; a rule finding never blocks.
 
 ## Grade every finding
 
