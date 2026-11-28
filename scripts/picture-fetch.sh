@@ -62,6 +62,18 @@ if [ -n "$tok" ]; then
     *)  [ -f "$TREE/$path" ] || fetch=1 ;;
   esac
 fi
+# A PICTURE ON THE TRUNK IS ON EVERY MACHINE. A branch cut before the approved picture
+# merged does not hold it, yet the trunk does: take that file from the trunk into the tree
+# (the caller commits it) rather than asking a person where it is (seen 28 Nov 2026).
+if [ "$fetch" -eq 1 ] && [ "${path#/}" = "$path" ]; then
+  tb="${INTEGRATION_BRANCH:-develop}"
+  bounded() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"; }
+  GIT_TERMINAL_PROMPT=0 bounded 60 git -C "$TREE" fetch -q origin "$tb" 2>/dev/null || true
+  if git -C "$TREE" cat-file -e "origin/$tb:$path" 2>/dev/null \
+     && git -C "$TREE" checkout -q "origin/$tb" -- "$path" 2>/dev/null; then
+    fetch=0
+  fi
+fi
 sha_of() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1" 2>/dev/null; } | awk 'NR == 1 { print $1 }'; }
 
 NAME=$(basename "${tok:-none}")
