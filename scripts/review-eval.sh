@@ -190,7 +190,7 @@ re_set() {
 # re_item <run dir> <item json> — one review of one past change. Writes items/<id>.json.
 # Runs in a subshell of its own: the driver's functions and state are per-item.
 re_item() {
-  local run="$1" item="$2" id base head t wt d diff cap bytes effort rc spend out
+  local run="$1" item="$2" id base head t wt d diff cap bytes effort rc spend out p
   id=$(jq -r .id <<<"$item")
   base=$(jq -r .base <<<"$item"); head=$(jq -r .head <<<"$item")
   t="eval-$id"; wt="$run/trees/$id"; out="$run/items/$id.json"
@@ -218,6 +218,11 @@ re_item() {
   driver_fact_put "$t" review TARGET "$base"
   driver_fact_put "$t" review RENDERS "(none — this run took no renders, so judge no screen from them)"
   driver_fact_put "$t" review ROUND 1
+  # The written rules, as the review step hands them: the root files and the changed files' nearest.
+  local -a changed=()
+  while IFS= read -r p; do [ -n "$p" ] && changed+=("$p"); done < <(git -C "$wt" diff --name-only "$base" "$head" 2>/dev/null)
+  driver_fact_put "$t" review RULES "$(driver_fact_rules "$wt" ${changed[@]+"${changed[@]}"})"
+  driver_rule_files "$wt" ${changed[@]+"${changed[@]}"} > "$d/review.rules.txt"
   rc=0; _driver_review_hunt "$t" "$run/none" "$effort" >> "$run/log" 2>&1 || rc=$?
   [ "$rc" -ne 0 ] || _driver_review_check "$t" "$d/review.json" >> "$run/log" 2>&1 || rc=$?
   spend=$(jq -r '.spend // 0' "$(driver_state_dir "$t")/state.json" 2>/dev/null); spend=${spend:-0}
