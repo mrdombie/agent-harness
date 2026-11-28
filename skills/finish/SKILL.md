@@ -1232,10 +1232,7 @@ If the PR includes a `prisma/migrations/` change, flag it: *"Migration X will ru
 **Close with the sign-off banner** — always the last thing on screen, below everything above. Read `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md`. The scope is the one `/agent-harness:claim` wrote to `.session-label`; if that file is missing, resolve the ticket's `project:` or `area:` label and say you had to.
 
 ```
-🏷️ Working on: Content Lab (project:content-lab)
-   Shipped 1 — drafts stop expiring while someone is editing them
-   Also running: 2 agents on Welcome Flow
-   Resume: /agent-harness:work content-lab
+Status: Content Lab's drafts fix is merged; nothing else of mine is running.
 ```
 
 `Also running:` is a live read of `claim-lock.sh list --json` taken **after** Step 7 released this ticket's own claim — read it before the release and you report yourself as a second agent.

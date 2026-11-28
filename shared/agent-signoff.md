@@ -1,64 +1,46 @@
-# The sign-off — "I was working on…"
+# The sign-off — one closing line
 
-Every agentic flow ends every handback with this block. **Handback means any time you
-give the operator the floor** — finished the queue, paused for a decision, blocked, or stopped
-to ask a question. Not only at the end of a run.
+Every agentic flow ends every handback with **one line**. Handback means any time you
+give the operator the floor: finished, paused for a decision, blocked, or stopped to
+ask a question.
 
-WHY: the operator loses track of which area an agent was on, and starts a second agent on work
-already in flight. Three claims were open and unnamed at the moment this was written.
-The banner is the one line that stops the duplicate.
+WHY: the operator loses track of which area an agent was on and starts a second agent
+on work already in flight. One line naming the work stops that. The owner, 2026-11-28,
+replaced the old four-line banner ("🏷️ Working on:" / "Paused on:" / "Also running:" /
+"Resume:" plus a separate status line) because it was "really confusing … three groups
+etc, it's hard to read and follow".
 
-## The block
+## The line
 
 ```
-🏷️ Working on: Content Lab (project:content-lab)
-   Shipped 3 · 1 in flight (draft cards, PR open)
-   Also running: 2 agents on Welcome Flow
-   Resume: /agent-harness:work content-lab
+Status: Content Lab's draft cards PR is open and red; waiting on its fix; next check when CI reports.
 ```
 
-The first line is mandatory and its opening `🏷️ Working on:` is literal — the backstop
-greps for exactly that string. The other three lines are omitted when empty.
+It starts with the literal `Status: ` (the backstop and the heartbeat hooks grep for
+it) and says, in plain words:
 
-## Who "you" is
-
-The banner addresses **the operator** — the human running this session (see
-`.claude/shared/operator.md`). Never a name.
+- **what you are working on**, named as the work, not a label or ticket number;
+- **what it waits on** — when that is the operator, say what they must do: "waiting
+  on you to approve the draft card picture";
+- **when you next check**, or "nothing else of mine is running".
 
 ## Rules
 
-- **Plain English first, the label in brackets.** "Content Lab (project:content-lab)",
-  never the bare label. Same rule as every other table in the estate: the description
-  is what the operator acts on, the reference goes last.
-- **`Resume:` is a literal command the operator can run**, never a description of one. When the
-  next move is theirs — approve pixels, answer a question — say that instead, in their
-  words, not the gate's.
-- **When paused, line 2 says what it is paused ON.** That is the line that stops the
-  second agent, so it is the one that must be specific: "Paused on: you — approve the
-  draft card pixels", not "waiting for review".
-- **`Also running:` is read live**, in this turn, from:
-
-  ```bash
-  "$KIT_ROOT/scripts/claim-lock.sh" list --json
-  ```
-
-  Omit the line when this is the only live claim. Never write it from memory — a stale
-  roster here is worse than no roster, because it is the exact fact the operator is about to
-  act on.
-- **Omit any line with no content.** Never "Shipped 0", never "none", never an empty
-  `Also running:`.
-- **Never print a bare ticket number.** "the draft cards", not "#9822".
+- **One sentence, one line.** No heading, table, emoji, label in brackets or second
+  line.
+- **Never a bare ticket number.**
+- **Other agents are named only if the operator would act on it**, read live in this
+  turn from `"$KIT_ROOT/scripts/claim-lock.sh" list --json`, never from memory.
+- **Never repeat the reply above it.** It is the last line, not a recap.
 
 ## Where the scope comes from
 
-`$STATE_DIR/.session-label` — one line, `<scope>\t<ISO timestamp>`,
-truncate-written. Every work flow writes it the moment its scope resolves, before the
-first `/agent-harness:claim`:
+`$STATE_DIR/.session-label` — one line, `<scope>\t<ISO timestamp>`, truncate-written.
+Every work flow writes it the moment its scope resolves, before the first claim:
 
 ```bash
 printf '%s\t%s\n' "$SCOPE" "$(date +%Y-%m-%dT%H:%M:%S%z)" \
   > "$STATE_DIR/.session-label"
 ```
 
-If the file is missing when you go to sign off, say so plainly rather than guessing
-the scope — a guessed area is how the operator ends up on the wrong branch.
+If the file is missing when you sign off, say so plainly rather than guessing the area.

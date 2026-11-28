@@ -157,10 +157,7 @@ is without anyone asking. Then sign off per
 `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md`, with the resolved label as the scope:
 
 ```
-🏷️ Working on: Content Lab (project:content-lab)
-   Shipped 3 · 1 in flight (draft cards, PR open)
-   Also running: 2 agents on Welcome Flow
-   Resume: /agent-harness:work content-lab
+Status: Content Lab, 3 shipped and the draft cards PR is open; next check when its CI reports.
 ```
 
 `Resume:` is `/agent-harness:work <what the operator typed>`, not the resolved label — they type subjects, and a

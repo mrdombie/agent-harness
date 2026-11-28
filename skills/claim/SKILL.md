@@ -1208,10 +1208,7 @@ merge commits so a routine catch-up does not void an approval.
    `project:` or `area:` label, written to disk in Step 10 below:
 
    ```
-   🏷️ Working on: Content Lab (project:content-lab)
-      Paused on: you — the AC needs a call on whether drafts expire
-      Also running: 2 agents on Welcome Flow
-      Resume: answer here and I carry on — the worktree stays claimed
+   Status: Content Lab (project:content-lab) is paused on you — should drafts expire? I carry on when you answer.
    ```
 
    Line 2 is the one that matters when you stop early. "Paused on: you — <the actual

@@ -87,10 +87,7 @@ End with the sign-off banner — read `${CLAUDE_PLUGIN_ROOT}/shared/agent-signof
 and stops, so `Resume:` is what the operator or the next agent does with the ticket:
 
 ```
-🏷️ Working on: Content Lab (project:content-lab)
-   Filed 1 — drafts expire while someone is editing them ($LBL_DRAFTING)
-   Also running: 2 agents on Welcome Flow
-   Resume: /agent-harness:claim 9822 once you've flipped it to $LBL_READY
+Status: filed the Content Lab ticket on drafts expiring while someone edits them; it waits on you to mark it ready.
 ```
 
 Do **not** write `.session-label` here. `/agent-harness:file` does not build anything, and a scope
