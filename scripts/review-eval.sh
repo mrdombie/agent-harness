@@ -55,8 +55,8 @@ def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
     else ([$x[] | . as $w | select($y | index($w))] | length) / ([($x | length), ($y | length)] | min) end;
 def samefile($a; $b): ($a | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $x | ($b | sub("^\\./"; "")) as $y
   | $x == $y or ($x | endswith("/" + $y)) or ($y | endswith("/" + $x));
-def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit"
-  and ((.kind // "") | IN("breaks-rule", "stale-rule") | not))];
+def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit")
+  | select((.kind // "") | IN("breaks-rule", "stale-rule") | not)];
 def hit($f; $e; $win):
   samefile($f.file // "" | tostring; $e.file // "" | tostring)
   and ((($f.line // 0) - ($e.line // 0)) | if . < 0 then -. else . end) <= $win

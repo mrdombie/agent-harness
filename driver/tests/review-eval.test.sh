@@ -76,6 +76,7 @@ case_score() { # the tally's match: same file, a line within 10, a similar summa
   R="$R otherwords=$(score_of "[$(jq -c '.summary = "The heading wording is vague"' <<<"$F1")]" "$EXP" | tr ' ' ,)"
   R="$R prefixed=$(score_of "[$(jq -c '.file = "./src/a.ts"' <<<"$F1")]" "$EXP" | tr ' ' ,)"
   R="$R nit=$(score_of "[$FN]" "$EXP" | tr ' ' ,)"
+  R="$R rule=$(score_of "[$(jq -c '.kind = "breaks-rule" | .rule = "CLAUDE.md:3" | .grade = "critical"' <<<"$F1")]" "$EXP" | tr ' ' ,)"
 }
 case_run() { # a whole run: recall, false findings, calls, cost on the result line, hermetic gh
   fresh
@@ -197,7 +198,7 @@ kit_copy
 case_noise;   want "the unplanted kit: noise, from the ledgers alone" \
   "found=3 notreal=1 nit=2 pre=1 repeat=0 fixed=1 deferred=1 unfixed=1 calls=0" "$R"
 case_score;   want "the unplanted kit: the scoring match" \
-  "near=true,1,0 far=false,1,1 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=false,0,0" "$R"
+  "near=true,1,0 far=false,1,1 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=false,0,0 rule=false,0,0" "$R"
 case_run;     want "the unplanted kit: a run scores, costs and says so" \
   "rc=0 calls=4 gh=none line=1 tsv=run,1,2,3,3.5,ok" "$R"
 case_cap;     want "the unplanted kit: 21 items are refused unpaid" "rc=2 calls=0 said=1" "$R"
@@ -225,10 +226,13 @@ plant() {
 }
 plant "the line window is dropped" scripts/review-eval.sh \
   '| if . < 0 then -. else . end) <= $win' '| if . < 0 then -. else . end) <= 100000' case_score \
-  "near=true,1,0 far=true,1,0 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=false,0,0"
+  "near=true,1,0 far=true,1,0 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=false,0,0 rule=false,0,0"
 plant "a nit counts as kept" scripts/review-eval.sh \
   'select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit")' 'select(type == "object")' case_score \
-  "near=true,1,0 far=false,1,1 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=true,1,0"
+  "near=true,1,0 far=false,1,1 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=true,1,0 rule=false,0,0"
+plant "a written-rule finding counts as kept" scripts/review-eval.sh \
+  '| select((.kind // "") | IN("breaks-rule", "stale-rule") | not)' '' case_score \
+  "near=true,1,0 far=false,1,1 otherfile=false,1,1 otherwords=false,1,1 prefixed=true,1,0 nit=false,0,0 rule=true,1,0"
 plant "the cost leaves the result line" scripts/review-eval.sh \
   ' · cost $\(.cost) · fingerprint' ' · fingerprint' case_run \
   "rc=0 calls=4 gh=none line=0 tsv=run,1,2,3,3.5,ok"
