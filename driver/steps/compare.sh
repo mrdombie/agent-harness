@@ -63,6 +63,33 @@ driver_touched_surfaces() { # <tree> <trunk>
   printf '%s' "$out"
 }
 
+# driver_dev_shot <ticket> <worktree> <trunk> — the builder's own shots of a screen change,
+# from the devShot command: `<cmd> <out-dir> <base-ref>`, one name<TAB>path<TAB>theme<TAB>route
+# line per shot; exit 3 = no screen file changed, 5 = shot but some files have no /dev page.
+# Runs on every screen route, merge first included, so no screen change merges unseen.
+# Prints the note the renders record carries; nothing when devShot is not set.
+driver_dev_shot() {
+  local t="$1" wt="$2" trunk="$3" cmd out dir rc lines n
+  cmd=$(driver_opt devShot "")
+  [ -n "$cmd" ] || return 0
+  dir="$(driver_state_dir "$t")/dev-shot"
+  rm -rf "$dir"; mkdir -p "$dir"
+  rc=0
+  out=$(cd "$wt" && driver_bounded "${DRIVER_CMD_TIMEOUT:-900}" \
+    "bash $(printf '%q' "$cmd") $(printf '%q' "$dir") $(printf '%q' "$trunk")" 2>"$dir/stderr.log") || rc=$?
+  lines=$(printf '%s\n' "$out" | awk -F'\t' 'NF >= 3 && $1 != "" && $2 != "" && ($3 == "light" || $3 == "dark")')
+  n=$(printf '%s' "$lines" | grep -c . || true)
+  driver_state_set "$t" dev_shots "$lines"
+  case "$rc" in
+    0) printf 'dev-page shots (%s) — put each on the PR beside its last approved shot:\n%s' "$n" "$(printf '%s\n' "$lines" | sed 's/^/  /')" ;;
+    3) printf 'dev-page shots: none — the shot command found no screen file in this change' ;;
+    5) printf 'dev-page shots (%s), but these screen files have NO /dev page and were not shot — add one before the merge:\n%s\n%s' \
+         "$n" "$(sed 's/^/  /' "$dir/stderr.log")" "$(printf '%s\n' "$lines" | sed 's/^/  /')" ;;
+    124) printf 'dev-page shots: NONE — the shot command ran past %ss and was stopped, so nobody has seen this screen' "${DRIVER_CMD_TIMEOUT:-900}" ;;
+    *) printf 'dev-page shots: NONE — the shot command failed (exit %s), so nobody has seen this screen:\n%s' "$rc" "$(tail -5 "$dir/stderr.log" | sed 's/^/  /')" ;;
+  esac
+}
+
 driver_step_compare() { # <ticket>
   local t="${1:?driver_step_compare: need a ticket}"
   local wt trunk r touched cmd out rc lines n approved route rcs
@@ -97,16 +124,20 @@ driver_step_compare() { # <ticket>
   fi
   # AN EXISTING SCREEN HAS NO PICTURE TO MATCH (tier.sh, the screen route): CI diffs its
   # shots against the route's last approved shots after the push and decides the status.
+  local shots; shots=$(driver_dev_shot "$t" "$wt" "$trunk")
+  [ -n "$shots" ] && driver_say "   compare: ${shots%%$'\n'*}"
   local route rwhy
   IFS=$'\t' read -r route rwhy <<<"$(driver_screen_route "$t")"
   if [ "$route" = baseline ]; then
-    driver_state_set "$t" renders "(none — $rwhy. No picture binds it, so nothing is compared here; CI posts the diff and the PM looks at it)"
+    driver_state_set "$t" renders "(none — $rwhy. No picture binds it, so nothing is compared here; CI posts the diff and the PM looks at it)${shots:+
+$shots}"
     driver_say "   compare: $rwhy — no picture, no compare on this machine"
     return "$DRIVER_OK"
   fi
   # MERGE FIRST (release.mergeFirst): nothing waits for picture parity; the owner looks on UAT.
   if driver_merge_first; then
-    driver_state_set "$t" renders "(none — merge first until the release: no picture parity before the merge; the owner reviews the screen on UAT)"
+    driver_state_set "$t" renders "(none — merge first until the release: no picture parity before the merge; the owner reviews the screen on UAT)${shots:+
+$shots}"
     driver_say "   compare: merge first (release.mergeFirst) — no picture parity before the merge"
     return "$DRIVER_OK"
   fi
