@@ -45,7 +45,8 @@ RE_MAX_ITEMS=20
 re_die() { echo "review-eval: $*" >&2; exit 2; }
 
 # ---- the match --------------------------------------------------------------------
-# jq definitions: kept(answer) — the findings a review keeps (not a nit), and
+# jq definitions: kept(answer) — the findings a review keeps (not a nit, and not a written-rule
+# finding, which reports and never blocks: Dom, 2026-11-28), and
 # hit($f; $e; $win) — the tally's match.
 RE_JQ='
 def ws: ascii_downcase | [scan("[a-z0-9]+") | select(length >= 4)] | unique;
@@ -54,7 +55,8 @@ def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
     else ([$x[] | . as $w | select($y | index($w))] | length) / ([($x | length), ($y | length)] | min) end;
 def samefile($a; $b): ($a | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $x | ($b | sub("^\\./"; "")) as $y
   | $x == $y or ($x | endswith("/" + $y)) or ($y | endswith("/" + $x));
-def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit")];
+def kept: [(.findings // [])[] | select(type == "object" and (.grade // "") != "nit" and (.tag // "") != "nit"
+  and ((.kind // "") | IN("breaks-rule", "stale-rule") | not))];
 def hit($f; $e; $win):
   samefile($f.file // "" | tostring; $e.file // "" | tostring)
   and ((($f.line // 0) - ($e.line // 0)) | if . < 0 then -. else . end) <= $win
