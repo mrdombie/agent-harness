@@ -534,6 +534,17 @@
             "minItems": 1
           }
         }
+      },
+      {
+        "required": [
+          "deferred"
+        ],
+        "properties": {
+          "deferred": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
       }
     ]
   },
