@@ -192,6 +192,14 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
 
 [ALREADY RAISED ON THIS CHANGE — never return any of these again, reworded or not:
 $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
+  # AREA GUIDES: the nearest REVIEW.md above each changed file says what to skip, the nit cap and the evidence asked for.
+  local changed="$own_paths" guides=""
+  case "${dargs[0]:-}" in *...HEAD) changed=$(git -C "$wt" diff --name-only "${dargs[@]}" 2>/dev/null) ;; esac
+  [ -z "$changed" ] || guides=$(printf '%s\n' "$changed" | bash "$KIT_ROOT/scripts/review-guide.sh" "$wt" 2>/dev/null)
+  [ -z "$guides" ] || diff="${diff}
+
+[AREA REVIEW GUIDES — each covers the files named under it: skip what it says to skip, keep nits within its cap, and cite evidence as it asks:
+$guides]"
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # THE REVIEWER IS CLAUDE CODE'S OWN code-review, at review.effort (default high: one
